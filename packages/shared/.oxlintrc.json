@@ -1,0 +1,14 @@
+{
+  "plugins": ["typescript", "oxc", "import", "promise", "unicorn"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "no-console": "warn",
+    "no-debugger": "error",
+    "eqeqeq": ["error", "always", { "null": "ignore" }]
+  },
+  "ignorePatterns": ["node_modules", "dist", "build", "out", "coverage", "*.d.ts"]
+}

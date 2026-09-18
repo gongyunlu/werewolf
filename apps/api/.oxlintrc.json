@@ -1,0 +1,22 @@
+{
+  "plugins": ["typescript", "oxc", "import", "promise", "unicorn", "node"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": {
+    "node": true
+  },
+  "globals": {
+    "NodeJS": "readonly"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "no-console": "warn",
+    "no-debugger": "error",
+    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "typescript/no-extraneous-class": ["warn", { "allowWithDecorator": true }],
+    "import/no-unassigned-import": ["warn", { "allow": ["reflect-metadata"] }]
+  },
+  "ignorePatterns": ["node_modules", "dist", "build", "out", "coverage", "*.d.ts"]
+}
