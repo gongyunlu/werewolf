@@ -9,5 +9,10 @@ module.exports = {
     'pnpm --filter @werewolf/web lint:fix',
     () => 'pnpm --filter @werewolf/web typecheck',
   ],
+  'packages/shared/**/*.{ts,js,mjs,cjs}': [
+    'prettier --write',
+    'pnpm --filter @werewolf/shared lint:fix',
+    () => 'pnpm --filter @werewolf/shared typecheck',
+  ],
   '*.{json,md,yml,yaml}': ['prettier --write'],
 };
