@@ -1,6 +1,7 @@
-import type { DeathCause, Faction, Phase } from '@werewolf/shared';
-import type { PhaseInstanceId } from './identity';
-import type { DealableRole } from './roles';
+import { PHASES, type DeathCause, type Faction, type Phase } from '@werewolf/shared';
+import type { GameSetup } from '../boards/setup';
+import { phaseInstanceId, type PhaseInstanceId } from './identity';
+import { factionOf, type DealableRole } from './roles';
 
 /** 一名玩家在对局中的状态。 */
 export interface PlayerState {
@@ -54,4 +55,47 @@ export interface GameState {
   day: number;
   phase: Phase;
   players: PlayerState[];
+  /** 本局有没有警长环节，建局时定下。为 false 时白天整段跳过竞选。 */
+  hasSheriff: boolean;
+  /**
+   * 当前警长；无警长为 null。
+   *
+   * 用可空 id 而不是 PlayerState 上的布尔：警长一局至多一个，可空 id 让「两个玩家
+   * 同时是警长」结构上不可能。警徽被撕毁、警长未选出、或本局无警长环节时都是 null。
+   */
+  sheriffId: string | null;
+}
+
+/**
+ * 由建局快照与玩家名单初始化对局状态。
+ *
+ * 座位号与角色取自快照，玩家 id 按 seats 的下标与名单对齐——名单是入口层的事，
+ * 快照只记座位号。
+ */
+export function createGameState(setup: GameSetup, playerIds: readonly string[]): GameState {
+  if (playerIds.length !== setup.seats.length) {
+    throw new Error(
+      `玩家名单与座位数不符：名单 ${playerIds.length} 人，座位 ${setup.seats.length} 个`,
+    );
+  }
+
+  return {
+    gameId: setup.gameId,
+    phaseInstanceId: phaseInstanceId(0, 'init'),
+    day: 1,
+    phase: PHASES.NIGHT,
+    hasSheriff: setup.hasSheriff,
+    sheriffId: null,
+    players: setup.seats.map((seat, index) => ({
+      id: playerIds[index],
+      seatNo: seat.seatNo,
+      role: seat.role,
+      faction: factionOf(seat.role),
+      isAlive: true,
+      deathDay: null,
+      deathCause: null,
+      hasAntidoteUsed: false,
+      hasPoisonUsed: false,
+    })),
+  };
 }
