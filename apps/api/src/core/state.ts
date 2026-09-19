@@ -43,8 +43,14 @@ export interface GameState {
   players: PlayerState[];
   /** 本局有没有警长环节，建局时定下；为 false 时整段跳过竞选。 */
   hasSheriff: boolean;
-  /** 当前警长；警徽被撕、还没选出来、本局没这环节，都是 null。 */
+  /** 当前警长；警徽被撕、还没选出来、本局没这环节，都是 null。对局已结束时可能指向出局的人。 */
   sheriffId: string | null;
+  /**
+   * 挂起中的警长竞选：非空时存的是上过警的玩家（第一天报名的那批），
+   * 第二天跳过报名与警上发言、直接进退水表态。首轮被狼自爆打断时记上，
+   * 续轮再爆就吞掉警徽并清回 null。null 表示竞选没挂起，与「选完了」不分家。
+   */
+  sheriffElectionSuspended: readonly string[] | null;
 }
 
 /** 由建局快照与玩家名单初始化对局状态，玩家 id 按 seats 下标对齐。 */
@@ -62,6 +68,7 @@ export function createGameState(setup: GameSetup, playerIds: readonly string[]):
     phase: PHASES.NIGHT,
     hasSheriff: setup.hasSheriff,
     sheriffId: null,
+    sheriffElectionSuspended: null,
     players: setup.seats.map((seat, index) => ({
       id: playerIds[index],
       seatNo: seat.seatNo,

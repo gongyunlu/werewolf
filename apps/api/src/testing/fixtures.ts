@@ -65,6 +65,10 @@ export function stubActions(overrides: Partial<ActionProvider> = {}): ActionProv
     guardProtect: async () => notConfigured('guardProtect'),
     seerCheck: async () => notConfigured('seerCheck'),
     witchDecision: async () => notConfigured('witchDecision'),
+    hunterShot: async () => notConfigured('hunterShot'),
+    wolfKingShot: async () => notConfigured('wolfKingShot'),
+    wolfBlast: async () => notConfigured('wolfBlast'),
+    whiteWolfTake: async () => notConfigured('whiteWolfTake'),
     ...overrides,
   };
 }

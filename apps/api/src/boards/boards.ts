@@ -17,9 +17,7 @@ export function handOf(board: BoardConfig): DealableRole[] {
   return DEALABLE_ROLES.flatMap((role) => Array<DealableRole>(board.roles[role] ?? 0).fill(role));
 }
 
-/**
- * 全部板子。猎人、狼王、白狼王的技能还没做，技能落地前别把带它们的板子开放给玩家。
- */
+/** 全部板子。 */
 export const ALL_BOARDS: Record<BoardId, BoardConfig> = {
   '12p_wolf_king': {
     name: '标准 12 人局 · 预女猎守狼王',

@@ -5,6 +5,9 @@ export const DEATH_CAUSES = {
   DOUBLE_SAVE: 'double_save', // 同守同救：守卫与解药同时命中，两种保护互相抵消
   EXECUTION: 'execution', // 白天投票放逐
   SELF_DESTRUCT: 'self_destruct', // 狼人自爆
+  HUNTER_SHOT: 'hunter_shot', // 猎人开枪
+  WOLF_KING_SHOT: 'wolf_king_shot', // 狼王出局带人
+  WHITE_WOLF_TAKE: 'white_wolf_take', // 白狼王自爆带走
 } as const;
 
 export type DeathCause = (typeof DEATH_CAUSES)[keyof typeof DEATH_CAUSES];

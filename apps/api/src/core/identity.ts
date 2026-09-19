@@ -25,6 +25,16 @@ export function phaseInstanceId(ordinal: number, nodeName: string): PhaseInstanc
   return `node/${ordinal}/${nodeName}` as PhaseInstanceId;
 }
 
+/** 由当前实例推进到下一个：序号加一，换成新节点名。序号全局自增，不按天重置。 */
+export function nextPhaseInstanceId(current: PhaseInstanceId, nodeName: string): PhaseInstanceId {
+  return phaseInstanceId(ordinalOf(current) + 1, nodeName);
+}
+
+/** 取已有身份里的序号。身份只造自 phaseInstanceId()，格式必合。 */
+function ordinalOf(id: PhaseInstanceId): number {
+  return Number(id.slice('node/'.length, id.lastIndexOf('/')));
+}
+
 /** 校验外来字符串（检查点、数据库），不合法返回 null。自己造的直接调 phaseInstanceId()。 */
 export function parsePhaseInstanceId(value: string): PhaseInstanceId | null {
   const matched = PHASE_INSTANCE_ID_PATTERN.exec(value);

@@ -12,6 +12,10 @@ function answersOf(overrides: Partial<ScriptedAnswers> = {}): ScriptedAnswers {
     guard: {},
     check: {},
     witch: {},
+    hunterShot: {},
+    wolfKingShot: {},
+    wolfBlast: {},
+    whiteWolfTake: {},
     ...overrides,
   };
 }
@@ -84,6 +88,24 @@ describe('脚本行动提供者', () => {
     });
   });
 
+  it('出局技能与自爆按玩家 id 作答', async () => {
+    const actions = scriptedActions(
+      answersOf({
+        hunterShot: { p1: 'p2', p3: null },
+        wolfKingShot: { p4: 'p2' },
+        wolfBlast: { p5: true, p6: false },
+        whiteWolfTake: { p7: 'p2' },
+      }),
+    );
+
+    expect(await actions.hunterShot('p1', ['p2'])).toBe('p2');
+    expect(await actions.hunterShot('p3', ['p2'])).toBeNull();
+    expect(await actions.wolfKingShot('p4', ['p2'])).toBe('p2');
+    expect(await actions.wolfBlast('p5', false)).toBe(true);
+    expect(await actions.wolfBlast('p6', false)).toBe(false);
+    expect(await actions.whiteWolfTake('p7', ['p2'])).toBe('p2');
+  });
+
   it('没配过的行动一律抛错，不拿默认值顶上', async () => {
     // 没配和配了 false / 弃票 / 空刀得分得开：前者是用例漏写剧本，后者才是玩家的真实决定。
     const actions = scriptedActions(answersOf());
@@ -104,6 +126,10 @@ describe('脚本行动提供者', () => {
     await expect(actions.witchDecision('p1', null, [])).rejects.toThrow(
       '脚本缺少回答：p1 的用药决定',
     );
+    await expect(actions.hunterShot('p1', [])).rejects.toThrow('脚本缺少回答：p1 的开枪目标');
+    await expect(actions.wolfKingShot('p1', [])).rejects.toThrow('脚本缺少回答：p1 的带人目标');
+    await expect(actions.wolfBlast('p1', false)).rejects.toThrow('脚本缺少回答：p1 是否自爆');
+    await expect(actions.whiteWolfTake('p1', [])).rejects.toThrow('脚本缺少回答：p1 的带人目标');
   });
 
   it('配了轮次但漏了人，也只缺那一个人', async () => {

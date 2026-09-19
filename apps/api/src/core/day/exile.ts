@@ -3,7 +3,7 @@ import type { ActionProvider } from '../actions';
 import { pkSpeechOrder } from '../speech-order';
 import type { GameState } from '../state';
 import { collectVotes, tallyVotes, type VoteRound } from '../vote';
-import { handOverBadge } from './badge';
+import { announceDay } from './announce';
 import { speakInOrder, type Speech } from './speech';
 
 /** 放逐结果。exiledId 为 null 表示本轮无人出局。 */
@@ -37,7 +37,7 @@ export async function runExile(
   );
   const outcome = tallyVotes(round, ballot);
 
-  if (outcome.kind === 'elected') return execute(state, actions, outcome.winnerId, speeches);
+  if (outcome.kind === 'elected') return execute(state, outcome.winnerId, speeches);
   if (outcome.kind === 'none') return { state, exiledId: null, speeches };
 
   const tied = alive.filter((player) => outcome.tiedIds.includes(player.id));
@@ -59,28 +59,17 @@ export async function runExile(
   // 再平票或又全员弃票：本轮无人出局。
   if (pkOutcome.kind !== 'elected') return { state, exiledId: null, speeches };
 
-  return execute(state, actions, pkOutcome.winnerId, speeches);
+  return execute(state, pkOutcome.winnerId, speeches);
 }
 
-/** 把放逐落到状态上，警长被放逐时接着处理警徽。 */
-async function execute(
-  state: GameState,
-  actions: ActionProvider,
-  exiledId: string,
-  speeches: Speech[],
-): Promise<ExileResult> {
-  const exiled: GameState = {
-    ...state,
-    players: state.players.map((player) =>
-      player.id === exiledId
-        ? { ...player, isAlive: false, deathDay: state.day, deathCause: DEATH_CAUSES.EXECUTION }
-        : player,
-    ),
-  };
+/**
+ * 把放逐落到状态上。警徽不在这儿动：被放逐者的死后技能排在前面，
+ * 他带走的、开枪打死的那批人得先进候选名单，见 loop.settleExile。
+ */
+function execute(state: GameState, exiledId: string, speeches: Speech[]): ExileResult {
+  const exiled: GameState = announceDay(state, [
+    { playerId: exiledId, cause: DEATH_CAUSES.EXECUTION },
+  ]).state;
 
-  return {
-    state: exiled.sheriffId === exiledId ? await handOverBadge(exiled, actions, exiledId) : exiled,
-    exiledId,
-    speeches,
-  };
+  return { state: exiled, exiledId, speeches };
 }

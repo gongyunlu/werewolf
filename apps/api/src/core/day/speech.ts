@@ -12,12 +12,16 @@ export interface Speech {
 /**
  * 按给定座位号顺序依次请人发言，顺序由调用方算好，这里只走完，不排序不跳过不补人。
  * 必须逐个 await：前一人的发言是后一人的输入，不能并发去问。
+ *
+ * afterEachSpeech 在每段发言之后调一次，返回 true 就到此为止，后面的人不再发言。
+ * 白天拿它开自爆窗口：规则允许狼在非投票阶段任意时刻爆，听完某人再爆就是这一档。
  */
 export async function speakInOrder(
   turn: SpeechTurn,
   seatNos: readonly number[],
   players: readonly PlayerState[],
   actions: ActionProvider,
+  afterEachSpeech?: () => Promise<boolean>,
 ): Promise<Speech[]> {
   const playerBySeatNo = new Map(players.map((player) => [player.seatNo, player]));
 
@@ -31,6 +35,7 @@ export async function speakInOrder(
       seatNo,
       content: await actions.speak(turn, player.id),
     });
+    if (await afterEachSpeech?.()) break;
   }
 
   return speeches;

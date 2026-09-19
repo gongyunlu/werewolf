@@ -59,6 +59,21 @@ export interface ActionProvider {
     killTargetId: string | null,
     poisonCandidates: readonly string[],
   ): Promise<WitchDecision>;
+
+  /** 猎人开枪；candidates 是全体存活玩家。返回 null 为不开枪。 */
+  hunterShot(hunterId: string, candidates: readonly string[]): Promise<string | null>;
+  /** 狼王出局带人；candidates 是全体存活玩家。返回 null 为不带人。 */
+  wolfKingShot(wolfKingId: string, candidates: readonly string[]): Promise<string | null>;
+  /**
+   * 白天自爆窗口里问一只狼要不要爆；返回 true 即自爆出局。
+   * resuming 为 true 表示这是警长竞选的续轮（第一天已经爆过一次，警徽还挂着）。
+   */
+  wolfBlast(wolfId: string, resuming: boolean): Promise<boolean>;
+  /**
+   * 白狼王自爆带人；candidates 是存活玩家去掉他自己，返回 null 为不带人。
+   * 他已是最后一狼时不该被问到，那样的一问没有答案可言。
+   */
+  whiteWolfTake(whiteWolfId: string, candidates: readonly string[]): Promise<string | null>;
 }
 
 /** 脚本答案表：键是轮次、玩家 id 或天数，值与端口方法一一对应。 */
@@ -83,6 +98,14 @@ export interface ScriptedAnswers {
   check: Readonly<Record<string, string>>;
   /** 女巫决定，按女巫 id。 */
   witch: Readonly<Record<string, WitchDecision>>;
+  /** 猎人开枪，按猎人 id；null 为不开枪。 */
+  hunterShot: Readonly<Record<string, string | null>>;
+  /** 狼王带人，按狼王 id；null 为不带人。 */
+  wolfKingShot: Readonly<Record<string, string | null>>;
+  /** 狼人自爆，按狼人 id。 */
+  wolfBlast: Readonly<Record<string, boolean>>;
+  /** 白狼王自爆带人，按白狼王 id；null 为不带人。 */
+  whiteWolfTake: Readonly<Record<string, string | null>>;
 }
 
 /**
@@ -135,6 +158,18 @@ export function scriptedActions(answers: ScriptedAnswers): ActionProvider {
     },
     async witchDecision(witchId) {
       return pickAnswer(answers.witch, witchId, `${witchId} 的用药决定`);
+    },
+    async hunterShot(hunterId) {
+      return pickAnswer(answers.hunterShot, hunterId, `${hunterId} 的开枪目标`);
+    },
+    async wolfKingShot(wolfKingId) {
+      return pickAnswer(answers.wolfKingShot, wolfKingId, `${wolfKingId} 的带人目标`);
+    },
+    async wolfBlast(wolfId) {
+      return pickAnswer(answers.wolfBlast, wolfId, `${wolfId} 是否自爆`);
+    },
+    async whiteWolfTake(whiteWolfId) {
+      return pickAnswer(answers.whiteWolfTake, whiteWolfId, `${whiteWolfId} 的带人目标`);
     },
   };
 }

@@ -1,5 +1,11 @@
 import { ACTION_TYPES } from '@werewolf/shared';
-import { actionKey, parsePhaseInstanceId, phaseInstanceId, type ActionScope } from './identity';
+import {
+  actionKey,
+  nextPhaseInstanceId,
+  parsePhaseInstanceId,
+  phaseInstanceId,
+  type ActionScope,
+} from './identity';
 
 /** 构造器保证产出合法身份，测试里用它造前置条件。 */
 function scopeOf(ordinal: number, nodeName: string, gameId = 'g1'): ActionScope {
@@ -22,6 +28,27 @@ describe('节点实例身份', () => {
     for (const nodeName of ['', '1vote', 'vote-phase', 'node/1/vote', '投票']) {
       expect(() => phaseInstanceId(1, nodeName)).toThrow('节点名不合法');
     }
+  });
+
+  describe('往下推进', () => {
+    it('序号加一，换成新的节点名', () => {
+      expect(nextPhaseInstanceId(phaseInstanceId(0, 'init'), 'night')).toBe('node/1/night');
+    });
+
+    it('序号跨天不重置，一路往上涨', () => {
+      // 节点名每天都会重复，序号要是按天重置，node/1/night 就会一天出现一次。
+      let id = phaseInstanceId(0, 'init');
+      for (let step = 1; step <= 5; step += 1) {
+        id = nextPhaseInstanceId(id, 'night');
+        expect(id).toBe(phaseInstanceId(step, 'night'));
+      }
+    });
+
+    it('推进到底还是能校验的身份', () => {
+      const next = nextPhaseInstanceId(phaseInstanceId(37, 'night_resolve'), 'day');
+
+      expect(parsePhaseInstanceId(next)).toBe(next);
+    });
   });
 
   describe('校验外来字符串', () => {

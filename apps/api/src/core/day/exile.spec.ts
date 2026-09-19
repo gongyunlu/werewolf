@@ -139,36 +139,15 @@ describe('放逐', () => {
     expect(result.exiledId).toBe('p3');
   });
 
-  it('警长被放逐时把警徽移交出去', async () => {
+  it('警长被放逐也不动警徽：移交排在死后技能之后，见 loop.settleExile', async () => {
+    // 没有配 decideBadge，一旦问到就会失败。
     const actions = stubActions({
       vote: ballotOf({ p1: 'p6', p2: 'p1', p3: 'p1', p4: 'p1', p5: 'p1', p6: 'p2' }),
-      decideBadge: async () => ({ kind: 'transfer', toId: 'p2' }),
     });
     const result = await runExile(stateWithSheriff(6, 'p1'), actions, SPEECH_ORDER);
 
     expect(result.exiledId).toBe('p1');
-    expect(result.state.sheriffId).toBe('p2');
-  });
-
-  it('警长被放逐时也可以撕掉警徽', async () => {
-    const actions = stubActions({
-      vote: ballotOf({ p1: 'p6', p2: 'p1', p3: 'p1', p4: 'p1', p5: 'p1', p6: 'p2' }),
-      decideBadge: async () => ({ kind: 'tear' }),
-    });
-    const result = await runExile(stateWithSheriff(6, 'p1'), actions, SPEECH_ORDER);
-
-    expect(result.state.sheriffId).toBeNull();
-  });
-
-  it('警徽不能移交给已经出局的人', async () => {
-    const actions = stubActions({
-      vote: ballotOf({ p1: 'p6', p2: 'p1', p3: 'p1', p4: 'p1', p5: 'p1', p6: 'p2' }),
-      decideBadge: async () => ({ kind: 'transfer', toId: 'p1' }),
-    });
-
-    await expect(runExile(stateWithSheriff(6, 'p1'), actions, SPEECH_ORDER)).rejects.toThrow(
-      '警徽只能移交给存活玩家',
-    );
+    expect(result.state.sheriffId).toBe('p1');
   });
 
   it('出局的不是警长就不动警徽', async () => {

@@ -1,25 +1,36 @@
+import { DEATH_CAUSES } from '@werewolf/shared';
 import { makeState, stubActions } from '../../testing/fixtures';
-import { settleBadgeAfterDeaths } from './badge';
+import { announceDay } from './announce';
+import { handOverBadge, settleBadgeAfterDeaths } from './badge';
 
-describe('死讯落下后的警徽', () => {
-  it('警长还活着就不动警徽', async () => {
-    // 没配 decideBadge，一旦问到就会失败。
+describe('警徽处理', () => {
+  it('移交给一名存活玩家', async () => {
     const state = { ...makeState(6), sheriffId: 'p1' };
-    const result = await settleBadgeAfterDeaths(state, stubActions());
+    const actions = stubActions({ decideBadge: async () => ({ kind: 'transfer', toId: 'p4' }) });
 
-    expect(result).toBe(state);
+    expect((await handOverBadge(state, actions, 'p1')).sheriffId).toBe('p4');
   });
 
-  it('没有警长时不提问', async () => {
-    const state = makeState(6);
-    const result = await settleBadgeAfterDeaths(state, stubActions());
+  it('也可以撕掉', async () => {
+    const state = { ...makeState(6), sheriffId: 'p1' };
+    const actions = stubActions({ decideBadge: async () => ({ kind: 'tear' }) });
 
-    expect(result).toBe(state);
+    expect((await handOverBadge(state, actions, 'p1')).sheriffId).toBeNull();
   });
 
-  it('警长不在局内就抛错', async () => {
-    const state = { ...makeState(6), sheriffId: 'p9' };
+  it('移交给已经出局的人会抛错', async () => {
+    const state = announceDay({ ...makeState(6), sheriffId: 'p1' }, [
+      { playerId: 'p2', cause: DEATH_CAUSES.NIGHT_KILL },
+    ]).state;
+    const actions = stubActions({ decideBadge: async () => ({ kind: 'transfer', toId: 'p2' }) });
 
-    await expect(settleBadgeAfterDeaths(state, stubActions())).rejects.toThrow('警长不在局内');
+    await expect(handOverBadge(state, actions, 'p1')).rejects.toThrow('警徽只能移交给存活玩家');
+  });
+
+  it('警长还活着时是空操作', async () => {
+    // 没有配 decideBadge：空操作不该问任何人。这条让「多个入口重复调用」是安全的。
+    const state = { ...makeState(6), sheriffId: 'p1' };
+
+    expect(await settleBadgeAfterDeaths(state, stubActions())).toBe(state);
   });
 });
