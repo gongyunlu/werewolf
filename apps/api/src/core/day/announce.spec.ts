@@ -29,7 +29,7 @@ describe('天亮公布死讯', () => {
     ]);
 
     expect(Object.keys(result.deaths[0]).toSorted()).toEqual(['playerId', 'seatNo']);
-    // 死因没丢，只是去了它该在的地方：法官不公布死因，它只留在状态上。
+    // 死因没丢，只是留在状态上：法官不公布死因。
     expect(result.state.players.find((player) => player.id === 'p1')?.deathCause).toBe(
       DEATH_CAUSES.WITCH_POISON,
     );

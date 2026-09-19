@@ -1,7 +1,7 @@
 import type { ActionProvider, SpeechTurn } from '../actions';
 import type { PlayerState } from '../state';
 
-/** 一段发言。数组按实际发生的顺序排列，顺序本身就是结果的一部分。 */
+/** 一段发言。数组按实际发生顺序排，顺序也是结果的一部分。 */
 export interface Speech {
   turn: SpeechTurn;
   playerId: string;
@@ -10,11 +10,8 @@ export interface Speech {
 }
 
 /**
- * 按给定座位号顺序依次请人发言，返回的数组就是实际发言顺序。
- *
- * 顺序由调用方算好（警上按单顺双逆、白天按警长指定、PK 按相反顺序），这里只负责
- * 走完它——不排序、不跳过、不补人。逐个 await 是发言本身的要求：前一人的发言是
- * 后一人的输入，不能并发去问。
+ * 按给定座位号顺序依次请人发言，顺序由调用方算好，这里只走完，不排序不跳过不补人。
+ * 必须逐个 await：前一人的发言是后一人的输入，不能并发去问。
  */
 export async function speakInOrder(
   turn: SpeechTurn,

@@ -1,9 +1,6 @@
 import { z } from 'zod';
 
-/**
- * 应用级环境变量契约。
- * 新增变量时必须同时更新 .env.example，避免出现只在代码里存在的隐式配置。
- */
+/** 应用级环境变量契约。加变量时同步更新 .env.example，别留只在代码里存在的隐式配置。 */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   // 后端服务监听端口

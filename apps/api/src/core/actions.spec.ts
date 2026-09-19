@@ -8,6 +8,10 @@ function answersOf(overrides: Partial<ScriptedAnswers> = {}): ScriptedAnswers {
     ballot: {},
     speechSide: {},
     badge: {},
+    kill: {},
+    guard: {},
+    check: {},
+    witch: {},
     ...overrides,
   };
 }
@@ -59,9 +63,29 @@ describe('脚本行动提供者', () => {
     expect(await actions.decideBadge('p3', ['p2'])).toEqual({ kind: 'tear' });
   });
 
+  it('夜里的四步行动各按玩家 id 作答', async () => {
+    const actions = scriptedActions(
+      answersOf({
+        kill: { p1: 'p5', p2: null },
+        guard: { p3: 'p4', p4: null },
+        check: { p5: 'p1' },
+        witch: { p6: { kind: 'poison', targetId: 'p1' } },
+      }),
+    );
+
+    expect(await actions.wolfProposal('p1', ['p1', 'p5'])).toBe('p5');
+    expect(await actions.wolfProposal('p2', ['p1', 'p5'])).toBeNull();
+    expect(await actions.guardProtect('p3', ['p4'])).toBe('p4');
+    expect(await actions.guardProtect('p4', ['p4'])).toBeNull();
+    expect(await actions.seerCheck('p5', ['p1'])).toBe('p1');
+    expect(await actions.witchDecision('p6', 'p5', ['p1'])).toEqual({
+      kind: 'poison',
+      targetId: 'p1',
+    });
+  });
+
   it('没配过的行动一律抛错，不拿默认值顶上', async () => {
-    // 「没配」和「配了 false」「配了弃票」必须分得开：前者是用例漏写剧本，
-    // 后者才是这名玩家的真实决定。
+    // 没配和配了 false / 弃票 / 空刀得分得开：前者是用例漏写剧本，后者才是玩家的真实决定。
     const actions = scriptedActions(answersOf());
 
     await expect(actions.runForSheriff('p1')).rejects.toThrow('脚本缺少回答：p1 是否上警');
@@ -74,6 +98,12 @@ describe('脚本行动提供者', () => {
     );
     await expect(actions.chooseSpeechSide('p1', 1)).rejects.toThrow('脚本缺少回答');
     await expect(actions.decideBadge('p1', [])).rejects.toThrow('脚本缺少回答');
+    await expect(actions.wolfProposal('p1', [])).rejects.toThrow('脚本缺少回答：p1 的刀口');
+    await expect(actions.guardProtect('p1', [])).rejects.toThrow('脚本缺少回答：p1 的守护目标');
+    await expect(actions.seerCheck('p1', [])).rejects.toThrow('脚本缺少回答：p1 的查验目标');
+    await expect(actions.witchDecision('p1', null, [])).rejects.toThrow(
+      '脚本缺少回答：p1 的用药决定',
+    );
   });
 
   it('配了轮次但漏了人，也只缺那一个人', async () => {

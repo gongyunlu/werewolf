@@ -5,27 +5,20 @@ export const BOARD_IDS = ['12p_wolf_king', '12p_white_wolf'] as const;
 
 export type BoardId = (typeof BOARD_IDS)[number];
 
-/** 板子配置 */
 export interface BoardConfig {
   name: string;
-  /**
-   * 角色 → 张数
-   */
+  /** 角色 → 张数 */
   roles: Partial<Record<DealableRole, number>>;
   hasSheriff: boolean; // 是否有警长
 }
 
-/**
- * 把「角色 → 张数」展开成逐张的牌，顺序由 DEALABLE_ROLES 决定，
- * 不依赖配置里键的书写顺序。
- */
+/** 把角色张数展开成逐张的牌，顺序按 DEALABLE_ROLES 定，跟配置里键的书写顺序无关。 */
 export function handOf(board: BoardConfig): DealableRole[] {
   return DEALABLE_ROLES.flatMap((role) => Array<DealableRole>(board.roles[role] ?? 0).fill(role));
 }
 
 /**
- * 全部板子。守卫、狼王、白狼王的技能还没做，拿到它们的人这一局只是普通人，
- * 技能落地前不要把带它们的板子开放给玩家。
+ * 全部板子。猎人、狼王、白狼王的技能还没做，技能落地前别把带它们的板子开放给玩家。
  */
 export const ALL_BOARDS: Record<BoardId, BoardConfig> = {
   '12p_wolf_king': {

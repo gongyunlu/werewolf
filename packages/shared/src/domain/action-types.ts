@@ -1,13 +1,7 @@
 /**
- * 事件（行动）类型取值域：对局里发生过的一件事实属于哪一类。
- *
- * 一个类型的取值同时表达「谁做了什么事」和「这事对谁可见」——可见范围由事件的
- * visibility 字段单独标注，取值见 visibility-types.ts。
- * 例如狼队夜间商议与白天的公开发言是同一个类型 speech，区别只在 visibility。
- *
- * 只登记当前规则真的会产生的事件。添加角色时再追加它自己的技能类型。
- *
- * 约束：只可追加，不可重命名或删除已用取值（历史记录仍持有旧字符串）。
+ * 事件（行动）类型取值域。取值只说谁做了什么事，对谁可见由事件的 visibility 另标
+ * （见 visibility-types.ts）：狼队商议和白天发言都是 speech，区别只在 visibility。
+ * 只可追加，删改取值等于让历史记录失去含义。
  */
 export const ACTION_TYPES = {
   // —— 生命周期 ——
@@ -17,7 +11,7 @@ export const ACTION_TYPES = {
 
   // —— 通用行动 ——
   JUDGE_ANNOUNCE: 'judge_announce', // 法官公开播报
-  SPEECH: 'speech', // 发言（狼队商议为 visibility 为 wolf 的同类事件）
+  SPEECH: 'speech', // 发言
   SPEECH_ORDER_DETERMINED: 'speech_order_determined', // 发言顺序确定
   VOTE: 'vote', // 投票
   PLAYER_EXECUTED: 'player_executed', // 投票放逐结算

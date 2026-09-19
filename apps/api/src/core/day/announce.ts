@@ -1,24 +1,22 @@
 import type { DeathCause } from '@werewolf/shared';
 import type { GameState } from '../state';
 
-/** 今晨要公布的一名死者：谁、怎么死的。死因由夜间结算给出。 */
+/** 今晨要公布的一名死者。死因由夜间结算给出。 */
 export interface NightDeath {
   playerId: string;
   cause: DeathCause;
 }
 
 /**
- * 公布出去的死讯：谁出局了、坐几号。
- *
- * 不带死因——法官不公布死因，死因是上帝视角字段，唯一去处是 PlayerState.deathCause。
- * 口径见 visibility.ts。
+ * 公布出去的死讯：谁出局、坐几号。
+ * 不带死因，死因只留在 PlayerState.deathCause，口径见 visibility.ts。
  */
 export interface DeathAnnouncement {
   playerId: string;
   seatNo: number;
 }
 
-/** 天亮时的公布结果。deaths 为空数组就是平安夜，不必另设标志位。 */
+/** 天亮时的公布结果。deaths 为空就是平安夜。 */
 export interface AnnounceResult {
   /** 把死亡落到玩家身上之后的状态。 */
   state: GameState;
@@ -28,10 +26,7 @@ export interface AnnounceResult {
 
 /**
  * 天亮公布死讯：把今晨的死者落到状态上，并给出对外公布的内容。
- *
- * 只认「谁死了、怎么死的」，不算夜间刀法——夜里发生了什么由夜间流程决定，
- * 这里负责的是让白天看到的结果与状态一致。白天不再有人加入死者名单，
- * 所以死亡天数就是当前天数。
+ * 白天不会再有人死，所以死亡天数就是当前天数。
  */
 export function announceDay(state: GameState, deaths: readonly NightDeath[]): AnnounceResult {
   const playerById = new Map(state.players.map((player) => [player.id, player]));

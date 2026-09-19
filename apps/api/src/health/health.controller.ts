@@ -5,7 +5,7 @@ import { HealthResponseSchema, type HealthResponse } from '@werewolf/shared';
 export class HealthController {
   @Get()
   check(): HealthResponse {
-    // 走一遍共享契约，避免实现悄悄偏离约定
+    // 走一遍共享契约，别让实现悄悄偏离约定
     return HealthResponseSchema.parse({ status: 'ok' });
   }
 }

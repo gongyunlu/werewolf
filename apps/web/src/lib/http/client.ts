@@ -10,9 +10,9 @@ import { PendingRequests } from './pending';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
-    /** 本次请求是否在出现同类在途请求时取消它；缺省沿用实例配置 */
+    /** 出现同类在途请求时是否取消本次；缺省沿用实例配置 */
     abortRepetitiveRequest?: boolean;
-    /** 内部使用：记录重试次数与本次请求的清理函数 */
+    /** 内部使用：记重试次数与本次请求的清理函数 */
     retryAttempt?: number;
     releasePending?: () => void;
   }
@@ -30,12 +30,12 @@ export interface HttpClientOptions extends AxiosRequestConfig {
   retry?: RetryOptions;
 }
 
-/** 单次请求配置：在 axios 配置之上增加可选的响应契约校验 */
+/** 单次请求配置：axios 配置 + 可选的响应契约校验 */
 export interface RequestConfig<T> extends AxiosRequestConfig {
   schema?: ZodType<T>;
 }
 
-/** 只有幂等请求可以自动重试；POST/PUT/PATCH/DELETE 一律不重试 */
+/** 只有幂等请求自动重试；POST/PUT/PATCH/DELETE 一律不重试 */
 const IDEMPOTENT_METHODS = new Set(['get', 'head', 'options']);
 
 function isRetryable(error: AxiosError): boolean {
@@ -45,7 +45,7 @@ function isRetryable(error: AxiosError): boolean {
     return false;
   }
 
-  // 主动取消（被同键请求顶掉、abortAll）不是故障：重试只会让旧请求反过来把后发的请求取消掉
+  // 主动取消（被同键请求顶掉、abortAll）不是故障：重试会让旧请求反过来取消后发的请求
   if (axios.isCancel(error)) {
     return false;
   }
@@ -93,7 +93,7 @@ export class HttpClient {
     return this.request<T>({ ...config, url, method: 'DELETE' });
   }
 
-  /** 取消所有在途请求，用于整页卸载等场景 */
+  /** 取消所有在途请求 */
   abortAll(): void {
     this.pending.abortAll();
   }
@@ -109,8 +109,8 @@ export class HttpClient {
     this.instance.interceptors.request.use((config) => {
       const shouldAbort = config.abortRepetitiveRequest ?? this.abortRepetitiveRequest;
 
-      // 重试沿用同一个 config，此时它已经登记过。重新登记会把后发的同键请求取消掉，
-      // 也会让自己的 signal 被换成已中止的那个，所以重试必须复用原来的登记。
+      // 重试复用同一个 config，它已经登记过；
+      // 再登记会取消掉后发的同键请求，自己的 signal 也会被换成已中止的
       if (shouldAbort && !config.releasePending) {
         const { signal, release } = this.pending.register(
           config,

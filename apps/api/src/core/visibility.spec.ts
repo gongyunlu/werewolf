@@ -18,14 +18,16 @@ function player(role: DealableRole, overrides: Partial<PlayerState> = {}): Playe
     deathCause: null,
     hasAntidoteUsed: false,
     hasPoisonUsed: false,
+    guardedOn: null,
+    checkedIds: [],
     ...overrides,
   };
 }
 
 describe('狼队频道成员', () => {
   it('当前是狼人、白狼王与狼王', () => {
-    // 可见性按身份判断而非按阵营，见 roles.ts 的 inWolfChannel。
-    // 隐狼加进来时它不该出现在这里——狼阵营但不进狼队群。
+    // 可见性按身份判断而非阵营，见 roles.ts 的 inWolfChannel。
+    // 隐狼那种狼阵营但不进狼队群的，不该出现在这里。
     const members = DEALABLE_ROLES.filter((role: DealableRole) => inWolfChannel(role));
     expect(members).toEqual([ROLES.WEREWOLF, ROLES.WHITE_WOLF, ROLES.WOLF_KING]);
   });
@@ -76,9 +78,8 @@ describe('此刻能看见的可见性', () => {
 
 describe('出局', () => {
   it('出局后失去全部私密可见性，只剩公开事实', () => {
-    // 出局者只剩旁观权：此后公开发言、投票结果、最终胜负他仍看得到，
-    // 私密事实（狼队商议、刀口、查验、用药）不给。死前看到的事实由调用方用
-    // 「当时还活着」的 Observer 判定，不受影响（见下一组用例）。
+    // 出局者只剩旁观权：公开发言、投票结果、胜负还看得到，私密事实不给。
+    // 死前看到的事实由调用方按当时还活着的 Observer 判定，不受影响。
     for (const role of [ROLES.WEREWOLF, ROLES.SEER, ROLES.WITCH, ROLES.VILLAGER] as const) {
       expect(visibleVisibilities(observer(role, { isAlive: false }))).toEqual([
         VISIBILITY_TYPES.PUBLIC,
@@ -94,10 +95,7 @@ describe('出局', () => {
   });
 });
 
-/**
- * 口径的完整表述：一条事实对某名玩家可见，当且仅当该玩家在事实发生的那一刻
- * 持有对应的可见性。用逐条推进的观察者状态模拟一次历史投影。
- */
+/** 一条事实对谁可见，看他那一刻有没有对应的可见性。这里用逐条推进的观察者模拟一次历史投影。 */
 function project(facts: Array<{ visibility: VisibilityType }>, observers: Observer[]) {
   return facts.filter((fact, index) =>
     visibleVisibilities(observers[index]).includes(fact.visibility),
@@ -116,9 +114,9 @@ describe('按事实发生当时的状态判定', () => {
   });
 
   it('女巫被刀：致死事实算在死亡之前，她看得到刀口指向自己', () => {
-    // 这是「致死事实算在死亡之前」少数能被断言区分的形态：刀口既是致死事实，
-    // 又是女巫自己看得到的事实。若把死亡时刻切在它之前，她连「刀口是我」都看不到，
-    // 也就无从决定要不要用解药自救。把 observers[0] 换成已出局，这条会失败。
+    // 刀口既是致死事实又是女巫自己看得到的，能验出致死事实算在死亡之前。
+    // 若切在死亡之后，她连刀口指向自己都不知道，也没法决定用不用解药。
+    // observers[0] 换成已出局，这条会失败。
     const facts = [
       { visibility: VISIBILITY_TYPES.WOLF_KILL }, // 当晚刀口指向女巫自己
       { visibility: VISIBILITY_TYPES.PUBLIC }, // 次日公布死讯
@@ -134,15 +132,15 @@ describe('按事实发生当时的状态判定', () => {
   });
 
   it('白天放逐：出局者的记录里有自己怎么出局的', () => {
-    // 「死者知道自己怎么出局的」只在这一种情形下成立——放逐结果是公开发布。
-    // 下面那条夜间死亡的用例说明它不能当成通则。
+    // 死者知道自己怎么出局，只在放逐这种情形下成立，因为放逐结果是公开发布的；
+    // 下面那条夜间死亡的用例说明它不能当通则。
     const facts = [
       { visibility: VISIBILITY_TYPES.WOLF }, // 放逐前的狼队商议
       { visibility: VISIBILITY_TYPES.PUBLIC }, // 放逐结果：致死事实本身
       { visibility: VISIBILITY_TYPES.WOLF }, // 出局之后的狼队商议
     ];
-    // 正是靠逐条推进 Observer，前两条落在「出局前」、后一条落在「出局后」：
-    // 复盘按这个分界切两段即可，不需要另写分段规则。
+    // 靠逐条推进 Observer，前两条落在出局前、后一条落在出局后：
+    // 复盘照这个分界切两段就行，不用另写分段规则。
     const observers = [
       observer(ROLES.WEREWOLF),
       observer(ROLES.WEREWOLF),
@@ -154,7 +152,7 @@ describe('按事实发生当时的状态判定', () => {
 
   it('夜间死亡：死者知道自己出局，但不知道自己怎么死的', () => {
     // 一只狼人夜里被女巫毒死。当晚的狼队商议与刀口发生在死亡之前，保留；
-    // 而「他是被毒死的」只有女巫看得到，法官也不公布死因。
+    // 他被毒死这件事只有女巫看得到，法官也不公布死因。
     const facts = [
       { visibility: VISIBILITY_TYPES.WOLF }, // 当晚狼队商议
       { visibility: VISIBILITY_TYPES.WOLF_KILL }, // 当晚刀口
@@ -170,7 +168,7 @@ describe('按事实发生当时的状态判定', () => {
       observer(ROLES.WEREWOLF, { isAlive: false }),
     ];
 
-    // 致死事实活着也看不到（它是女巫的私密事实），所以他只知道「我出局了」。
+    // 致死事实活着也看不到（那是女巫的私密事实），所以他只知道出局了，不知道死于什么。
     expect(project(facts, observers)).toEqual([facts[0], facts[1], facts[3]]);
   });
 });

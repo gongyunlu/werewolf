@@ -10,43 +10,29 @@ export interface PlayerState {
   seatNo: number;
   role: DealableRole;
   /**
-   * 当前阵营；发牌时取 factionOf(role)，被丘比特绑定后变为第三方。
-   *
-   * 只用于胜负判定。可见性不看阵营——隐狼属狼人阵营却与普通狼人互不可见，
-   * 情侣改换阵营却不退出狼队频道，判据见 roles.ts 的 inWolfChannel。
+   * 当前阵营，发牌时取 factionOf(role)，情侣绑定后改为第三方。
+   * 只影响胜负判定；可见性看 roles.ts 的 inWolfChannel，不看阵营。
    */
   faction: Faction;
   isAlive: boolean;
-  /**
-   * 死亡天数；存活为 null。
-   *
-   * 天粒度，不能拿它切「出局前 / 出局后」——同一天内可能有多条致死事实
-   * （白天自爆、平票 PK 后在当天末尾放逐）。分段要用事件全序里的序号。
-   */
+  /** 死亡天数；存活为 null。要切出局前后得看事件全序的序号，天粒度不够。 */
   deathDay: number | null;
-  /**
-   * 死因；存活为 null。
-   *
-   * 上帝视角字段，不是一条带 visibility 的事实：法官不公布死因，夜里怎么死的
-   * 死者自己也不知道。组装玩家上下文时不要照搬它，死者的「我出局了」只能由当时
-   * 的公开事实推出，口径见 visibility.ts。
-   */
+  /** 死因；存活为 null。法官不公布死因，死者自己也看不到它。 */
   deathCause: DeathCause | null;
-  /**
-   * 解药是否已用掉。一局一次，用掉之后女巫不再看到狼队刀口，
-   * 但已经看到过的刀口不会被追回——判断依据见 visibility.ts。
-   */
+  /** 解药是否已用掉，一局一次；用掉后不再看到新刀口，见 visibility.ts。 */
   hasAntidoteUsed: boolean;
   /** 毒药是否已用掉。 */
   hasPoisonUsed: boolean;
+  /** 守卫上一夜守的目标；空守或还没行动为 null。只记最近一次，不是历史。 */
+  guardedOn: string | null;
+  /**
+   * 预言家已查验过的玩家，查验不能重复。
+   * 只读数组：加元素得拼个新数组交给 patchPlayer，就地 push 会毁掉可见性判定要用的历史。
+   */
+  checkedIds: readonly string[];
 }
 
-/**
- * 对局状态：昼夜推进需要的最小状态。
- *
- * 只放「这局进行到哪了」和「玩家现在是什么样」，不放某个节点执行到一半的
- * 中间量（今晚的刀口、发言顺序等）——那些是节点的局部状态，归产生它们的规则。
- */
+/** 对局状态。节点执行到一半的中间量（刀口、发言顺序等）不放这儿，归产生它们的规则。 */
 export interface GameState {
   gameId: string;
   /** 当前阶段实例身份，见 identity.ts。 */
@@ -55,23 +41,13 @@ export interface GameState {
   day: number;
   phase: Phase;
   players: PlayerState[];
-  /** 本局有没有警长环节，建局时定下。为 false 时白天整段跳过竞选。 */
+  /** 本局有没有警长环节，建局时定下；为 false 时整段跳过竞选。 */
   hasSheriff: boolean;
-  /**
-   * 当前警长；无警长为 null。
-   *
-   * 用可空 id 而不是 PlayerState 上的布尔：警长一局至多一个，可空 id 让「两个玩家
-   * 同时是警长」结构上不可能。警徽被撕毁、警长未选出、或本局无警长环节时都是 null。
-   */
+  /** 当前警长；警徽被撕、还没选出来、本局没这环节，都是 null。 */
   sheriffId: string | null;
 }
 
-/**
- * 由建局快照与玩家名单初始化对局状态。
- *
- * 座位号与角色取自快照，玩家 id 按 seats 的下标与名单对齐——名单是入口层的事，
- * 快照只记座位号。
- */
+/** 由建局快照与玩家名单初始化对局状态，玩家 id 按 seats 下标对齐。 */
 export function createGameState(setup: GameSetup, playerIds: readonly string[]): GameState {
   if (playerIds.length !== setup.seats.length) {
     throw new Error(
@@ -96,6 +72,31 @@ export function createGameState(setup: GameSetup, playerIds: readonly string[]):
       deathCause: null,
       hasAntidoteUsed: false,
       hasPoisonUsed: false,
+      guardedOn: null,
+      checkedIds: [],
     })),
+  };
+}
+
+/** 场上还活着的人，按座位顺序。 */
+export function alivePlayers(state: GameState): PlayerState[] {
+  return state.players.filter((player) => player.isAlive);
+}
+
+/** 改一名玩家的几个字段，其余原样带过去。 */
+export function patchPlayer(
+  state: GameState,
+  playerId: string,
+  patch: Partial<PlayerState>,
+): GameState {
+  if (!state.players.some((player) => player.id === playerId)) {
+    throw new Error(`局内没有 ${playerId}`);
+  }
+
+  return {
+    ...state,
+    players: state.players.map((player) =>
+      player.id === playerId ? { ...player, ...patch } : player,
+    ),
   };
 }

@@ -1,9 +1,6 @@
 /**
- * 放逐、放逐平票 PK、警长竞选、竞选平票 PK 统一入口：
- * 放逐的候选是全部存活玩家，PK 与竞选的候选收窄到台上那几个人，
- * 只有警长竞选阶段尚未产生警长、weightedVoterId 为 null。
- *
- * 弃票不设开关：任何一轮投票，有投票权的人都可以选择不投。
+ * 放逐与警长竞选（含各自的平票 PK）共用的投票轮次，候选范围由调用方给。
+ * 竞选阶段还没有警长，weightedVoterId 为 null。弃票不设开关，有投票权的人任何一轮都能不投。
  */
 export interface VoteRound {
   /** 投票者 id。 */
@@ -20,33 +17,26 @@ export interface VoteCast {
   targetId: string | null;
 }
 
-/**
- * 计票结果
- */
+/** 计票结果。 */
 export type VoteOutcome =
-  /** 唯一最高票，有人当选。voteCount 是加权后的票数，可能是 x.5。 */
+  /** 唯一最高票，有人当选。voteCount 是加权后的票数。 */
   | { kind: 'elected'; winnerId: string; voteCount: number }
-  /** 并列最高票，未决：tiedIds 至少两人。放逐与竞选都据此再打一轮 PK。 */
+  /** 并列最高票，未决：tiedIds 至少两人，据此再打一轮 PK。 */
   | { kind: 'tie'; tiedIds: string[] }
-  /** 零有效票，全员弃票。没有任何人得票，所以不携带数据。 */
+  /** 零有效票，全员弃票。 */
   | { kind: 'none' };
 
 /**
- * 计票。
- *
- * 弃票不计入任何人的票数。警长的票按 1.5 计。
- *
- * 只有唯一最高票才算当选：并列最高票一律返回 tie，由调用方决定是再 PK 一轮
- * （放逐、竞选）还是就此作罢，平票本身不是一个可以自行消解的结局。
+ * 计票。弃票不计入任何人的票数，警长的票按 1.5 计。
+ * 只有唯一最高票才算当选，并列最高票一律返回 tie——平票自己消解不了，由调用方决定是否再 PK。
  */
 export function tallyVotes(round: VoteRound, casts: readonly VoteCast[]): VoteOutcome {
   if (casts.length !== round.voters.length) {
     throw new Error(`投票未收齐：应收 ${round.voters.length} 票，实收 ${casts.length} 票`);
   }
 
-  // 票数对得上不等于投票的是本人：同一人投两票会让票数凭空多出来，名单外的人投票
-  // 则是没资格的人参与了计票（PK 台上的平票者、已经出局的警长都属此类）。两者都按
-  // 「这批票不属于这一轮」处理，不能靠上面那条长度校验兜住。
+  // 票数对得上不代表投票的是本人：同一人投两票、名单外的人投票（PK 台上的平票者、
+  // 已经出局的警长都算）都按这批票不属于这一轮处理，长度校验兜不住这些。
   const voters = new Set(round.voters);
   const seen = new Set<string>();
   for (const cast of casts) {
@@ -65,8 +55,7 @@ export function tallyVotes(round: VoteRound, casts: readonly VoteCast[]): VoteOu
     counts.set(cast.targetId, (counts.get(cast.targetId) ?? 0) + weight);
   }
 
-  // 一张有效票都没有：全员弃票。这不是平票（连最高票都不存在），但各环节给它的
-  // 处置与平票未决相同——放逐无人出局，竞选警徽流失。
+  // 全员弃票，不算平票（连最高票都没有），但处置跟平票未决一样。
   if (counts.size === 0) return { kind: 'none' };
 
   const max = Math.max(...counts.values());
@@ -80,10 +69,8 @@ export function tallyVotes(round: VoteRound, casts: readonly VoteCast[]): VoteOu
 }
 
 /**
- * 收齐一轮投票：并行问完全部投票者，收齐后才产出结果。
- *
- * 任一投票失败即整轮失败，不给失败者补一张弃票——补票会把「这轮没能投成」
- * 伪装成「这名玩家弃票」，计票结果就不再反映真实输入。
+ * 收齐一轮投票：并行问完所有人，收齐才出结果。有人失败就整轮失败，不给失败者补弃票，
+ * 补了等于把没投成伪装成弃票。
  */
 export async function collectVotes(
   round: VoteRound,

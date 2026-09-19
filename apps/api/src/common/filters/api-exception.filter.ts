@@ -9,10 +9,7 @@ import {
 import type { ApiErrorBody } from '@werewolf/shared';
 import type { Response } from 'express';
 
-/**
- * 把所有异常收敛成共享契约 ApiErrorBody。
- * 前端的 ApiError 按同一份定义解析，因此这里的形状不能随意改——改契约要同时改 packages/shared。
- */
+/** 所有异常统一收敛成共享契约 ApiErrorBody（形状见 packages/shared 的 api/error.ts）。 */
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter<unknown> {
   private readonly logger = new Logger(ApiExceptionFilter.name);

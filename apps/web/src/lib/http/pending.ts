@@ -19,15 +19,15 @@ function keyOf(config: AxiosRequestConfig): string {
 }
 
 /**
- * 同一 method + url + params + data 只保留最后一次请求：新的进来时取消尚未完成的旧请求。
- * 用于列表刷新、快速切换详情这类场景，避免先发的响应晚到并覆盖后发的结果。
+ * 同一 method + url + params + data 只留最后一次：新来的取消还没完成的旧请求，
+ * 免得先发的响应晚到把后发的结果覆盖掉。
  */
 export class PendingRequests {
   private readonly controllers = new Map<string, AbortController>();
 
   /**
-   * 登记一次请求。返回的 signal 已合并调用方自己的 signal，
-   * 任一方中止都会让请求结束；release 在本请求收尾时调用。
+   * 登记一次请求。返回的 signal 已合并调用方的，任一方中止都能结束请求；
+   * release 在本请求收尾时调。
    */
   register(config: AxiosRequestConfig, callerSignal?: AbortSignal) {
     const key = keyOf(config);

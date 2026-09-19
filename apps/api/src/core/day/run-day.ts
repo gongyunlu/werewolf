@@ -11,7 +11,7 @@ export interface DayInput {
   /** 天亮时的状态，夜间结算已经完成。 */
   state: GameState;
   actions: ActionProvider;
-  /** 今晨公布的死者；空数组就是平安夜。 */
+  /** 今晨公布的死者。 */
   nightDeaths: readonly NightDeath[];
   /** 当前时间的分钟数，用来算发言顺序。 */
   minute: number;
@@ -20,9 +20,9 @@ export interface DayInput {
 /** 一个白天走完之后的全部结果。 */
 export interface DayResult {
   state: GameState;
-  /** 公布出去的死讯，按座位号升序；空数组就是平安夜。 */
+  /** 公布出去的死讯，按座位号升序。 */
   announcements: DeathAnnouncement[];
-  /** 按实际发生顺序排列的全部发言，含警上、白天常规与平票 PK 三轮。 */
+  /** 按实际发生顺序排的全部发言，含警上、白天常规与 PK 三轮。 */
   speeches: Speech[];
   /** 被放逐的玩家；无人出局为 null。 */
   exiledId: string | null;
@@ -31,11 +31,8 @@ export interface DayResult {
 /**
  * 走完一个白天：警长竞选 → 公布死讯 → 发言 → 投票 → 平票 PK → 放逐。
  *
- * 竞选排在公布死讯之前——今晨的死者死讯还没公布，仍算在局内，要上警、要发言、要投票。
- * 死讯落下之后警长若正好是今晨的死者，警徽要立刻处理，否则当天余下的环节会全都指着
- * 一个已经出局的人。
- *
- * 遗言与放逐触发的技能不在这一段，放逐执行完就交还给外层。
+ * 竞选排在公布死讯前：死讯没公布，今晨的死者还算在局内，要上警要发言要投票；警长若是
+ * 今晨的死者，警徽的处理见 badge.ts。遗言和放逐触发的技能不在这里，放逐执行完交回外层。
  */
 export async function runDay(input: DayInput): Promise<DayResult> {
   const { actions, minute } = input;

@@ -9,10 +9,8 @@ export interface SeatAssignment {
 }
 
 /**
- * 建局快照：开局那一刻的座位分配、板子、是否有警长。
- *
- * 只放开局那一刻的状态，不放游戏进行中产生的中间量（今晚的刀口、发言顺序等）——
- * 那些是节点的局部状态，归产生它们的规则。
+ * 建局快照：开局那一刻的座位分配、板子、有没有警长。
+ * 只放开局那一刻的状态，进行中产生的中间量（今晚的刀口、发言顺序等）不进这里。
  */
 export interface GameSetup {
   readonly gameId: string;
@@ -21,13 +19,7 @@ export interface GameSetup {
   readonly seats: readonly SeatAssignment[];
 }
 
-/**
- * 建局：取板子、发牌，把结果连同座位号做成快照
- * @param input.gameId 游戏 ID
- * @param input.boardId 板子 ID
- * @param input.random 随机源
- * @returns 建局快照
- */
+/** 取板子发牌，把结果连同座位号做成建局快照。 */
 export function createGameSetup(input: {
   gameId: string;
   boardId: BoardId;

@@ -15,10 +15,8 @@ export interface UseEventStreamOptions {
 }
 
 /**
- * 把事件流绑到组件生命周期上：挂载订阅、卸载关闭。
- *
- * 传输与分帧仍在 lib/sse.ts，这一层只负责生命周期与连接状态。
- * onMessage 通过 ref 转发，因此调用方不必为它做 memo——回调变化不会触发重连。
+ * 把事件流绑到组件生命周期上：挂载订阅、卸载关闭，传输分帧在 lib/sse.ts。
+ * onMessage 走 ref 转发，回调变化不会触发重连，调用方不用为它做 memo。
  */
 export function useEventStream(
   url: string | null,

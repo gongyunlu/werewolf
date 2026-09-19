@@ -86,7 +86,7 @@ describe('行动键', () => {
   });
 
   it('字段里带上分隔符也不会让两个行动共用一个键', () => {
-    // 换成用分隔符拼接的写法时，这些取值就是最容易撞进去的一类输入。
+    // 换成用分隔符拼接的写法，这些取值最容易撞键。
     const keys = [
       actionKey(scopeOf(3, 'vote'), ACTION_TYPES.VOTE, 'a:b', 0),
       actionKey(scopeOf(3, 'vote'), ACTION_TYPES.VOTE, 'a', 0),

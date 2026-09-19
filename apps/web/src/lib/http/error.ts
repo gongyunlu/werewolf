@@ -6,8 +6,7 @@ import type { ZodType } from 'zod';
 const SCHEMA_MISMATCH = 'RESPONSE_SCHEMA_MISMATCH';
 
 /**
- * 调用方只需要面对这一种错误类型，不必再判断 axios 的 error 形状。
- * status 缺失表示请求根本没拿到响应（网络中断、被取消等）。
+ * 调用方只需面对这一种错误类型。status 缺失表示压根没拿到响应（网络中断、被取消等）。
  */
 export class ApiError extends Error {
   readonly status: number | undefined;
@@ -40,10 +39,7 @@ export function toApiError(error: unknown): ApiError {
   return new ApiError(error instanceof Error ? error.message : '未知错误', { cause: error });
 }
 
-/**
- * 按共享契约校验响应体。契约不符属于前后端已经脱节，
- * 宁可当场失败也不要让形状错误的数据流进界面。
- */
+/** 按共享契约校验响应体。不符说明前后端已经脱节，宁可当场失败，也别让形状错的数据流进界面。 */
 export function parseResponse<T>(schema: ZodType<T> | undefined, data: unknown): T {
   if (!schema) {
     return data as T;

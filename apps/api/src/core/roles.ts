@@ -1,13 +1,9 @@
 import { FACTIONS, ROLES, type Faction } from '@werewolf/shared';
 
 /**
- * 角色到**发牌时**阵营的归属，给 PlayerState.faction 一个初值。
- *
- * 部分板子中阵营是动态的，如丘比特绑定后情侣改换阵营；这张表只是发牌时的初值，
- * 真实阵营记在 PlayerState.faction 上，判胜负用的是它而不是这张表。
- *
- * 这张表的键就是能进板子的角色，板子里写这以外的角色编译不过。加角色只改这张表
- * 和下面的 WOLF_CHANNEL，后者的 Record<DealableRole, …> 会强制写全，漏不掉。
+ * 角色到发牌时阵营的初值，给 PlayerState.faction 用。阵营可以是动态的（丘比特绑定后情侣换边），
+ * 判胜负看 PlayerState.faction，不是这张表。
+ * 例外是预言家查验：验的是底牌，读的还是这张表，牌没换只是人换了边。
  */
 const ROLE_FACTIONS = {
   [ROLES.WEREWOLF]: FACTIONS.WEREWOLF,
@@ -22,11 +18,7 @@ const ROLE_FACTIONS = {
 
 export type DealableRole = keyof typeof ROLE_FACTIONS;
 
-/**
- * 上面那张表的键集，运行期展开牌要用，顺序就是表里的书写顺序。
- *
- * 发得出去不代表技能会结算，哪几张牌还没有技能见 boards.ts。
- */
+/** 上面那张表的键集，运行期展开牌要用，顺序同表里的书写顺序。哪几张牌还没有技能见 boards.ts。 */
 export const DEALABLE_ROLES = Object.keys(ROLE_FACTIONS) as readonly DealableRole[];
 
 export function factionOf(role: DealableRole): Faction {
@@ -34,11 +26,9 @@ export function factionOf(role: DealableRole): Faction {
 }
 
 /**
- * 该角色是否与狼人共处狼队频道——狼队商议与刀口对它可见的依据。
- *
- * 判可见性只走这里，不要并回 factionOf，也不要拿 PlayerState.faction：
- * 阵营回答「和谁一起赢」，这里回答「和谁通气」，两者会分叉（隐狼属狼人
- * 阵营却不进狼队群，情侣改换阵营却不退群）。
+ * 该角色是否与狼人共处狼队频道，狼队商议和刀口对它可见的依据。
+ * 别并回 factionOf，也别拿 PlayerState.faction：阵营答的是和谁一起赢，这里答的是和谁通气，
+ * 两者会分叉（隐狼属狼人阵营却不进狼队群，情侣换了阵营却不退群）。
  */
 const WOLF_CHANNEL: Record<DealableRole, boolean> = {
   [ROLES.WEREWOLF]: true,

@@ -17,8 +17,7 @@ interface StreamBehaviour {
 }
 
 /**
- * 伪造事件流：每次 fetch 取一份 behaviour，记录收到的请求头，
- * 分片吐完后默认挂起等新消息（真实事件流不会自己结束），只有被中止才断开。
+ * 伪造事件流：每次 fetch 取一份 behaviour 并记录请求头；分片吐完默认挂起等新消息，被中止才断开。
  */
 function stubStreams(behaviours: StreamBehaviour[]) {
   const requests: { url: string; headers: Record<string, string> }[] = [];

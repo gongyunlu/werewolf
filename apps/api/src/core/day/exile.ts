@@ -16,12 +16,8 @@ export interface ExileResult {
 /**
  * 放逐环节：全员投票 → 平票 PK → 放逐执行 → 警徽处理。
  *
- * speechOrder 是当天白天已经走过的发言顺序，平票 PK 的发言顺序就是把它筛出平票者
- * 再倒过来。之所以要传进来而不是在这里重算：PK 的「相反」是相对当天实际发生的那轮
- * 发言而言的，重算一遍会在警长临时改方向时和实际不符。
- *
- * 两轮投票都允许弃票、允许自投；平票 PK 只有非平票的存活玩家能投，且只能投给
- * PK 台上的其中一位。两轮里警长的票都按 1.5 计。
+ * speechOrder 是当天实际走过的发言顺序，PK 从它筛出平票者倒过来，不重算（见 speech-order.ts）。
+ * 两轮都允许弃票和自投；平票要再 PK 一轮，只有没上 PK 台的存活玩家能投，且只能投台上的人。
  */
 export async function runExile(
   state: GameState,
@@ -42,16 +38,14 @@ export async function runExile(
   const outcome = tallyVotes(round, ballot);
 
   if (outcome.kind === 'elected') return execute(state, actions, outcome.winnerId, speeches);
-  // 全员弃票，本轮无人出局。
   if (outcome.kind === 'none') return { state, exiledId: null, speeches };
 
-  // 平票：平票者按与当天发言相反的顺序再发言一轮。
   const tied = alive.filter((player) => outcome.tiedIds.includes(player.id));
   const tiedSeatNos = new Set(tied.map((player) => player.seatNo));
   const pkOrder = pkSpeechOrder(speechOrder, tiedSeatNos);
   speeches.push(...(await speakInOrder('exile_pk', pkOrder, state.players, actions)));
 
-  // 只有在 PK 台上的人可以被投。
+  // 只有 PK 台上的人可以被投，台上的人自己没票。
   const pkRound: VoteRound = {
     voters: alive.filter((player) => !tiedSeatNos.has(player.seatNo)).map((player) => player.id),
     candidates: tied.map((player) => player.id),
@@ -62,7 +56,7 @@ export async function runExile(
   );
   const pkOutcome = tallyVotes(pkRound, pkBallot);
 
-  // 再平票与全员弃票是两回事，但结局一样：本轮无人出局，直接进入黑夜。
+  // 再平票或又全员弃票：本轮无人出局。
   if (pkOutcome.kind !== 'elected') return { state, exiledId: null, speeches };
 
   return execute(state, actions, pkOutcome.winnerId, speeches);

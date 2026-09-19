@@ -4,13 +4,9 @@ import type { DealableRole } from '../core/roles';
 export type RandomSource = () => number;
 
 /**
- * 把角色逐张发出：Fisher-Yates 洗牌，返回洗好的序列，不修改入参。
- *
- * 板子的角色列表是模块级共享常量，就地洗会污染下一局。座位号不在这里发，
- * 它就是下标 + 1，由建局快照配对。
- *
- * 随机源必填，不给 Math.random 当默认值：忘了注入会静默退化成不可复现，
- * 而发牌是整局唯一一次不可复现的输入，这种错要在编译期发生。
+ * Fisher-Yates 洗牌，不改入参：板子的角色列表是共享常量，就地洗会污染下一局。
+ * 随机源必填，不给 Math.random 兜底——忘了注入会静默变成不可复现。
+ * 座位号不在这里发，由建局快照按下标 + 1 配。
  */
 export function dealRoles(roles: readonly DealableRole[], random: RandomSource): DealableRole[] {
   const dealt = [...roles];
