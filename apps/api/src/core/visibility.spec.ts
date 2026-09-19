@@ -1,13 +1,13 @@
 import { ROLES, VISIBILITY_TYPES, type VisibilityType } from '@werewolf/shared';
-import { SUPPORTED_ROLES, factionOf, inWolfChannel, type SupportedRole } from './roles';
+import { DEALABLE_ROLES, factionOf, inWolfChannel, type DealableRole } from './roles';
 import type { PlayerState } from './state';
 import { visibleVisibilities, type Observer } from './visibility';
 
-function observer(role: SupportedRole, overrides: Partial<Observer> = {}): Observer {
+function observer(role: DealableRole, overrides: Partial<Observer> = {}): Observer {
   return { role, isAlive: true, hasAntidoteUsed: false, ...overrides };
 }
 
-function player(role: SupportedRole, overrides: Partial<PlayerState> = {}): PlayerState {
+function player(role: DealableRole, overrides: Partial<PlayerState> = {}): PlayerState {
   return {
     id: 'p1',
     seatNo: 1,
@@ -26,7 +26,7 @@ describe('狼队频道成员', () => {
   it('当前是狼人、白狼王与狼王', () => {
     // 可见性按身份判断而非按阵营，见 roles.ts 的 inWolfChannel。
     // 隐狼加进来时它不该出现在这里——狼阵营但不进狼队群。
-    const members = SUPPORTED_ROLES.filter((role: SupportedRole) => inWolfChannel(role));
+    const members = DEALABLE_ROLES.filter((role: DealableRole) => inWolfChannel(role));
     expect(members).toEqual([ROLES.WEREWOLF, ROLES.WHITE_WOLF, ROLES.WOLF_KING]);
   });
 });

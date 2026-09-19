@@ -1,13 +1,13 @@
 import type { DeathCause, Faction, Phase } from '@werewolf/shared';
 import type { PhaseInstanceId } from './identity';
-import type { SupportedRole } from './roles';
+import type { DealableRole } from './roles';
 
 /** 一名玩家在对局中的状态。 */
 export interface PlayerState {
   id: string;
   /** 座位号，从 1 起，一局内唯一。 */
   seatNo: number;
-  role: SupportedRole;
+  role: DealableRole;
   /**
    * 当前阵营；发牌时取 factionOf(role)，被丘比特绑定后变为第三方。
    *
