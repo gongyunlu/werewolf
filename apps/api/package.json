@@ -13,10 +13,12 @@
     "test": "jest"
   },
   "dependencies": {
+    "@langchain/langgraph": "^1.4.15",
+    "@langfuse/client": "5.11.1",
     "@nestjs/common": "^11.1.28",
-    "@werewolf/shared": "workspace:*",
     "@nestjs/core": "^11.1.28",
     "@nestjs/platform-express": "^11.1.28",
+    "@werewolf/shared": "workspace:*",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "zod": "^4.4.3"
