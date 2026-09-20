@@ -133,6 +133,39 @@ describe('走完一个白天', () => {
     expect(result.state.sheriffId).toBe('p4');
   });
 
+  it('竞选刚选出的警长，自爆那一问的局面上看得见', async () => {
+    const state = withRoles(makeState(6), { p2: ROLES.WEREWOLF });
+    const observed: GameState[] = [];
+    // 第一个自爆窗口开在竞选里，那时还没有警长；第二个开在竞选结束之后。
+    let windows = 0;
+    let blastSaw = '没交过局面';
+    const actions = stubActions({
+      runForSheriff: async (playerId) => playerId === 'p2',
+      withdraw: async () => false,
+      speak: async (turn, playerId) => `${turn}:${playerId}`,
+      wolfBlast: async () => {
+        windows += 1;
+        if (windows === 1) return false;
+
+        const seen = observed.at(-1);
+        blastSaw = seen === undefined ? '没交过局面' : `警长 ${seen.sheriffId ?? '空'}`;
+        return true;
+      },
+      decideBadge: async () => ({ kind: 'tear' }),
+    });
+
+    const result = await runDay({
+      state,
+      actions,
+      minute: 22,
+      observe: (next) => observed.push(next),
+    });
+
+    // 只给入场那份局面，狼决定爆不爆的时候还不知道 2 号刚当选，那是它当天唯一的下场机会。
+    expect(blastSaw).toBe('警长 p2');
+    expect(result.state.sheriffId).toBeNull();
+  });
+
   it('发言中间有狼自爆：后面的人不再发言，也没有投票', async () => {
     const state = withRoles({ ...makeState(6), day: 2, sheriffId: 'p1' }, { p4: ROLES.WEREWOLF });
     const spoken: string[] = [];

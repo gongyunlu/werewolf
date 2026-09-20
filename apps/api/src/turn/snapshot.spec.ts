@@ -4,9 +4,8 @@ import { TURN_PROMPT_NAMES, TURN_PROMPT_NAMES_ALL } from './prompt';
 import { decisionInputHash, type DecisionHashSource } from './snapshot';
 
 const CAPABILITY: ModelCapability = {
-  protocol: 'jsonSchema',
   allowCodeFence: false,
-  disableReasoning: true,
+  reasoningOff: null,
 };
 
 /** 整局冻住的那六条。这里只验哈希，正文是不是真模板不重要，六条齐全就行。 */
@@ -30,6 +29,7 @@ function source(overrides: Partial<DecisionHashSource> = {}): DecisionHashSource
     actionType: 'vote',
     actionOrdinal: 0,
     preset: 'quick',
+    model: '用例模型',
     capability: CAPABILITY,
     context: {
       task: '投票决定放逐谁。',
@@ -61,6 +61,8 @@ describe('冻结输入哈希', () => {
       { actionKey: '["g1","node/3/vote","vote","p3",1]' },
       { schema: { type: 'string' } },
       { capability: { ...CAPABILITY, allowCodeFence: true } },
+      // 能力声明一样的两个型号是两台不同的机器，同一个输入答出来的东西不一样。
+      { model: '另一个模型' },
       // 正文改了哈希就得变——版本号只是标记，正文才是真正的输入。
       { prompts: withGenerate({ text: '改过的正文' }) },
       { prompts: withGenerate({ version: 2 }) },

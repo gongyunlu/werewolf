@@ -9,13 +9,13 @@ import { freezeTurnPrompts, TURN_PROMPT_NAMES, type FrozenPrompts } from './prom
 import { actionOrdinals, type ActionRequest, type TurnContext, type TurnRuntime } from './request';
 
 const CAPABILITY: ModelCapability = {
-  protocol: 'jsonSchema',
   allowCodeFence: false,
-  disableReasoning: true,
+  reasoningOff: null,
 };
 
 const ACCESS: ModelAccess = {
   baseUrl: 'https://model.example.test/v1',
+  model: '用例模型',
   apiKey: 'sk-不能进快照',
   capability: CAPABILITY,
 };
@@ -139,31 +139,53 @@ describe('单玩家行动图', () => {
     expect(outcome.snapshot.schema).toBeNull();
   });
 
+  it('答歪一次，再问一遍就成', async () => {
+    const bad = JSON.stringify({ targetId: 7, reason: 'x' });
+    const { model, runtime } = await withModel([bad, DECIDED]);
+
+    const outcome = await runActionGraph(runtime, request());
+
+    expect(outcome.decision).toEqual({ targetId: 'p2', reason: '他发言太稳了' });
+    // 两档问的是同一份提示词：再问一次是重新采样，不是换个问法。
+    expect(model.calls).toHaveLength(2);
+    expect(model.calls[1]).toEqual(model.calls[0]);
+  });
+
+  it('答歪两次，第三次才成', async () => {
+    const bad = JSON.stringify({ targetId: 7, reason: 'x' });
+    const { model, runtime } = await withModel([bad, bad, DECIDED]);
+
+    await expect(runActionGraph(runtime, request())).resolves.toMatchObject({
+      decision: { targetId: 'p2', reason: '他发言太稳了' },
+    });
+    expect(model.calls).toHaveLength(3);
+  });
+
   it('两档用的是同一份校验，不合结构的输出都拦得住', async () => {
     const bad = JSON.stringify({ targetId: 7, reason: 'x' });
 
+    // 每次都得给一份不合结构的：重问两次还是错的，才轮到抛。
     await expect(
-      runActionGraph((await withModel([bad])).runtime, request({ preset: 'quick' })),
+      runActionGraph((await withModel([bad, bad, bad])).runtime, request({ preset: 'quick' })),
     ).rejects.toMatchObject({ code: 'invalid_output' });
     await expect(
-      runActionGraph((await withModel([bad, ACCEPTED])).runtime, request({ preset: 'quality' })),
+      runActionGraph((await withModel([bad, bad, bad])).runtime, request({ preset: 'quality' })),
     ).rejects.toMatchObject({ code: 'invalid_output' });
   });
 
   it('质疑自己答得不成样子，也是同一个错拦下来', async () => {
-    const { model, runtime } = await withModel([
-      DECIDED,
-      JSON.stringify({ accept: '行', issues: 1 }),
-    ]);
+    const bad = JSON.stringify({ accept: '行', issues: 1 });
+    const { model, runtime } = await withModel([DECIDED, bad, bad, bad]);
 
     await expect(runActionGraph(runtime, request({ preset: 'quality' }))).rejects.toMatchObject({
       code: 'invalid_output',
     });
-    expect(model.calls).toHaveLength(2);
+    // 生成一次，质疑那里重问了两次才放弃。
+    expect(model.calls).toHaveLength(4);
   });
 
   it('模型说的不是 JSON 就抛出来，不替它猜', async () => {
-    const { runtime } = await withModel(['我觉得应该投 2 号']);
+    const { runtime } = await withModel(['我觉得应该投 2 号', '我觉得应该投 2 号', '投 2 号']);
 
     await expect(runActionGraph(runtime, request())).rejects.toMatchObject({
       code: 'invalid_output',
@@ -188,6 +210,8 @@ describe('单玩家行动图', () => {
     expect(outcome.snapshot.actionKey).toBe(actionKey(SCOPE, ACTION_TYPES.VOTE, 'p3', ordinal));
     expect(outcome.snapshot.actionOrdinal).toBe(ordinal);
     expect(outcome.snapshot.capability).toEqual(CAPABILITY);
+    // 型号进快照但不进「不能记」的那一类：能力是从它推出来的，缺了它这份存档复算不出自己的哈希。
+    expect(outcome.snapshot.model).toBe(ACCESS.model);
     expect(outcome.snapshot.inputHash).toMatch(/^[0-9a-f]{64}$/);
     expect(outcome.snapshot.prompts[0]?.source).toBe('local');
 
@@ -201,6 +225,19 @@ describe('单玩家行动图', () => {
     const second = await runActionGraph((await withModel([DECIDED])).runtime, request());
 
     expect(first.snapshot.inputHash).toBe(second.snapshot.inputHash);
+  });
+
+  it('换个型号算另一次输入', async () => {
+    const { model, runtime } = await withModel([DECIDED, DECIDED]);
+    const first = await runActionGraph(runtime, request());
+    const second = await runActionGraph(
+      { ...runtime, access: { ...ACCESS, model: '另一个模型' } },
+      request(),
+    );
+
+    // 两台能力声明一样的机器，同一个输入答出来的东西不一样，哈希得跟着型号走。
+    expect(second.snapshot.inputHash).not.toBe(first.snapshot.inputHash);
+    expect(model.calls).toHaveLength(2);
   });
 
   it('逐段发言里同一个人的多次行动，靠序号区分开', async () => {

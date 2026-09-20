@@ -16,6 +16,7 @@ export async function triggerDeathSkills(
   state: GameState,
   deaths: readonly NightDeath[],
   actions: ActionProvider,
+  observe?: (state: GameState) => void,
 ): Promise<GameState> {
   let current = state;
   // 边遍历边往尾巴上追加，连锁就自动排进了同一轮。
@@ -31,6 +32,8 @@ export async function triggerDeathSkills(
 
     // 带走的人先落地再入队；撞上已经出局的人会在这里抛错，一人只公布一次死讯。
     current = announceDay(current, [shot]).state;
+    // 下一个要问的人该看到他已经出局，见 GameLoopInput.observe。
+    observe?.(current);
     pending.push(shot);
   }
 

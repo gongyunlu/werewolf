@@ -36,6 +36,30 @@ describe('出局技能连锁', () => {
     });
   });
 
+  it('连锁里前一个刚出局的人，后一问看得见', async () => {
+    const deaths: NightDeath[] = [{ playerId: 'p1', cause: DEATH_CAUSES.EXECUTION }];
+    const state = boardAfter({ p1: ROLES.HUNTER, p2: ROLES.WOLF_KING }, deaths);
+    let observed: string | null = null;
+    let seenAtKing: string | null = null;
+    const actions = stubActions({
+      hunterShot: async () => 'p2',
+      wolfKingShot: async () => {
+        seenAtKing = observed;
+        return 'p3';
+      },
+    });
+
+    await triggerDeathSkills(state, deaths, actions, (next) => {
+      observed = next.players
+        .filter((player) => !player.isAlive)
+        .map((player) => player.id)
+        .join(',');
+    });
+
+    // 狼王带人那一问得看见猎人先出的局：不给就是拿着猎人还活着的那份局面在答。
+    expect(seenAtKing).toBe('p1,p2');
+  });
+
   it('连锁不设上限，能带人的牌一路传下去', async () => {
     const deaths: NightDeath[] = [{ playerId: 'p1', cause: DEATH_CAUSES.EXECUTION }];
     const state = boardAfter(

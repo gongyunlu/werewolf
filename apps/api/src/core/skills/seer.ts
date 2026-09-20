@@ -40,7 +40,7 @@ export async function decideSeerCheck(
 }
 
 /** 底牌属狼人阵营的一律回 werewolf，其余回 good；狼王、白狼王也不例外。 */
-function checkResultOf(target: PlayerState): SeerCheckResult {
+export function checkResultOf(target: PlayerState): SeerCheckResult {
   return factionOf(target.role) === FACTIONS.WEREWOLF
     ? SEER_CHECK_RESULTS.WEREWOLF
     : SEER_CHECK_RESULTS.GOOD;

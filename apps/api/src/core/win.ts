@@ -5,7 +5,7 @@ import { alivePlayers, type GameState } from './state';
  * 胜负判定：屠边。狼人全灭好人胜；神职全灭或平民全灭，狼人胜；都没达成返回 null。
  *
  * 阵营读 PlayerState.faction，只有分「神职还是平民」时才读 role——两者阵营都是好人，
- * 光看阵营分不出边。这两条口径别并成一个。第三方阵营本段判不出来：丘比特还发不出牌。
+ * 光看阵营分不出边。这两条口径别并成一个。第三方阵营判不出来：丘比特还发不出牌。
  */
 export function checkWin(state: GameState): Faction | null {
   const alive = alivePlayers(state);

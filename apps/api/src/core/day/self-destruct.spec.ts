@@ -150,6 +150,34 @@ describe('自爆窗口', () => {
     expect(result.state.sheriffId).toBe('p4');
   });
 
+  it('死讯先交出去，接徽那一问看得见谁刚出局', async () => {
+    // 警长就是那只白狼王：接徽那一问才排得上。
+    const state = withRoles(
+      { ...makeState(6), sheriffId: 'p3' },
+      {
+        p2: ROLES.WEREWOLF,
+        p3: ROLES.WHITE_WOLF,
+      },
+    );
+    let observed: string[] | null = null;
+    let seenAtBadge: string[] | null = null;
+    const actions = stubActions({
+      wolfBlast: async (wolfId) => wolfId === 'p3',
+      whiteWolfTake: async () => 'p5',
+      decideBadge: async () => {
+        seenAtBadge = observed;
+        return { kind: 'tear' };
+      },
+    });
+
+    await runBlastWindow(state, 'day', actions, (next) => {
+      observed = aliveIds(next);
+    });
+
+    // 拿着入场那份局面，接徽的人挑出来的名单里还有刚爆的和刚被带走的。
+    expect(seenAtBadge).toEqual(['p1', 'p2', 'p4', 'p6']);
+  });
+
   it('白狼王已经是最后一狼就不带人', async () => {
     const state = withRoles(makeState(6), { p3: ROLES.WHITE_WOLF });
     // 没配 whiteWolfTake：最后一狼自爆，问了也是白问。

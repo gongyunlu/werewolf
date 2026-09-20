@@ -27,11 +27,15 @@ export interface BlastResult {
  *
  * 警徽在这里收尾：爆掉的可能是警长，他当天就得把徽交出去，拖到第二天早晨，候选名单
  * 已经被夜里的刀口改过。窗口有三个入口，留给调用点做迟早会漏。
+ *
+ * @param observe 交出现当局面的口子，见 GameLoopInput.observe。死讯落地到警徽那一问之间
+ *   要交一次：接徽的人得先看见谁跟着爆掉了，不然候选名单里有刚死的人
  */
 export async function runBlastWindow(
   state: GameState,
   window: BlastWindow,
   actions: ActionProvider,
+  observe?: (state: GameState) => void,
 ): Promise<BlastResult> {
   const pack = alivePlayers(state).filter((player) => inWolfChannel(player.role));
 
@@ -46,7 +50,9 @@ export async function runBlastWindow(
   const deaths: NightDeath[] = [{ playerId: blaster.id, cause: DEATH_CAUSES.SELF_DESTRUCT }];
   if (taken !== null) deaths.push({ playerId: taken, cause: DEATH_CAUSES.WHITE_WOLF_TAKE });
 
-  const after = await settleBadgeAfterDeaths(announceDay(state, deaths).state, actions);
+  const announced = announceDay(state, deaths).state;
+  observe?.(announced);
+  const after = await settleBadgeAfterDeaths(announced, actions);
 
   return { state: after, blasted: true };
 }

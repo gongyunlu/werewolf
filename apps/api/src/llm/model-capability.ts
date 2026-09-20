@@ -1,5 +1,4 @@
-/** 结构化输出的提交方式：原生 JSON Schema、强制工具调用、或只在提示词里要求输出 JSON。 */
-export type StructuredOutputProtocol = 'jsonSchema' | 'functionCalling' | 'jsonMode';
+import { z } from 'zod';
 
 /**
  * 一个模型接入点的能力。
@@ -7,10 +6,54 @@ export type StructuredOutputProtocol = 'jsonSchema' | 'functionCalling' | 'jsonM
  * 具体哪个模型是哪一档由接入时声明，不在这份类型里枚举。
  */
 export interface ModelCapability {
-  /** 结构化输出走哪条路提交。 */
-  protocol: StructuredOutputProtocol;
   /** 是否容忍模型把整个 JSON 包在代码围栏里。 */
   allowCodeFence: boolean;
-  /** 是否下发参数关掉供应商自己的思维链。 */
-  disableReasoning: boolean;
+  /**
+   * 关掉供应商自己思维链的请求体片段，直接并进请求。
+   * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关；这家没这个开关就是 null。
+   */
+  reasoningOff: Record<string, unknown> | null;
+}
+
+/** 端点写法归一：协议与主机名的大小写、末尾斜杠、默认端口都归成一种，免得同一台机器被当成两台。 */
+export function endpointOf(baseUrl: string): string {
+  return new URL(baseUrl).href.replace(/\/$/, '');
+}
+
+/** 环境变量里那份声明的取值域；只在代码里存在的隐式配置不算配置。 */
+const CAPABILITY_DECLARATIONS = z.array(
+  z.object({
+    baseUrl: z.url(),
+    model: z.string().min(1),
+    allowCodeFence: z.boolean(),
+    reasoningOff: z.record(z.string(), z.unknown()).nullable(),
+  }),
+);
+
+/**
+ * 取这个端点加型号的能力。
+ * 只认环境变量里那份声明，没有就抛——拿一份猜的能力跑，错的是整局的结构化输出，
+ * 比一开始就停下来难查得多。
+ *
+ * @param model 型号，按端点加型号两个一起认
+ * @param baseUrl 端点
+ * @param declarations 环境变量里那份 JSON 数组，没配就是空串
+ */
+export function resolveModelCapability(
+  model: string,
+  baseUrl: string,
+  declarations: string,
+): ModelCapability {
+  const endpoint = endpointOf(baseUrl);
+  const entries = declarations ? CAPABILITY_DECLARATIONS.parse(JSON.parse(declarations)) : [];
+  const matched = entries.filter(
+    (entry) => endpointOf(entry.baseUrl) === endpoint && entry.model === model,
+  );
+  if (matched.length > 1) throw new Error(`模型能力声明重复：${endpoint} / ${model}`);
+
+  const declared = matched[0];
+  if (!declared) throw new Error(`未声明该端点与模型的能力：${endpoint} / ${model}`);
+
+  const { allowCodeFence, reasoningOff } = declared;
+  return { allowCodeFence, reasoningOff };
 }

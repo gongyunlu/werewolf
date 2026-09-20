@@ -122,6 +122,38 @@ function parseStructured<S extends z.ZodType>(
   return checked.data;
 }
 
+/** 答得不合规时再问几次。 */
+const INVALID_OUTPUT_RETRIES = 2;
+
+/**
+ * 问一次并当场解析；模型答得不合规就再问。
+ *
+ * 再问的是同一份提示词：采样是随机的，再问一次是另一次采样，不是重放，所以有机会答对。
+ * 一局要问几百次，一次答歪就让整局停下来，代价比多花两次调用大得多。
+ *
+ * 这一层跟端口那一层的重试不是一回事：端口重发的是「这次没拿到」，它看不见解析。
+ * 问一次也放在 try 外面，正是这个分工：端口自己的失败，上面那一层已经重试过了，
+ * 再裹进来重问就是两层的次数相乘。
+ *
+ * @param askOnce 问一次，拿回模型的原文
+ * @param parse 把原文解析成要的形状，不合规当场抛
+ * @returns 原文与解析后的结果
+ */
+async function askParsed<T>(
+  askOnce: () => Promise<string>,
+  parse: (content: string) => T,
+): Promise<{ content: string; parsed: T }> {
+  for (let attempt = 0; ; attempt += 1) {
+    const content = await askOnce();
+    try {
+      return { content, parsed: parse(content) };
+    } catch (error) {
+      if (!(error instanceof ModelCallError) || error.code !== 'invalid_output') throw error;
+      if (attempt >= INVALID_OUTPUT_RETRIES) throw error;
+    }
+  }
+}
+
 /**
  * 把草稿变成这次的决定。
  * 没有 schema 就是发言，原文即结果，不解析也不包装。
@@ -138,7 +170,7 @@ function parseDecision(request: ActionRequest, draft: string, access: ModelAcces
 
 /**
  * 问模型要一版草稿，当场解析。
- * 解析不过当场抛，不带着不合要求的草稿往下走：留到质疑那里再发现，白花一次调用。
+ * 解析不过先重问几次，还是不行才抛：不带着不合要求的草稿往下走，留到质疑那里再发现是白花两次调用。
  *
  * @param state 图状态，这里只读行动请求
  * @param config 图的运行配置
@@ -154,13 +186,12 @@ async function generateNode(
     state.request.context,
     decisionSchemaJson(state.request.schema),
   );
-  const draft = await ask(port, access, turn);
+  const { content, parsed } = await askParsed(
+    () => ask(port, access, turn),
+    (draft) => parseDecision(state.request, draft, access),
+  );
 
-  return {
-    draft,
-    decision: parseDecision(state.request, draft, access),
-    prompts: used(turn),
-  };
+  return { draft: content, decision: parsed, prompts: used(turn) };
 }
 
 /**
@@ -178,12 +209,12 @@ async function critiqueNode(
   const { port, access, prompts } = turnRuntime(config);
   const schemaJson = decisionSchemaJson(state.request.schema);
   const turn = renderCritique(prompts, state.request.context, state.draft, schemaJson);
-  const content = await ask(port, access, turn);
+  const { parsed } = await askParsed(
+    () => ask(port, access, turn),
+    (content) => parseStructured(content, CRITIQUE_SCHEMA, access, '质疑的结论'),
+  );
 
-  return {
-    verdict: parseStructured(content, CRITIQUE_SCHEMA, access, '质疑的结论'),
-    prompts: used(turn),
-  };
+  return { verdict: parsed, prompts: used(turn) };
 }
 
 /**
@@ -209,13 +240,12 @@ async function reviseNode(
     state.verdict.issues,
     schemaJson,
   );
-  const draft = await ask(port, access, turn);
+  const { content, parsed } = await askParsed(
+    () => ask(port, access, turn),
+    (draft) => parseDecision(state.request, draft, access),
+  );
 
-  return {
-    draft,
-    decision: parseDecision(state.request, draft, access),
-    prompts: used(turn),
-  };
+  return { draft: content, decision: parsed, prompts: used(turn) };
 }
 
 /**
@@ -242,6 +272,7 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
         actorId: request.actorId,
         actionOrdinal: request.actionOrdinal,
         preset: request.preset,
+        model: access.model,
         capability: access.capability,
         context: request.context,
         schema: schemaJson,
@@ -251,6 +282,7 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
           actionType: request.actionType,
           actionOrdinal: request.actionOrdinal,
           preset: request.preset,
+          model: access.model,
           capability: access.capability,
           context: request.context,
           schema: schemaJson,
