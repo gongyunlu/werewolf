@@ -4,13 +4,16 @@ import { announceDay, type NightDeath } from './day/announce';
 import { decideHunterShot, hunterCanShoot } from './skills/hunter';
 import { decideWolfKingTake, wolfKingCanTake } from './skills/wolf-king';
 import type { GameState, PlayerState } from './state';
+import { checkWin } from './win';
 
 /**
  * 结算出局技能：把这一批死者挨个问一遍，能带走人的就带走，被带走的人接着也要问。
  * 队列驱动，连锁不设深度上限——规则允许就一直传下去，一人只出局一次。
  *
+ * 每带走一个人就判一次胜负：枪口下死的可能是最后一只狼，也可能是最后一个好人，
+ * 分出来就没必要再问队列里剩下的人。传进来那批人的出局由调用方判过，这儿只管新带出来的。
+ *
  * 白狼王不在这儿：他只在自爆时带人，见 day/self-destruct.ts。
- * 传进来的这批人已经出局了（公布死讯、放逐执行都落过地），这里只管技能新带出来的人。
  */
 export async function triggerDeathSkills(
   state: GameState,
@@ -35,6 +38,9 @@ export async function triggerDeathSkills(
     // 下一个要问的人该看到他已经出局，见 GameLoopInput.observe。
     observe?.(current);
     pending.push(shot);
+
+    // 这一枪可能打死的是最后一只狼，也可能是最后一个好人。
+    if (checkWin(current) !== null) break;
   }
 
   return current;

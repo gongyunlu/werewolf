@@ -14,7 +14,6 @@ const ACCESS: ModelAccess = {
   model: '用例模型',
   apiKey: 'sk-用例',
   capability: {
-    allowCodeFence: false,
     reasoningOff: null,
   },
 };

@@ -118,7 +118,15 @@ describe('走完一个白天', () => {
   });
 
   it('白天自爆的警长当天就把警徽交出去', async () => {
-    const state = withRoles({ ...makeState(6), day: 2, sheriffId: 'p2' }, { p2: ROLES.WEREWOLF });
+    // 神职和平民各留一个活口，不然爆一只狼就分出了胜负，轮不到接徽那一问。
+    const state = withRoles(
+      { ...makeState(6), day: 2, sheriffId: 'p2' },
+      {
+        p1: ROLES.SEER,
+        p2: ROLES.WEREWOLF,
+        p6: ROLES.WEREWOLF,
+      },
+    );
     // 只配了自爆与警徽：这一天在自爆处结束，发言和投票都不该走到。
     const actions = stubActions({
       wolfBlast: async () => true,
@@ -134,7 +142,11 @@ describe('走完一个白天', () => {
   });
 
   it('竞选刚选出的警长，自爆那一问的局面上看得见', async () => {
-    const state = withRoles(makeState(6), { p2: ROLES.WEREWOLF });
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p2: ROLES.WEREWOLF,
+      p6: ROLES.WEREWOLF,
+    });
     const observed: GameState[] = [];
     // 第一个自爆窗口开在竞选里，那时还没有警长；第二个开在竞选结束之后。
     let windows = 0;
@@ -143,7 +155,10 @@ describe('走完一个白天', () => {
       runForSheriff: async (playerId) => playerId === 'p2',
       withdraw: async () => false,
       speak: async (turn, playerId) => `${turn}:${playerId}`,
-      wolfBlast: async () => {
+      // 一个窗口把队里的狼挨个问一遍；6 号要是也答是，按座位序爆的就是他，竞选当场作废。
+      // 只让 2 号答。
+      wolfBlast: async (wolfId) => {
+        if (wolfId !== 'p2') return false;
         windows += 1;
         if (windows === 1) return false;
 

@@ -1,10 +1,17 @@
-import { ROLES } from '@werewolf/shared';
+import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import { makeState, playerOf, stubActions, withRoles } from '../../testing/fixtures';
+import { announceDay } from '../day/announce';
 import { decideWhiteWolfTake } from './white-wolf';
+
+/** 自爆已经落地的局面：他自己出局、其余人还活着——调用方传进来的就是这一份。 */
+function blastedState() {
+  const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF, p2: ROLES.WEREWOLF });
+  return announceDay(state, [{ playerId: 'p1', cause: DEATH_CAUSES.SELF_DESTRUCT }]).state;
+}
 
 describe('白狼王自爆带人', () => {
   it('候选是其他存活玩家，他自己不在里面', async () => {
-    const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF, p2: ROLES.WEREWOLF });
+    const state = blastedState();
     let offered: readonly string[] = [];
     const actions = stubActions({
       whiteWolfTake: async (_whiteWolfId, candidates) => {
@@ -18,7 +25,7 @@ describe('白狼王自爆带人', () => {
   });
 
   it('他可以不带人', async () => {
-    const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF, p2: ROLES.WEREWOLF });
+    const state = blastedState();
 
     expect(
       await decideWhiteWolfTake(
@@ -29,25 +36,8 @@ describe('白狼王自爆带人', () => {
     ).toBeNull();
   });
 
-  it('已经是最后一狼就不问，也不带人', async () => {
-    // 场上没有第二只狼；stubActions 没配 whiteWolfTake，真问到就会失败。
-    const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF });
-
-    expect(await decideWhiteWolfTake(playerOf(state, 'p1'), state, stubActions())).toBeNull();
-  });
-
-  it('狼队友全出局了也算最后一狼', async () => {
-    const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF, p2: ROLES.WEREWOLF });
-    const lone = {
-      ...state,
-      players: state.players.map((p) => (p.id === 'p2' ? { ...p, isAlive: false } : p)),
-    };
-
-    expect(await decideWhiteWolfTake(playerOf(lone, 'p1'), lone, stubActions())).toBeNull();
-  });
-
   it('带到一个候选外的人身上就抛错', async () => {
-    const state = withRoles(makeState(6), { p1: ROLES.WHITE_WOLF, p2: ROLES.WEREWOLF });
+    const state = blastedState();
     const actions = stubActions({ whiteWolfTake: async () => 'p1' });
 
     await expect(decideWhiteWolfTake(playerOf(state, 'p1'), state, actions)).rejects.toThrow(

@@ -6,8 +6,6 @@ import { z } from 'zod';
  * 具体哪个模型是哪一档由接入时声明，不在这份类型里枚举。
  */
 export interface ModelCapability {
-  /** 是否容忍模型把整个 JSON 包在代码围栏里。 */
-  allowCodeFence: boolean;
   /**
    * 关掉供应商自己思维链的请求体片段，直接并进请求。
    * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关。
@@ -26,7 +24,6 @@ const CAPABILITY_DECLARATIONS = z.array(
   z.object({
     baseUrl: z.url(),
     model: z.string().min(1),
-    allowCodeFence: z.boolean(),
     reasoningOff: z.record(z.string(), z.unknown()).nullable(),
   }),
 );
@@ -55,6 +52,5 @@ export function resolveModelCapability(
   const declared = matched[0];
   if (!declared) throw new Error(`未声明该端点与模型的能力：${endpoint} / ${model}`);
 
-  const { allowCodeFence, reasoningOff } = declared;
-  return { allowCodeFence, reasoningOff };
+  return { reasoningOff: declared.reasoningOff };
 }

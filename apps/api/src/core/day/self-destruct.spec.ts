@@ -102,7 +102,11 @@ describe('自爆窗口', () => {
   });
 
   it('白狼王自爆顺手带走一个人', async () => {
-    const state = withRoles(makeState(6), { p2: ROLES.WEREWOLF, p3: ROLES.WHITE_WOLF });
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.WHITE_WOLF,
+    });
     const actions = stubActions({
       wolfBlast: async (wolfId) => wolfId === 'p3',
       whiteWolfTake: async () => 'p5',
@@ -119,6 +123,7 @@ describe('自爆窗口', () => {
 
   it('被白狼王带走的狼王带不了人', async () => {
     const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
       p2: ROLES.WEREWOLF,
       p3: ROLES.WHITE_WOLF,
       p4: ROLES.WOLF_KING,
@@ -138,7 +143,15 @@ describe('自爆窗口', () => {
   });
 
   it('自爆的是警长，警徽当场交出去', async () => {
-    const state = withRoles({ ...makeState(6), sheriffId: 'p2' }, { p2: ROLES.WEREWOLF });
+    // 神职和平民各留一个活口，不然爆一只狼就分出了胜负，轮不到接徽那一问。
+    const state = withRoles(
+      { ...makeState(6), sheriffId: 'p2' },
+      {
+        p1: ROLES.SEER,
+        p2: ROLES.WEREWOLF,
+        p6: ROLES.WEREWOLF,
+      },
+    );
     const actions = stubActions({
       wolfBlast: async () => true,
       decideBadge: async () => ({ kind: 'transfer', toId: 'p4' }),
@@ -155,6 +168,7 @@ describe('自爆窗口', () => {
     const state = withRoles(
       { ...makeState(6), sheriffId: 'p3' },
       {
+        p1: ROLES.SEER,
         p2: ROLES.WEREWOLF,
         p3: ROLES.WHITE_WOLF,
       },
@@ -176,6 +190,30 @@ describe('自爆窗口', () => {
 
     // 拿着入场那份局面，接徽的人挑出来的名单里还有刚爆的和刚被带走的。
     expect(seenAtBadge).toEqual(['p1', 'p2', 'p4', 'p6']);
+  });
+
+  it('带人之后分出胜负，警徽不必再问', async () => {
+    // p4 是场上唯一的平民：白狼王把他带走就屠完边了。
+    const state = withRoles(
+      { ...makeState(6), sheriffId: 'p3' },
+      {
+        p1: ROLES.SEER,
+        p2: ROLES.WEREWOLF,
+        p3: ROLES.WHITE_WOLF,
+        p5: ROLES.SEER,
+        p6: ROLES.SEER,
+      },
+    );
+    // 没配 decideBadge：胜负已经分出来了，这一问是白花的。
+    const actions = stubActions({
+      wolfBlast: async (wolfId) => wolfId === 'p3',
+      whiteWolfTake: async () => 'p4',
+    });
+
+    const result = await runBlastWindow(state, 'day', actions);
+
+    expect(playerOf(result.state, 'p4').deathCause).toBe(DEATH_CAUSES.WHITE_WOLF_TAKE);
+    expect(result.state.sheriffId).toBe('p3');
   });
 
   it('白狼王已经是最后一狼就不带人', async () => {

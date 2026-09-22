@@ -23,10 +23,7 @@ import {
   type TurnRuntime,
 } from './request';
 
-const CAPABILITY: ModelCapability = {
-  allowCodeFence: false,
-  reasoningOff: null,
-};
+const CAPABILITY: ModelCapability = { reasoningOff: null };
 
 const ACCESS: ModelAccess = {
   baseUrl: 'https://model.example.test/v1',

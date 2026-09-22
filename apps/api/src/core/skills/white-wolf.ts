@@ -1,23 +1,19 @@
 import type { ActionProvider } from '../actions';
-import { inWolfChannel } from '../roles';
 import { alivePlayers, type GameState, type PlayerState } from '../state';
 
 /**
  * 白狼王自爆带人。只有自爆这一条路：他被刀、被毒、被放逐、被枪打死都不带人。
  *
- * 他已经是最后一狼时不问——带走谁狼队都没了。他此刻还活着（自爆正在发生），
- * 判「最后一狼」得先把他的名字自己排掉。返回 null 为不带人。
+ * 传进来的局面是自爆已经落地之后的：他自己已经出局，候选人就是此刻还活着的人。
+ * 「他是不是最后一狼」不在这儿判——自爆落地后调用方先判过胜负，狼队全灭就走不到这一步，
+ * 见 day/self-destruct.ts。返回 null 为不带人。
  */
 export async function decideWhiteWolfTake(
   whiteWolf: PlayerState,
   state: GameState,
   actions: ActionProvider,
 ): Promise<string | null> {
-  const alive = alivePlayers(state);
-  const packLeft = alive.some((player) => player.id !== whiteWolf.id && inWolfChannel(player.role));
-  if (!packLeft) return null;
-
-  const candidates = alive.filter((player) => player.id !== whiteWolf.id);
+  const candidates = alivePlayers(state);
   const targetId = await actions.whiteWolfTake(
     whiteWolf.id,
     candidates.map((player) => player.id),

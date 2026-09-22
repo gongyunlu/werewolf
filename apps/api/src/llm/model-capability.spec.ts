@@ -13,7 +13,6 @@ function declared(overrides: Record<string, unknown> = {}): Record<string, unkno
   return {
     baseUrl: ENDPOINT,
     model: MODEL,
-    allowCodeFence: false,
     reasoningOff: null,
     ...overrides,
   };
@@ -33,22 +32,22 @@ describe('模型能力', () => {
       const text = declarations(declared({ reasoningOff: { thinking: { type: 'disabled' } } }));
 
       expect(resolveModelCapability(MODEL, ENDPOINT, text)).toEqual({
-        allowCodeFence: false,
         reasoningOff: { thinking: { type: 'disabled' } },
       });
     });
 
     it('没给这个开关的型号，带出来是 null', () => {
       expect(resolveModelCapability(MODEL, ENDPOINT, declarations(declared()))).toEqual({
-        allowCodeFence: false,
         reasoningOff: null,
       });
     });
 
     it('端点写法不同不影响命中', () => {
-      const text = declarations(declared({ allowCodeFence: true }));
+      const text = declarations(declared({ reasoningOff: { thinking: { type: 'disabled' } } }));
 
-      expect(resolveModelCapability(MODEL, `${ENDPOINT}/`, text).allowCodeFence).toBe(true);
+      expect(resolveModelCapability(MODEL, `${ENDPOINT}/`, text)).toEqual({
+        reasoningOff: { thinking: { type: 'disabled' } },
+      });
     });
 
     it('型号或端点对不上就抛错，不拿相近的顶', () => {
@@ -70,10 +69,7 @@ describe('模型能力', () => {
 
   describe('声明本身写错了', () => {
     it('同一个端点同一个型号声明两遍，当场抛', () => {
-      const twice = declarations(
-        declared({ allowCodeFence: false }),
-        declared({ baseUrl: `${ENDPOINT}/`, allowCodeFence: true }),
-      );
+      const twice = declarations(declared(), declared({ baseUrl: `${ENDPOINT}/` }));
 
       expect(() => resolveModelCapability(MODEL, ENDPOINT, twice)).toThrow('模型能力声明重复');
     });

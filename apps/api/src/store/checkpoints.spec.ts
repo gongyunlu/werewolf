@@ -16,7 +16,7 @@ const ACCESS: ModelAccess = {
   baseUrl: 'https://model.example.test/v1',
   model: '用例模型',
   apiKey: 'sk-用例',
-  capability: { allowCodeFence: false, reasoningOff: null },
+  capability: { reasoningOff: null },
 };
 
 const SCOPE: ActionScope = { gameId: 'g1', phaseInstanceId: phaseInstanceId(3, 'vote') };

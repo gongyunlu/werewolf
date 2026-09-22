@@ -338,6 +338,12 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
         throw new ModelCallError('transient', `${url} 的答复正文是空的`);
       }
 
+      // 参数是空串就是这一问一个字都没答上，跟正文空着是一回事：归 transient 让重试层重发一遍。
+      // 放它落到解析层，报出来的会是「整串不是合法 JSON」，附言里引一对空的「」，指错了地方。
+      if (invoked && invoked.function.arguments.trim() === '') {
+        throw new ModelCallError('transient', `${url} 的工具参数是空的`);
+      }
+
       return {
         content: text,
         toolCall: invoked

@@ -8,7 +8,7 @@ const ACCESS: ModelAccess = {
   baseUrl: BASE_URL,
   model: '用例模型',
   apiKey: 'sk-test',
-  capability: { allowCodeFence: false, reasoningOff: { thinking: { type: 'disabled' } } },
+  capability: { reasoningOff: { thinking: { type: 'disabled' } } },
 };
 
 const REQUEST = { system: '你是谁', prompt: '要你做什么' };
@@ -304,7 +304,7 @@ describe('OpenAI 兼容模型端口', () => {
 
       await openaiModelPort({ fetch: send }).generate(REQUEST, {
         ...ACCESS,
-        capability: { allowCodeFence: false, reasoningOff: null },
+        capability: { reasoningOff: null },
       });
 
       // 发言那几问要的就是一段自然语言：端口不自己发 response_format，也不塞一个默认工具进去。
@@ -696,6 +696,16 @@ describe('OpenAI 兼容模型端口', () => {
       const port = openaiModelPort({ fetch: fakeSend(200, answer('   ')).send });
 
       expect((await failureOf(port)).code).toBe('transient');
+    });
+
+    it('工具参数是空的，也归 transient', async () => {
+      const port = openaiModelPort({ fetch: fakeSend(200, toolAnswer('submit', '')).send });
+
+      const error = await failureOf(port);
+
+      // 空串交到调用方那儿会被读成「不是合法 JSON」，问它要个说法也问不出新东西，白重问两遍。
+      expect(error.code).toBe('transient');
+      expect(error.message).toContain('工具参数是空的');
     });
   });
 });

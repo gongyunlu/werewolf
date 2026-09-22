@@ -9,9 +9,8 @@ import type { GameState } from '../state';
  *   1. 天亮：runDay 里，管今晨的死者与天亮技能连锁带走的人；
  *   2. 放逐：loop.settleExile，被放逐者本人与他技能连锁带走的人；
  *   3. 自爆：day/self-destruct.runBlastWindow，白狼王带走的人跟他同一批落地。
- * 对局在放逐那一刻就终结的不在此列：警徽给谁都不影响胜负，不值得为它多问一次。这条只管放逐——
- * 判胜负的地方在 loop，才排得出「先判后结」；自爆的收尾埋在 runDay 里，看不见胜负，终局后照问。
- * 新加一条死法时回来把这份清单对一遍。
+ * 对局已经终结的不在此列：警徽给谁都不影响胜负，不值得为它多问一次——三个入口的死者都先判过
+ * 胜负，判出来就返回，排不进结徽。新加一条死法时回来把这份清单对一遍。
  */
 export async function handOverBadge(
   state: GameState,

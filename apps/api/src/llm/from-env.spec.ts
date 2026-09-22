@@ -9,7 +9,6 @@ function capabilityOf(overrides: Record<string, unknown> = {}): Record<string, u
   return {
     baseUrl: ENDPOINT,
     model: MODEL,
-    allowCodeFence: false,
     reasoningOff: null,
     ...overrides,
   };
@@ -78,7 +77,7 @@ describe('按环境变量接线', () => {
         baseUrl: ENDPOINT,
         model: MODEL,
         apiKey: 'sk-test',
-        capability: { allowCodeFence: false, reasoningOff: { thinking: { type: 'disabled' } } },
+        capability: { reasoningOff: { thinking: { type: 'disabled' } } },
       });
     });
 
@@ -102,7 +101,7 @@ describe('按环境变量接线', () => {
       // 末尾那个斜杠由端口和取能力那两处各自归掉，接入身份里留原样。
       expect(runtime.access.baseUrl).toBe(`${ENDPOINT}/`);
       expect(runtime.access.model).toBe('另一个型号');
-      expect(runtime.access.capability).toEqual({ allowCodeFence: false, reasoningOff: null });
+      expect(runtime.access.capability).toEqual({ reasoningOff: null });
     });
 
     it('超时与次数真的接到了端口上', async () => {
