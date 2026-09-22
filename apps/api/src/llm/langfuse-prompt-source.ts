@@ -12,7 +12,7 @@ export interface LangfusePromptConfig {
 const CACHE_TTL_SECONDS = 60;
 
 /**
- * 从 Langfuse 上取 production 版本的模板。取不到就抛，由 freezePrompts 拿本地那份整局顶上。
+ * 从 Langfuse 上取 production 版本的模板。取不到就抛，由取用点拿本地那份顶上。
  *
  * 不传 SDK 的 fallback 选项：传了它会在请求失败时塞一份回退正文回来而不抛错，
  * 那份东西不是平台上的模板，混进来就成了拿旧正文冒充线上的。不传就没这条路。

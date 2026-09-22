@@ -10,7 +10,8 @@ export interface ModelCapability {
   allowCodeFence: boolean;
   /**
    * 关掉供应商自己思维链的请求体片段，直接并进请求。
-   * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关；这家没这个开关就是 null。
+   * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关。
+   * null 是不写这一段——端点默认是什么就是什么。默认开着思考的端点写 null，正好就是不关它。
    */
   reasoningOff: Record<string, unknown> | null;
 }

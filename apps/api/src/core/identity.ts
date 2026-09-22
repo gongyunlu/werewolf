@@ -35,6 +35,11 @@ function ordinalOf(id: PhaseInstanceId): number {
   return Number(id.slice('node/'.length, id.lastIndexOf('/')));
 }
 
+/** 取已有身份里的节点名。恢复要按它认这一格该跑哪一段，见 loop.ts。 */
+export function nodeNameOf(id: PhaseInstanceId): string {
+  return id.slice(id.lastIndexOf('/') + 1);
+}
+
 /** 校验外来字符串（检查点、数据库），不合法返回 null。自己造的直接调 phaseInstanceId()。 */
 export function parsePhaseInstanceId(value: string): PhaseInstanceId | null {
   const matched = PHASE_INSTANCE_ID_PATTERN.exec(value);
@@ -65,6 +70,26 @@ export function actionKey(
   if (!actorId) throw new Error('行动键缺少行动者');
   assertOrdinal(actionOrdinal, '行动序号');
   return JSON.stringify([scope.gameId, scope.phaseInstanceId, actionType, actorId, actionOrdinal]);
+}
+
+/**
+ * 从行动键里取回行动者，上面那个的逆运算。
+ *
+ * 台账只存正文，谁说的这件事就只剩键里有：发言那几行的正文是「3 号发言：…」，
+ * 座位号写在句子里，要按人去重、要核对摘要有没有漏人，都得先知道这句是谁说的。
+ * 键不是行动键的那种（票型按节点实例与轮次拼）返回 null，不当成错：调用方按需挑。
+ */
+export function actorOfActionKey(key: string): string | null {
+  let parts: unknown;
+  try {
+    parts = JSON.parse(key);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parts) || parts.length !== 5) return null;
+
+  const actorId = parts[3];
+  return typeof actorId === 'string' && actorId.length > 0 ? actorId : null;
 }
 
 function assertOrdinal(value: number, label: string): void {

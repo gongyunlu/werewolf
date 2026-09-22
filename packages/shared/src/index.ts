@@ -1,3 +1,4 @@
+export * from './api/action-log';
 export * from './api/error';
 export * from './api/health';
 

@@ -1,4 +1,9 @@
-import { ModelCallError, type ModelAccess, type ModelPort } from './model-port';
+import {
+  ModelCallError,
+  type ModelAccess,
+  type ModelCallOptions,
+  type ModelPort,
+} from './model-port';
 import { retryingModelPort, type RetryOptions } from './retrying-model-port';
 
 const ACCESS: ModelAccess = {
@@ -21,7 +26,9 @@ function scriptedPort(script: readonly (string | Error)[]) {
       const step = script[asked.length];
       if (step === undefined) throw new Error(`剧本只准备了 ${script.length} 次回答`);
       asked.push(asked.length + 1);
-      return step instanceof Error ? Promise.reject(step) : Promise.resolve({ content: step });
+      return step instanceof Error
+        ? Promise.reject(step)
+        : Promise.resolve({ content: step, toolCall: null, reasoning: null });
     },
   };
   return { port, asked };
@@ -33,9 +40,14 @@ function retrying(port: ModelPort, attempts = 3) {
 }
 
 /** 跑一次并把它抛出来的分类取回来。 */
-async function failureOf(port: ModelPort) {
+async function failureOf(port: ModelPort, call?: ModelCallOptions) {
+  return thrownBy(port.generate(REQUEST, ACCESS, call));
+}
+
+/** 等一次调用结束，把抛出来的分类取回来；没抛就是用例自己写错了。 */
+async function thrownBy(pending: Promise<unknown>) {
   try {
-    await port.generate(REQUEST, ACCESS);
+    await pending;
   } catch (error) {
     return error as ModelCallError;
   }
@@ -67,14 +79,22 @@ describe('模型端口重试', () => {
   it('第一次就成，只问一次', async () => {
     const { port, asked } = scriptedPort(['好']);
 
-    await expect(retrying(port).generate(REQUEST, ACCESS)).resolves.toEqual({ content: '好' });
+    await expect(retrying(port).generate(REQUEST, ACCESS)).resolves.toEqual({
+      content: '好',
+      toolCall: null,
+      reasoning: null,
+    });
     expect(asked).toHaveLength(1);
   });
 
   it('transient 再试，试到成', async () => {
     const { port, asked } = scriptedPort([new ModelCallError('transient', '网络抖了一下'), '好']);
 
-    await expect(retrying(port).generate(REQUEST, ACCESS)).resolves.toEqual({ content: '好' });
+    await expect(retrying(port).generate(REQUEST, ACCESS)).resolves.toEqual({
+      content: '好',
+      toolCall: null,
+      reasoning: null,
+    });
     expect(asked).toHaveLength(2);
   });
 
@@ -124,6 +144,38 @@ describe('模型端口重试', () => {
     });
   });
 
+  describe('中止', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it('调用方已经喊停，一次都不再试', async () => {
+      const { port, asked } = scriptedPort([flaky(), '好']);
+
+      const error = await failureOf(retryingModelPort(port, { backoffMs: 20 }), {
+        signal: AbortSignal.abort(),
+      });
+
+      // 重发的前提是调用方还要这份答复；喊停了还去试，既白等又白花一次调用。
+      expect(asked).toHaveLength(1);
+      expect(error.code).toBe('deadline');
+    });
+
+    it('退避等到一半被喊停，剩下的时间不再等', async () => {
+      const stopping = new AbortController();
+      const { port, asked } = scriptedPort([flaky(), '好']);
+      const pending = retryingModelPort(port, { backoffMs: 1000 }).generate(REQUEST, ACCESS, {
+        signal: stopping.signal,
+      });
+
+      // 先推到第一次重试排上队，再喊停：不认中止的话这一条要等满 500 毫秒往上。
+      await jest.advanceTimersByTimeAsync(1);
+      stopping.abort();
+
+      expect(asked).toHaveLength(1);
+      expect((await thrownBy(pending)).code).toBe('deadline');
+    });
+  });
+
   // invalid_output 也在这张表里：这一层在解析之下，它本来就走不到这儿，重问归上面那一层（graph.ts）。
   it.each<[string]>([['invalid_output'], ['fatal'], ['deadline'], ['circuit_open']])(
     '%s 不重试，当场抛',
@@ -152,16 +204,18 @@ describe('模型端口重试', () => {
   it('流式回调原样转给下层', async () => {
     const seen: string[] = [];
     const port: ModelPort = {
-      generate(_request, _access, onDelta) {
-        onDelta?.('我坐');
-        return Promise.resolve({ content: '我坐' });
+      generate(_request, _access, call) {
+        call?.onDelta?.('我坐');
+        return Promise.resolve({ content: '我坐', toolCall: null, reasoning: null });
       },
     };
 
-    const answer = await retrying(port).generate(REQUEST, ACCESS, (delta) => seen.push(delta));
+    const answer = await retrying(port).generate(REQUEST, ACCESS, {
+      onDelta: (delta) => seen.push(delta),
+    });
 
     expect(seen).toEqual(['我坐']);
-    expect(answer).toEqual({ content: '我坐' });
+    expect(answer).toEqual({ content: '我坐', toolCall: null, reasoning: null });
   });
 
   it('不是模型调用失败的错原样往上抛', async () => {
@@ -181,7 +235,7 @@ describe('模型端口重试', () => {
         seen.push({ request, access });
         return seen.length === 1
           ? Promise.reject(new ModelCallError('transient', '抖了一下'))
-          : Promise.resolve({ content: '好' });
+          : Promise.resolve({ content: '好', toolCall: null, reasoning: null });
       },
     };
 

@@ -1,4 +1,10 @@
-import { ModelCallError, type ModelAccess, type ModelPort, type ModelRequest } from './model-port';
+import {
+  ModelCallError,
+  type ModelAccess,
+  type ModelCallOptions,
+  type ModelPort,
+  type ModelRequest,
+} from './model-port';
 
 export interface RetryOptions {
   /** 一共试几次，含第一次。 */
@@ -28,9 +34,30 @@ function backoffOf(attempt: number, backoffMs: number, random: () => number): nu
  * 等一会儿再重发。
  * 判据是这次实际要等多久，不是退避开没开：端点点名要的冷却也算实际要等多久，
  * 不该跟着退避一起被关掉。算出来是 0 就当场过去，用例靠这个把等待关掉。
+ *
+ * 调用方喊了停就一次都不再往后试：重发的前提是调用方还要这份答复，
+ * 喊停之后接着等、接着重发，既白等一场又白花一次调用。
+ * 已经在等的时候喊停也当场结束，不必等满整个退避——它最长能到十几秒。
  */
-function wait(ms: number): Promise<void> {
-  return ms > 0 ? new Promise((done) => setTimeout(done, ms)) : Promise.resolve();
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(stopped(signal));
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((done, fail) => {
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        fail(stopped(signal));
+      },
+      { once: true },
+    );
+  });
+}
+
+/** 这次调用被调用方中止。 */
+function stopped(signal: AbortSignal): ModelCallError {
+  return new ModelCallError('deadline', '这次调用被中止，不再往下试', { cause: signal.reason });
 }
 
 /**
@@ -48,10 +75,10 @@ export function retryingModelPort(port: ModelPort, options: RetryOptions = {}): 
     random = Math.random,
   } = options;
   return {
-    async generate(request: ModelRequest, access: ModelAccess, onDelta?: (delta: string) => void) {
+    async generate(request: ModelRequest, access: ModelAccess, call: ModelCallOptions = {}) {
       for (let attempt = 1; ; attempt += 1) {
         try {
-          return await port.generate(request, access, onDelta);
+          return await port.generate(request, access, call);
         } catch (error) {
           // 不是模型调用失败的一律原样往上抛：这一层只懂模型调用的分类，别的错不替它兜。
           if (!(error instanceof ModelCallError) || error.code !== 'transient') throw error;
@@ -69,7 +96,7 @@ export function retryingModelPort(port: ModelPort, options: RetryOptions = {}): 
           // 端点说了等多久就听它的：退避算出来的时长可能远短于它要的冷却窗口，
           // 那样三次机会会在几秒内打光、报一句「都没成」，真正该等的时间一秒没等。
           const backoff = backoffOf(attempt, backoffMs, random);
-          await wait(Math.max(backoff, error.retryAfterMs ?? 0));
+          await wait(Math.max(backoff, error.retryAfterMs ?? 0), call.signal);
         }
       }
     },

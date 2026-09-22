@@ -14,7 +14,7 @@ export interface NightInput {
   /** 入夜时的状态，玩家还都算活着——今晨出局的人天亮时已经不在场上了。 */
   state: GameState;
   actions: ActionProvider;
-  /** 狼队提刀并列时的随机源。 */
+  /** 狼队抽发言顺序与提刀并列时的随机源。 */
   random: RandomSource;
 }
 

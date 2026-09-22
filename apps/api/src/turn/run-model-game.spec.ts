@@ -1,9 +1,16 @@
 import { ACTION_TYPES, FACTIONS } from '@werewolf/shared';
+import type { BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
+import type { StageAnchor } from '../core/loop';
 import type { ModelCapability } from '../llm/model-capability';
-import type { ModelAccess, ModelRequest } from '../llm/model-port';
-import { answeringModel } from '../testing/model';
-import { LOCAL_TURN_PROMPTS, TURN_PROMPT_NAMES } from './prompt';
+import type { ModelAccess, ModelPort } from '../llm/model-port';
+import type { StoredAskedPrompt } from '../store/asked';
+import { memoryStores } from '../store/memory';
+import type { GameStores } from '../store/stores';
+import { stubSkills } from '../testing/fixtures';
+import type { RecordingModel } from '../testing/model';
+import { answeringPlayer, breakingPlayer } from '../testing/player';
+import { LOCAL_TURN_PROMPTS } from './prompt';
 import { runModelGame } from './run-model-game';
 
 const ACCESS: ModelAccess = {
@@ -16,63 +23,61 @@ const ACCESS: ModelAccess = {
   } satisfies ModelCapability,
 };
 
-/** 随机源一直取 0：洗牌与并列抽签都走同一条确定的路径，对局因此可复现。 */
+/** 随机源一直取 0：洗牌走同一条确定的路径，对局因此可复现。 */
 const RANDOM = () => 0;
 
-/** 从提示词里读回来的两句：他坐几号，这次能选哪些座位。 */
-function briefOf(request: ModelRequest): { seatNo: number; seats: number[] } {
-  const seatNo = request.system.match(/坐 (\d+) 号/)?.[1];
-  if (seatNo === undefined) throw new Error(`提示词里没写他坐几号：${request.system}`);
-
-  return {
-    seatNo: Number(seatNo),
-    seats: [...request.prompt.matchAll(/^- (\d+) 号$/gm)].map((match) => Number(match[1])),
-  };
-}
-
-/**
- * 假模型的作答口径。它除了提示词什么也没有，于是只能按提示词里的线索认这一问在问什么。
- * 认不出的形状不兜底：宁可当场炸，也不要它默默交一个形状合法的废话，把整局跑成一场假胜利。
- */
-function answerOf(request: ModelRequest): string {
-  // 质疑是唯一会问 accept 的那一问，一律通过，整局走不到修订。
-  // 它的提示词里没有「他坐几号」那段自述，得排在取身份之前。
-  if (request.prompt.includes('"accept"')) return JSON.stringify({ accept: true, issues: '' });
-
-  const { seatNo, seats } = briefOf(request);
-
-  // 女巫与警徽那一问每支都带 kind；能不用药、能撕掉就选那一支，不必再挑座位。
-  if (request.prompt.includes('"const": "none"')) return JSON.stringify({ kind: 'none' });
-  if (request.prompt.includes('"const": "tear"')) return JSON.stringify({ kind: 'tear' });
-
-  // 上警、退水、自爆是同一个形状，只有这次要做什么分得开。
-  // 前三号上警、其余不上，退水与自爆都不做：留出警下的人才有票投，警徽那一串流程也才走得到。
-  if (request.prompt.includes('"type": "boolean"')) {
-    return JSON.stringify(request.prompt.includes('决定是否上警竞选警长。') && seatNo <= 3);
-  }
-
-  if (request.prompt.includes('"left"')) return JSON.stringify('left');
-  if (request.prompt.includes('"type": "number"')) return JSON.stringify(seats[0] ?? null);
-
-  // 没有形状的那一问就是发言。
-  return `我坐 ${seatNo} 号，先听前面的。`;
-}
-
-/** 跑完一整局，把假模型收到的那一串和结果一起交出来。 */
-async function playGame() {
-  const setup = createGameSetup({ gameId: 'g1', boardId: '12p_wolf_king', random: RANDOM });
-  const model = answeringModel(answerOf);
+/** 跑一局，把假玩家收到的那一串和结果一起交出来；resume 给了就从那一格接着跑。 */
+async function playGame(
+  stores?: GameStores,
+  options: { model?: ModelPort; resume?: StageAnchor; boardId?: BoardId } = {},
+) {
+  const setup = createGameSetup({
+    gameId: 'g1',
+    boardId: options.boardId ?? '12p_wolf_king',
+    random: RANDOM,
+  });
+  const model = (options.model ?? answeringPlayer()) as RecordingModel;
 
   const result = await runModelGame({
     setup,
     playerIds: setup.seats.map((seat) => `p${seat.seatNo}`),
-    runtime: { port: model, access: ACCESS },
+    runtime: { port: model, access: ACCESS, skills: stubSkills() },
     promptSource: LOCAL_TURN_PROMPTS,
-    random: RANDOM,
     minuteOf: () => 0,
+    stores,
+    resume: options.resume,
   });
 
   return { result, model };
+}
+
+/**
+ * 存储照旧，只把「按行动键取记录」这一下记下来。
+ * 走到哪一问就取哪一个键：取了几次就是重走了几问，整局重放的取用次数跟整跑一样多。
+ */
+function countingStores(): { stores: GameStores; lookups: string[] } {
+  const stores = memoryStores();
+  const lookups: string[] = [];
+  const find = stores.actions.find.bind(stores.actions);
+  stores.actions.find = async (key) => {
+    lookups.push(key);
+    return find(key);
+  };
+
+  return { stores, lookups };
+}
+
+/** 存储照旧，只把落下来的提问攒起来。 */
+function recordingStores(): { stores: GameStores; rows: StoredAskedPrompt[] } {
+  const stores = memoryStores();
+  const rows: StoredAskedPrompt[] = [];
+  const append = stores.asked.append.bind(stores.asked);
+  stores.asked.append = async (gameId, asked) => {
+    rows.push(asked);
+    await append(gameId, asked);
+  };
+
+  return { stores, rows };
 }
 
 describe('整局接入', () => {
@@ -82,6 +87,13 @@ describe('整局接入', () => {
     expect([FACTIONS.GOOD, FACTIONS.WEREWOLF]).toContain(result.winner);
     expect(result.state.day).toBeGreaterThan(1);
     expect(result.state.players.some((player) => !player.isAlive)).toBe(true);
+  });
+
+  it('换成 6 人板也照样从头跑到分出胜负', async () => {
+    const { result } = await playGame(undefined, { boardId: '6p_white_wolf' });
+
+    expect(result.state.players).toHaveLength(6);
+    expect([FACTIONS.GOOD, FACTIONS.WEREWOLF]).toContain(result.winner);
   });
 
   it('竞选、发言、投票与夜里那几问都真的问出去了', async () => {
@@ -110,7 +122,6 @@ describe('整局接入', () => {
 
     expect(result.outcomes.length).toBeGreaterThan(0);
     for (const outcome of result.outcomes) {
-      expect(outcome.snapshot.inputHash).toMatch(/^[0-9a-f]{64}$/);
       expect(outcome.snapshot.prompts.length).toBeGreaterThan(0);
     }
     expect(JSON.stringify(result.outcomes.map((outcome) => outcome.snapshot))).not.toContain(
@@ -126,6 +137,21 @@ describe('整局接入', () => {
     expect(last?.prompt).toContain(' 号发言：');
   });
 
+  it('拿同一份存储再跑一遍，每一问都按记录复用，一次模型都不问', async () => {
+    const stores = memoryStores();
+    const first = await playGame(stores);
+
+    // 断了再起时台账与记录都是整份铺回来的，比提问那一刻长出好几条；
+    // 复算要按每问存下的记号取回当时那份事实，不然这一跑看到的就是整份台账，跟当初那一问对不上。
+    const second = await playGame(stores);
+
+    expect(second.model.calls).toHaveLength(0);
+    expect(second.result.winner).toBe(first.result.winner);
+    expect(second.result.state.players.map((player) => player.isAlive)).toEqual(
+      first.result.state.players.map((player) => player.isAlive),
+    );
+  });
+
   it('同一份牌、同一个随机源跑两遍，出来的结果一样', async () => {
     const first = await playGame();
     const second = await playGame();
@@ -137,12 +163,63 @@ describe('整局接入', () => {
     );
   });
 
-  it('整局冻住的是同一份提示词', async () => {
-    const { result } = await playGame();
+  it('每一次提问都落一份，折摘要那一问也在里面', async () => {
+    const { stores, rows } = recordingStores();
+    const { model } = await playGame(stores);
 
-    for (const name of Object.values(TURN_PROMPT_NAMES)) {
-      expect(result.prompts[name].source).toBe('local');
-      expect(result.prompts[name].version).toBeNull();
-    }
+    // 一处不漏：问出去几次就落几行，包括绕开行动图的那几问。
+    expect(rows).toHaveLength(model.calls.length);
+    // 折摘要不在行动里，它的那几行没有行动键——按这个就能跟玩家那几问分开。
+    const summaries = rows.filter((row) => row.actionKey === null);
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(summaries.every((row) => row.tool?.description.includes('压成每人一条'))).toBe(true);
+  });
+
+  it('断在某一问上，那一问的题面也留得下', async () => {
+    const { stores, rows } = recordingStores();
+    const model = breakingPlayer(400);
+
+    await expect(playGame(stores, { model })).rejects.toThrow('这一跑断在这儿');
+
+    // 落的是发出去那一刻，不是答完之后：断的这一问连答复都没吐出来，那一行照样在。
+    const broken = model.calls.at(-1);
+    const row = rows.find((asked) => asked.prompt === broken?.prompt);
+    expect(row).toBeDefined();
+    // 断的这次是首问，不是重问那一版（重问那版题面也留得下，见 provider.spec 那条）。
+    expect(row?.prompt).not.toContain('上一次交的');
+    // 那一行指着行动记录里那条没答完的——崩在哪儿，按行动键就跟那一问对上了。
+    const key = row?.actionKey;
+    if (!key) throw new Error('断的这一问没落下行动键');
+    expect(await stores.actions.find(key)).toMatchObject({ status: 'running' });
+  });
+
+  it('断在局中：从最后一份锚点接着跑，答过的那些不再问模型', async () => {
+    const clean = await playGame();
+    const { stores, lookups } = countingStores();
+    // 整局五百多次模型调用，断在第四百次上：前面答过的那一大片都该留在记录里。
+    await expect(playGame(stores, { model: breakingPlayer(400) })).rejects.toThrow(
+      '这一跑断在这儿',
+    );
+
+    const anchor = await stores.steps.last('g1');
+    if (!anchor) throw new Error('断了却没落下锚点');
+
+    lookups.length = 0;
+    const resumed = await playGame(stores, { resume: anchor });
+    const asked = resumed.model.calls.map((call) => call.prompt);
+
+    // 接着跑问的正好是整跑最后那一段：前面答过的一问都没重问，题面也一问不差。
+    expect(asked).toEqual(
+      clean.model.calls.slice(clean.model.calls.length - asked.length).map((call) => call.prompt),
+    );
+    // 断在大半之后接着跑，问的只该剩最后一小段：省下的那些全是从记录里复用的。
+    expect(asked.length).toBeLessThan(clean.model.calls.length / 2);
+    // 前面那几格一概不重放：接着跑只按断点之后的键取记录，前面答过的那些键一次都没碰。
+    // 少了这一条，整局从头重放也照样过——重放时每一问都按记录复用，问出来的话一模一样。
+    expect(lookups.length).toBeLessThan(clean.model.calls.length / 2);
+    expect(resumed.result.winner).toBe(clean.result.winner);
+    expect(resumed.result.state.players.map((player) => player.isAlive)).toEqual(
+      clean.result.state.players.map((player) => player.isAlive),
+    );
   });
 });

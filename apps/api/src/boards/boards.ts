@@ -1,7 +1,7 @@
 import { ROLES } from '@werewolf/shared';
 import { DEALABLE_ROLES, type DealableRole } from '../core/roles';
 
-export const BOARD_IDS = ['12p_wolf_king', '12p_white_wolf'] as const;
+export const BOARD_IDS = ['12p_wolf_king', '12p_white_wolf', '6p_white_wolf'] as const;
 
 export type BoardId = (typeof BOARD_IDS)[number];
 
@@ -41,6 +41,17 @@ export const ALL_BOARDS: Record<BoardId, BoardConfig> = {
       [ROLES.GUARD]: 1,
       [ROLES.VILLAGER]: 4,
       [ROLES.WEREWOLF]: 3,
+      [ROLES.WHITE_WOLF]: 1,
+    },
+    hasSheriff: true,
+  },
+  '6p_white_wolf': {
+    name: '6 人局 · 预守白狼王',
+    roles: {
+      [ROLES.SEER]: 1,
+      [ROLES.GUARD]: 1,
+      [ROLES.VILLAGER]: 2,
+      [ROLES.WEREWOLF]: 1,
       [ROLES.WHITE_WOLF]: 1,
     },
     hasSheriff: true,

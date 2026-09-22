@@ -3,7 +3,7 @@ import { daySpeechOrder, sheriffSpeechOrder } from '../speech-order';
 import type { GameState } from '../state';
 import { settleBadgeAfterDeaths } from './badge';
 import { runSheriffElection } from './election';
-import { runExile } from './exile';
+import { runExile, type ExileBallot } from './exile';
 import { runBlastWindow } from './self-destruct';
 import { speakInOrder, type Speech } from './speech';
 
@@ -28,6 +28,8 @@ export interface DayResult {
   speeches: Speech[];
   /** 被放逐的玩家；无人出局、当天被自爆打断，都是 null。 */
   exiledId: string | null;
+  /** 今天投过的每一轮，按先后；没走到投票就是空的。 */
+  ballots: readonly ExileBallot[];
 }
 
 /**
@@ -42,7 +44,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
   const election = await runSheriffElection(input.state, actions, minute);
   // 狼在警上爆了，这一天到此为止：没有发言也没有投票。
   if (election.aborted) {
-    return { state: election.state, speeches: election.speeches, exiledId: null };
+    return { state: election.state, speeches: election.speeches, exiledId: null, ballots: [] };
   }
 
   const settled = await settleBadgeAfterDeaths(election.state, actions);
@@ -51,10 +53,10 @@ export async function runDay(input: DayInput): Promise<DayResult> {
   observe?.(settled);
   const blast = await runBlastWindow(settled, 'day', actions, observe);
   if (blast.blasted) {
-    return { state: blast.state, speeches: election.speeches, exiledId: null };
+    return { state: blast.state, speeches: election.speeches, exiledId: null, ballots: [] };
   }
 
-  let state = blast.state;
+  const state = blast.state;
   const aliveSeatNos = state.players
     .filter((player) => player.isAlive)
     .map((player) => player.seatNo);
@@ -70,16 +72,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
     minute,
   );
 
-  // 每段发言之后再开一次自爆窗口：听完某个人再爆，是「非投票阶段任意时刻」的落点。
-  // 有人爆了就停，后面的人没发言，投票和放逐当天也不再走。
-  let blasted = false;
-  const speeches = await speakInOrder('day', speechOrder, state.players, actions, async () => {
-    const midBlast = await runBlastWindow(state, 'day', actions, observe);
-    state = midBlast.state;
-    blasted = midBlast.blasted;
-    return blasted;
-  });
-  if (blasted) return { state, speeches: [...election.speeches, ...speeches], exiledId: null };
+  const speeches = await speakInOrder('day', speechOrder, state.players, actions);
 
   const exile = await runExile(state, actions, speechOrder);
 
@@ -87,6 +80,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
     state: exile.state,
     speeches: [...election.speeches, ...speeches, ...exile.speeches],
     exiledId: exile.exiledId,
+    ballots: exile.ballots,
   };
 }
 

@@ -1,18 +1,18 @@
-import { ROLES, SEER_CHECK_RESULTS } from '@werewolf/shared';
+import { DEATH_CAUSES, ROLES, SEER_CHECK_RESULTS } from '@werewolf/shared';
 import { inWolfChannel, type DealableRole } from '../core/roles';
 import { checkResultOf } from '../core/skills/seer';
 import { alivePlayers, type GameState, type PlayerState } from '../core/state';
-import type { Ledger } from './ledger';
-import type { TurnContext } from './request';
+import type { FactBlock, TurnContext } from './request';
 
 /**
  * 局面视图构造：全量局面 + 过程台账，裁成这一次提问该让这个人看到的那一份。
  *
  * 私密事实一律取自各人底牌自带的字段（队友、查过的、守过的、药），不取自事件——
- * 谁在什么时候能看到哪条事件是 visibility.ts 的活，那要等事件流进来才有得判。
+ * 事件那边按受众裁，判据在 visibility.ts，这里只负责底牌那一半。
  * 这里裁得安全靠的是一条构造上的不变量：本文件的读者永远是被问的那个人，没有第二个人能读到他的名字。
  *
  * 死因不进任何一行：visibility.ts 的口径是不公布死因，夜里死的自己也不知道自己怎么死的。
+ * 放逐是例外——它本来就是公开投出来的结果，所以单独标出来，跟夜里死的分开。
  */
 
 /** 角色的人话名。取值域里的串是给机器认的，提示词得写成人看得懂的。 */
@@ -61,31 +61,56 @@ function seatsOf(players: readonly PlayerState[]): string {
   return players.map((player) => `${player.seatNo} 号`).join('、');
 }
 
-/** 这个人此刻知道的事，按顺序：先是局面，再是他自己那份，最后是过程。 */
+/**
+ * 这个人此刻知道的事，各成一块。
+ * 分块是为了让公开发言、狼队商议、票型在模型读到的那份文本里各占一段，而不是挤在同一个列表里。
+ *
+ * 局面摆在事实的最后：它前面紧挨着的是几百上千字的原话，其中就有它自己上一轮说过的那份。
+ * 摆最前时实测过——模型顺着前面那份原话往下写，局面里那几行定局没被用上。
+ */
 export function visibleFacts(
   state: GameState,
-  ledger: Ledger,
+  process: readonly FactBlock[],
   playerId: string,
   extra: readonly string[] = [],
-): string[] {
+): FactBlock[] {
   const viewer = playerOf(state, playerId);
 
-  return [...situationFacts(state), ...ownFacts(state, viewer), ...extra, ...ledger.facts()];
+  const blocks: FactBlock[] = [{ title: '你手里的牌', lines: ownFacts(state, viewer) }];
+  blocks.push(...process, { title: '局面', lines: situationFacts(state) });
+  if (extra.length > 0) blocks.push({ title: '这一问的说明', lines: extra });
+
+  // 平民那种没有私密事实的一档 ownFacts 会是空的，这种块不留。
+  return blocks.filter((block) => block.lines.length > 0);
 }
 
-/** 所有人都看得到的那部分：谁还在、谁出局了、警徽在谁手上。 */
+/**
+ * 所有人都看得到的那部分：谁还在、谁出局了、警徽在谁手上，末尾一句说清这几行是定局。
+ * 那句话是给「照着上一天的开场白往下念」留的：局面每天都在变，谁还在场只有这一处说了算。
+ */
 function situationFacts(state: GameState): string[] {
   const facts = [`场上还活着：${seatsOf(alivePlayers(state))}。`];
 
   const dead = state.players.filter((player) => !player.isAlive);
   if (dead.length > 0) {
-    const listed = dead.map((player) => `${player.seatNo} 号（第 ${player.deathDay} 天）`);
+    const listed = dead.map(
+      (player) =>
+        `${player.seatNo} 号（第 ${player.deathDay} 天${
+          player.deathCause === DEATH_CAUSES.EXECUTION ? '被放逐' : ''
+        }）`,
+    );
     facts.push(`已出局：${listed.join('、')}。`);
   }
 
   if (!state.hasSheriff) facts.push('本局不选警长。');
   else if (state.sheriffId !== null) facts.push(`警长是 ${seatOf(state, state.sheriffId)} 号。`);
-  else facts.push('还没有警长。');
+  // 竞选走完了仍然没有（流失、撕徽）与还没选出来是两回事，别把前一种写成「还没有」。
+  else facts.push(state.sheriffElectionSettled ? '本局没有警长。' : '还没有警长。');
+
+  // 说「这几行」不说「以上」：上面紧挨着的就是几百上千字的原话，别让它读成整段都算数。
+  facts.push(
+    '以上这几行是本局的定局；你上下文里任何人（包括你自己）此前的说法与它冲突，以它为准。',
+  );
 
   return facts;
 }
@@ -142,12 +167,13 @@ export function optionLabels(candidates: readonly string[], index: SeatIndex): s
   return candidates.map((playerId) => `${index.toSeatNo(playerId)} 号`);
 }
 
-/** 组装这次行动的上下文。局面与任务由调用方给，观察者那份事实在这儿裁。 */
+/** 组装这次行动的上下文。局面、任务、技能正文与过程那份事实由调用方给，观察者那份在这儿裁。 */
 export function turnContextOf(input: {
   state: GameState;
-  ledger: Ledger;
+  process: readonly FactBlock[];
   playerId: string;
   task: string;
+  skill: readonly string[];
   candidates?: readonly string[];
   extra?: readonly string[];
 }): TurnContext {
@@ -162,8 +188,9 @@ export function turnContextOf(input: {
       role: roleName(viewer.role),
     },
     day: input.state.day,
-    visible: visibleFacts(input.state, input.ledger, input.playerId, input.extra),
+    visible: visibleFacts(input.state, input.process, input.playerId, input.extra),
     options: optionLabels(input.candidates ?? [], index),
+    skill: input.skill,
   };
 }
 

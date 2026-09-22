@@ -13,6 +13,21 @@ describe('依次发言', () => {
     ]);
   });
 
+  it('每个人拿到的都是这一轮完整的顺序，后面还有谁也在里面', async () => {
+    const seen: Record<string, readonly string[]> = {};
+    const actions = stubActions({
+      speak: async (turn, playerId, order) => {
+        seen[playerId] = order;
+        return '';
+      },
+    });
+
+    await speakInOrder('campaign', [3, 1], makeState(4).players, actions);
+
+    // 不是「轮到谁就只给他排到谁」：还没说的那几个人他得知道是谁。
+    expect(seen).toEqual({ p3: ['p3', 'p1'], p1: ['p3', 'p1'] });
+  });
+
   it('上一个人说完才轮到下一个', async () => {
     const log: string[] = [];
     const actions = stubActions({

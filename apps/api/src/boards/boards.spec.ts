@@ -39,9 +39,20 @@ describe('板子定义', () => {
     expect(swapped).toEqual(sortedHand('12p_white_wolf'));
   });
 
-  it('两份板子都是 12 人、都带警长', () => {
+  it('6 人板是预言家/守卫 + 2 平民 + 狼人/白狼王', () => {
+    // 同上，逐张列出整副牌；人数由这张表管着，不另设人数字段。
+    expect(sortedHand('6p_white_wolf')).toEqual([
+      ROLES.GUARD,
+      ROLES.SEER,
+      ROLES.VILLAGER,
+      ROLES.VILLAGER,
+      ROLES.WEREWOLF,
+      ROLES.WHITE_WOLF,
+    ]);
+  });
+
+  it('每块板子都带警长', () => {
     for (const boardId of BOARD_IDS) {
-      expect(handOf(ALL_BOARDS[boardId])).toHaveLength(12);
       expect(ALL_BOARDS[boardId].hasSheriff).toBe(true);
     }
   });

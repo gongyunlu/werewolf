@@ -8,7 +8,7 @@ import { langfusePromptSource } from './langfuse-prompt-source';
 
 /**
  * 按环境变量拼出提示词源。
- * 凭据没配齐就给一份取不到的源：冻结那一步会整局落到本地模板上，
+ * 凭据没配齐就给一份取不到的源：取用点那一步会落到本地模板上，
  * 这是不起平台的正常跑法，不该拦着不让开局。
  */
 export function promptSourceOf(env: AppEnv): PromptSource {
@@ -30,7 +30,7 @@ export function promptSourceOf(env: AppEnv): PromptSource {
 export function modelRuntimeOf(env: AppEnv): { port: ModelPort; access: ModelAccess } {
   const { MODEL_API_KEY, MODEL_BASE_URL, MODEL_DEFAULT_MODEL } = env;
   // 密钥在这儿拦，不在环境变量契约里拦：不起模型也要能起服务、也能跑测试。
-  if (!MODEL_API_KEY) throw new Error('MODEL_API_KEY 缺失');
+  if (!MODEL_API_KEY) throw new Error('没配 MODEL_API_KEY');
 
   return {
     port: retryingModelPort(openaiModelPort({ timeoutMs: env.MODEL_REQUEST_TIMEOUT_MS }), {

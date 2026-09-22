@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ModelTool } from '../llm/model-port';
 
 /**
  * 决定形状：这次问出去的东西长什么样子，以及模型交回来的答案怎么换回 Core 要的值。
@@ -9,6 +10,35 @@ import { z } from 'zod';
  * 形状一律从 Core 递过来的候选集现算，不照端口签名另抄一份：抄一份就多一处「候选改了这里要跟着改」，
  * 漏改的表现只是模型答了个非法目标，看着像模型不听话，其实是抄漏了。
  */
+
+/** 交答案的那个工具的名字。一次只给一个工具，名字不必跟着形状变。 */
+const TOOL_NAME = 'submit';
+
+/**
+ * 把校验 schema 转成给模型看的那份工具定义。
+ *
+ * 剥掉顶层的 $schema：那是 JSON Schema 给自己写的版本声明，与这次要交的东西无关。
+ * 留着它实测有代价——模型会把整块 definition 原样抄回来交差，那一块正是从这儿出去的样子。
+ *
+ * 形状一律裹进一个单字段的对象：工具参数只收 object 的 JSON Schema，座位号（{enum: [...]}）、
+ * 是非题、女巫那三选一直接发出去，端点是把整份请求一起拒掉，一句「参数不合规」就没了。
+ * 裹的是壳，不是形状本身——答案收回来要剥掉，剥在 graph 的 parseStructured 那一处。
+ */
+export function toolOf(schema: z.ZodType, description: string): ModelTool {
+  const json = { ...(z.toJSONSchema(schema) as Record<string, unknown>) };
+  delete json.$schema;
+
+  return {
+    name: TOOL_NAME,
+    description,
+    parameters: {
+      type: 'object',
+      properties: { value: json },
+      required: ['value'],
+      additionalProperties: false,
+    },
+  };
+}
 
 /** 座位号取值集：候选里有几个座位，答案就只有哪几个。 */
 function seats(seatNos: readonly number[]): z.ZodType<number> {

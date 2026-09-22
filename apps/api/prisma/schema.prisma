@@ -1,0 +1,150 @@
+// 对局库。加表加字段都经由 prisma migrate 出迁移，不手写 SQL。
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// 一局对局的档案：哪块板子、分出了什么胜负。
+model Game {
+  id      String  @id @db.VarChar(64)
+  boardId String  @map("board_id") @db.VarChar(64)
+  // 分出胜负时写这儿。有值就说明这局已经结束，不用再从阶段记录往下跑。
+  winner  String? @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  steps       GameStep[]
+  events      GameEvent[]
+  actions     ActionRecord[]
+  asked       AskedPrompt[]
+  checkpoints GraphCheckpoint[]
+  writes      GraphCheckpointWrite[]
+
+  @@map("games")
+}
+
+// 阶段锚点：每进一格，把当下的完整局面和这一格的输入落下来。
+// 恢复从最后一条接着跑，它前面的阶段不重放。
+model GameStep {
+  gameId          String @map("game_id") @db.VarChar(64)
+  phaseInstanceId String @map("phase_instance_id") @db.VarChar(64)
+  state           Json   @db.JsonB
+  input           Json   @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@id([gameId, phaseInstanceId])
+  @@map("game_steps")
+}
+
+// 过程台账：按 seq 读回来就是提示词里那份「已经发生的事」，各人只看得到受众含自己的那几条。
+model GameEvent {
+  gameId   String @map("game_id") @db.VarChar(64)
+  seq      Int    @db.SmallInt
+  // 由提问键派生的幂等键：重放同一问不会写下第二条。
+  eventKey String @map("event_key") @db.VarChar(200)
+  day      Int    @db.SmallInt
+  text     String @db.Text
+  // 这条事实属于哪一类，取给谁看时按它分块；默认值只为改这一列之前的老行能补上。
+  kind     String @default("other") @db.VarChar(32)
+  // 这条事实发生那一刻谁看得到，存玩家 id；写的人每次都会填，默认值只为老行能补上。
+  audience String[] @default([])
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@id([gameId, seq])
+  @@unique([gameId, eventKey])
+  @@map("game_events")
+}
+
+// 一次提问的提交记录。先立意图，答完再补结果。
+// 恢复按主键取回：答完的直接复用，答一半的带着图里的检查点接着跑完。
+model ActionRecord {
+  actionKey       String @id @map("action_key") @db.VarChar(200)
+  gameId          String @map("game_id") @db.VarChar(64)
+  phaseInstanceId String @map("phase_instance_id") @db.VarChar(64)
+  actionType      String @map("action_type") @db.VarChar(32)
+  actorId         String @map("actor_id") @db.VarChar(64)
+  actionOrdinal   Int    @map("action_ordinal") @db.SmallInt
+  // 立这一问时台账记到第几条。要取回的是这一问当初看到的那一份事实，而那是「位置」不是「键」：
+  // 投票这种答完不留事实的提问，凭键找不回它的位置。
+  ledgerSeq       Int    @default(0) @map("ledger_seq") @db.SmallInt
+  // running 是「这次还没答完」，图里那几个检查点接着把它跑完；done 才是结果。
+  status          String @default("running") @db.VarChar(16)
+  outcome         Json?  @db.JsonB
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  doneAt    DateTime? @map("done_at") @db.Timestamptz
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId, phaseInstanceId])
+  @@map("action_records")
+}
+
+// 问出去的题面。提问那一刻先落一份：答到一半断了，那一问当初看到的是什么也还查得到。
+// 全仓只有这张表不认重——同一问重问几遍就留几行，那正是要看的东西；也正因为认不出「同一问」，
+// 它派不出自然键来，只好另给一个自增主键。
+model AskedPrompt {
+  id        Int     @id @default(autoincrement())
+  gameId    String  @map("game_id") @db.VarChar(64)
+  // 这一问属于哪次行动，按它跟行动记录对上；折摘要那一问不在行动里，为空。
+  actionKey String? @map("action_key") @db.VarChar(200)
+  model     String  @db.VarChar(64)
+  system    String  @db.Text
+  prompt    String  @db.Text
+  // 这一问要它走的工具定义；让它写一段话的那几问（发言）不走工具，为空。
+  tool      Json?   @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([actionKey])
+  @@index([gameId, id])
+  @@map("asked_prompts")
+}
+
+// 图执行进度：每个 superstep 一份状态快照。
+model GraphCheckpoint {
+  gameId             String  @map("game_id") @db.VarChar(64)
+  checkpointNs       String  @default("") @map("checkpoint_ns") @db.VarChar(200)
+  checkpointId       String  @map("checkpoint_id") @db.VarChar(120)
+  parentCheckpointId String? @map("parent_checkpoint_id") @db.VarChar(120)
+  checkpoint         Json    @db.JsonB
+  metadata           Json?   @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@id([gameId, checkpointNs, checkpointId])
+  @@map("graph_checkpoints")
+}
+
+// 分支待写值。恢复时据此跳过已经跑完的那几个节点。
+model GraphCheckpointWrite {
+  gameId       String @map("game_id") @db.VarChar(64)
+  checkpointNs String @default("") @map("checkpoint_ns") @db.VarChar(200)
+  checkpointId String @map("checkpoint_id") @db.VarChar(120)
+  taskId       String @map("task_id") @db.VarChar(120)
+  idx          Int
+  channel      String @db.VarChar(120)
+  value        Json   @db.JsonB
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@id([gameId, checkpointNs, checkpointId, taskId, idx])
+  @@map("graph_checkpoint_writes")
+}

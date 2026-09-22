@@ -6,6 +6,9 @@ dist
 build
 *.tsbuildinfo
 
+# Prisma 生成的客户端
+**/generated/prisma/
+
 # 测试
 coverage
 

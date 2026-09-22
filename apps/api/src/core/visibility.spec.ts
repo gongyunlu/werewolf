@@ -1,7 +1,7 @@
 import { ROLES, VISIBILITY_TYPES, type VisibilityType } from '@werewolf/shared';
 import { DEALABLE_ROLES, factionOf, inWolfChannel, type DealableRole } from './roles';
 import type { PlayerState } from './state';
-import { visibleVisibilities, type Observer } from './visibility';
+import { audienceOf, visibleVisibilities, type Observer } from './visibility';
 
 function observer(role: DealableRole, overrides: Partial<Observer> = {}): Observer {
   return { role, isAlive: true, hasAntidoteUsed: false, ...overrides };
@@ -170,6 +170,43 @@ describe('按事实发生当时的状态判定', () => {
 
     // 致死事实活着也看不到（那是女巫的私密事实），所以他只知道出局了，不知道死于什么。
     expect(project(facts, observers)).toEqual([facts[0], facts[1], facts[3]]);
+  });
+});
+
+describe('一条事实的受众', () => {
+  it('公开事实全场都算，出局者也有旁观权', () => {
+    const players = [
+      player(ROLES.VILLAGER, { id: 'p1', seatNo: 1 }),
+      player(ROLES.WEREWOLF, { id: 'p2', seatNo: 2 }),
+      player(ROLES.SEER, { id: 'p3', seatNo: 3, isAlive: false }),
+    ];
+
+    expect(audienceOf(players, VISIBILITY_TYPES.PUBLIC)).toEqual(['p1', 'p2', 'p3']);
+  });
+
+  it('狼队商议只算此刻还在频道里的人，出局的那只不算', () => {
+    const players = [
+      player(ROLES.WEREWOLF, { id: 'p1', seatNo: 1 }),
+      player(ROLES.VILLAGER, { id: 'p2', seatNo: 2 }),
+      player(ROLES.WOLF_KING, { id: 'p3', seatNo: 3 }),
+      player(ROLES.WEREWOLF, { id: 'p4', seatNo: 4, isAlive: false }),
+    ];
+
+    // 出局者只剩公开可见性，狼队频道的新事实不再算他一份。
+    expect(audienceOf(players, VISIBILITY_TYPES.WOLF)).toEqual(['p1', 'p3']);
+  });
+
+  it('刀口只算此刻还拿得到的人，用掉解药的女巫不算', () => {
+    const players = [
+      player(ROLES.WITCH, { id: 'p1', seatNo: 1 }),
+      player(ROLES.GUARD, { id: 'p2', seatNo: 2 }),
+    ];
+    expect(audienceOf(players, VISIBILITY_TYPES.WOLF_KILL)).toEqual(['p1']);
+
+    // 受众是那一刻算出来就定格的那份：这条是用药之后落的，不追新刀口；
+    // 用药之前落的那条受众里有她，那份名单不因为这一步而改。
+    const afterUse = [{ ...players[0], hasAntidoteUsed: true }, players[1]];
+    expect(audienceOf(afterUse, VISIBILITY_TYPES.WOLF_KILL)).toEqual([]);
   });
 });
 

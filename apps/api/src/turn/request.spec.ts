@@ -26,7 +26,7 @@ describe('行动序号', () => {
     expect(next(voteNode, ACTION_TYPES.WOLF_EXPLODE, 'p1')).toBe(0);
   });
 
-  it('编号拼进行动键，逐段发言的窗口才认得出谁是谁', () => {
+  it('编号拼进行动键，同一个人被问两回就是两条记录', () => {
     const next = actionOrdinals();
     const keyOf = () =>
       actionKey(dayNode, ACTION_TYPES.SPEECH, 'p1', next(dayNode, ACTION_TYPES.SPEECH, 'p1'));

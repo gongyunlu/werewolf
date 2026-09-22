@@ -1,54 +1,61 @@
-import type { PromptSource } from '../llm/prompt-template';
-import type { RandomSource } from '../boards/deal';
 import type { GameSetup } from '../boards/setup';
-import { runGame, type GameLoopResult } from '../core/loop';
+import { runGame, type GameLoopResult, type StageAnchor } from '../core/loop';
 import { createGameState } from '../core/state';
+import type { PromptSource } from '../llm/prompt-template';
+import { memoryStores } from '../store/memory';
+import type { GameStores } from '../store/stores';
 import type { TurnOutcome } from './graph';
-import { freezeTurnPrompts, type FrozenPrompts } from './prompt';
 import { modelActions } from './provider';
 import type { TurnRuntime } from './request';
 
 /**
- * 把一局跑完：冻提示词、造适配器、交给 Core 从头推到分出胜负。
+ * 把一局跑完：造适配器、交给 Core 推到分出胜负。
  *
- * 提示词只在这里冻一次，整局共用那一份——平台改版、网络断了，局中换正文都算换了输入，
- * 而这局的每一次决定都要能按同一份输入复算出来。
+ * 提示词的来处由调用方定，整局接的都是同一个地方：图里哪条走到才取哪两条。
  */
 export interface ModelGameInput {
   /** 建局快照，由 createGameSetup 发牌得到。 */
   setup: GameSetup;
   /** 玩家 id，按座位下标对齐。 */
   playerIds: readonly string[];
-  /** 模型端口与接入身份；提示词由本函数自己冻。 */
-  runtime: Omit<TurnRuntime, 'prompts'>;
-  /** 提示词源。平台整份取不到时整局走本地兜底那份。 */
+  /** 模型端口与接入身份。 */
+  runtime: Omit<TurnRuntime, 'promptSource'>;
+  /** 提示词的来处。 */
   promptSource: PromptSource;
-  /** 狼队提刀并列、发牌用的随机源。 */
-  random: RandomSource;
   /** 第 day 天发言方向的分钟数。 */
   minuteOf: (day: number) => number;
   maxDays?: number;
+  /**
+   * 台账、行动记录与阶段锚点写哪儿。默认是内存那几份，跑完就丢；交给它一份留得住的，
+   * 同一局再跑一遍就是拿存档复算：每一问都按记录复用，不再问模型。
+   */
+  stores?: GameStores;
+  /** 从哪一格接着跑。不给就从头开始，从头开始的那一跑与有没有存档无关。 */
+  resume?: StageAnchor;
 }
 
 export interface ModelGameResult extends GameLoopResult {
-  /** 整局冻住的那六条提示词。 */
-  prompts: FrozenPrompts;
   /** 每次行动的产物，按发生顺序。 */
   outcomes: readonly TurnOutcome[];
 }
 
 export async function runModelGame(input: ModelGameInput): Promise<ModelGameResult> {
-  const prompts = await freezeTurnPrompts(input.promptSource);
-  const actions = modelActions({ ...input.runtime, prompts });
+  // 默认写进用完即弃的那几份：调用方不交存档过来，这一跑就没有下一段要接。
+  const stores = input.stores ?? memoryStores();
+  const actions = modelActions({ ...input.runtime, promptSource: input.promptSource }, stores);
 
   const settled = await runGame({
     state: createGameState(input.setup, input.playerIds),
     actions,
-    random: input.random,
     minuteOf: input.minuteOf,
     observe: actions.observe,
+    // 每进一格都落一份锚点：这一跑断了，下一跑就能从断的那一格接着跑。
+    onStage: (anchor) => stores.steps.append(input.setup.gameId, anchor),
+    // 票型的定局只有 Core 有，由它交出来，适配器照记进台账。
+    onFacts: (ballots) => actions.recordBallots(ballots),
+    resume: input.resume,
     maxDays: input.maxDays,
   });
 
-  return { ...settled, prompts, outcomes: actions.outcomes() };
+  return { ...settled, outcomes: actions.outcomes() };
 }

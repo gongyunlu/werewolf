@@ -6,6 +6,9 @@ const envSchema = z.object({
   // 后端服务监听端口
   API_PORT: z.coerce.number().int().min(1).max(65535).default(3201),
 
+  // 对局库。没有默认值：连哪个库是「这一局存哪儿」，不是「服务怎么起」，在这儿再写一份等于把选型藏回代码里。
+  DATABASE_URL: z.string().min(1),
+
   // 提示词平台。三个都空着就整局走本地模板，这是正常的跑法，不起服务也跑得动。
   LANGFUSE_HOST: z.string().default('http://localhost:3100'),
   LANGFUSE_PUBLIC_KEY: z.string().default(''),

@@ -1,7 +1,9 @@
 import { ACTION_TYPES } from '@werewolf/shared';
 import {
   actionKey,
+  actorOfActionKey,
   nextPhaseInstanceId,
+  nodeNameOf,
   parsePhaseInstanceId,
   phaseInstanceId,
   type ActionScope,
@@ -48,6 +50,17 @@ describe('节点实例身份', () => {
       const next = nextPhaseInstanceId(phaseInstanceId(37, 'night_resolve'), 'day');
 
       expect(parsePhaseInstanceId(next)).toBe(next);
+    });
+  });
+
+  describe('取节点名', () => {
+    it('取回的就是造它时那个名字，序号是几都不影响', () => {
+      for (const nodeName of ['init', 'night', 'night_resolve', 'exileSkills', 'wolf_B']) {
+        expect(nodeNameOf(phaseInstanceId(0, nodeName))).toBe(nodeName);
+        expect(nodeNameOf(nextPhaseInstanceId(phaseInstanceId(37, 'day'), nodeName))).toBe(
+          nodeName,
+        );
+      }
     });
   });
 
@@ -153,5 +166,30 @@ describe('行动键', () => {
     expect(() => actionKey(scopeOf(3, 'vote'), ACTION_TYPES.VOTE, 'p2', -1)).toThrow(
       '行动序号必须是非负整数',
     );
+  });
+
+  describe('取回行动者', () => {
+    it('造出来的键都取回得到那个人，带分隔符与引号的也一样', () => {
+      for (const actorId of ['p1', 'a:b', 'a"b', 'a,b]']) {
+        const key = actionKey(scopeOf(3, 'vote'), ACTION_TYPES.SPEECH, actorId, 2);
+        expect(actorOfActionKey(key)).toBe(actorId);
+      }
+    });
+
+    it('不是行动键的那种返回 null，不当成错', () => {
+      const notActionKeys = [
+        '', // 空串
+        'p2', // 裸的 id
+        'node/3/vote/ballot/exile', // 票型那种按节点实例与轮次拼的
+        '{', // 不是 JSON
+        '"p2"', // JSON 但不是数组
+        '["g1","node/3/vote","speech","p2"]', // 少了末位
+        '["g1","node/3/vote","speech","p2",0,"多的"]', // 多了一位
+        '["g1","node/3/vote","speech",null,0]', // 行动者不是字符串
+        '["g1","node/3/vote","speech","",0]', // 行动者是空串
+      ];
+
+      for (const key of notActionKeys) expect(actorOfActionKey(key)).toBeNull();
+    });
   });
 });

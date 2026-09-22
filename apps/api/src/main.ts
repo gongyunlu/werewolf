@@ -1,24 +1,13 @@
 import 'reflect-metadata';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/filters/api-exception.filter';
 import { loadEnv } from './config/env';
-
-// .env 只放在仓库根目录（跟 .env.example 同级）。开发态的 src 和产物 dist 都在
-// apps/api 下一层，往上三级就是根，两种跑法落同一个文件。
-// 不能按 cwd 找：dev:api 走 pnpm --filter，cwd 是 apps/api。
-// .env.local 放密钥，排在前面：loadEnvFile 不覆盖已经设过的键，后读的那份只能补空缺。
-for (const name of ['.env.local', '.env']) {
-  const envFile = resolve(__dirname, `../../../${name}`);
-  if (existsSync(envFile)) {
-    process.loadEnvFile(envFile);
-  }
-}
+import { loadEnvFiles } from './config/env-files';
 
 async function bootstrap() {
+  loadEnvFiles();
   const env = loadEnv();
   const app = await NestFactory.create(AppModule);
 

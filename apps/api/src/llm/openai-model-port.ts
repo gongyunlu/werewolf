@@ -8,9 +8,11 @@ import { endpointOf } from './model-capability';
 import {
   ModelCallError,
   type ModelAccess,
+  type ModelCallOptions,
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
+  type ModelTool,
 } from './model-port';
 
 /** 发请求的口子，形状照着 fetch 走。用例里照着造一个就行。 */
@@ -18,7 +20,7 @@ export type SendRequest = (url: string | URL | Request, init?: RequestInit) => P
 
 /** 一次请求的收发口子。超时与请求实现都从这儿进，用例里换成假的。 */
 export interface OpenaiModelPortOptions {
-  /** 单次请求的上限毫秒数。实测只管到响应头：流式下成了流之后，正文拖多久都不中止。 */
+  /** 单次调用的上限毫秒数，不传就是这个默认值。 */
   timeoutMs?: number;
   /** 只用来替换实现，跑起来就是全局 fetch。 */
   fetch?: SendRequest;
@@ -26,9 +28,61 @@ export interface OpenaiModelPortOptions {
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-/** 答案正文，OpenAI 那套：取第一条 choice 的 message.content。 */
+/**
+ * 这次调用的信号：截止时间和调用方的喊停合成一个，哪个先到都算这次结束。
+ *
+ * 不交给 SDK 自己的 timeout：它只管到响应头，流式下成了流之后正文拖多久都不中止。
+ * 由信号管则一条路径到底，连「是谁喊的停」也一起带得出来。
+ */
+function callSignal(call: ModelCallOptions, timeoutMs: number): AbortSignal {
+  const signals = [AbortSignal.timeout(timeoutMs)];
+  if (call.signal) signals.push(call.signal);
+  return AbortSignal.any(signals);
+}
+
+/**
+ * 被中止的归类：端口自己那个超时归 transient，调用方喊停归 deadline。
+ *
+ * 两者分开是因为该不该再来一次不一样：单次调用的上限是「这次没赶上」，端点这次排得久、
+ * 下次未必，重发一次还有戏；调用方喊停是整件事不做了（阶段超期、整局停掉），
+ * 再发一次只是白等，而且它已经不要这份答复了。
+ *
+ * 判据取信号而不是错误的形状：中止在各层冒出来的样子不一样（fetch 的 AbortError、
+ * SDK 自己包的那层、流读到一半断掉），信号只有一个。
+ */
+function aborted(signal: AbortSignal, url: string, emitted: boolean): ModelCallError {
+  const { reason } = signal;
+  // 按名字判而不是 instanceof：本机跑起来是 DOMException，而这一层用的 fetch 实现
+  // 换一个（undici 之外的、浏览器里的）抛的就不是同一个类，判错会把该重发的当成不该重发的。
+  const name = (reason as { name?: unknown } | undefined)?.name;
+  const timedOut = name === 'TimeoutError';
+  return new ModelCallError(
+    timedOut ? 'transient' : 'deadline',
+    `${url} 的这次调用${timedOut ? '超时' : '被中止'}`,
+    { cause: reason, partialOutput: emitted },
+  );
+}
+
+/**
+ * 答复正文，OpenAI 那套：取第一条 choice 的 message。
+ * 正文与工具调用至少有一个：走工具时正文是空串，写正文时没有 tool_calls。
+ *
+ * reasoning_content 是思考那一段的字段名。跟 content 是两条独立的通道，走不走工具都可能有它。
+ */
 const RESPONSE = z.object({
-  choices: z.array(z.object({ message: z.object({ content: z.string() }) })).min(1),
+  choices: z
+    .array(
+      z.object({
+        message: z.object({
+          content: z.string().nullish(),
+          reasoning_content: z.string().nullish(),
+          tool_calls: z
+            .array(z.object({ function: z.object({ name: z.string(), arguments: z.string() }) }))
+            .nullish(),
+        }),
+      }),
+    )
+    .min(1),
 });
 
 /**
@@ -84,6 +138,23 @@ function textOf(value: unknown): string {
 }
 
 /**
+ * 这次请求的工具那一截。不给工具就是空对象，不往请求里塞一个空数组。
+ * tool_choice 点名那一个工具，模型必须调它，不能改成写一段正文。
+ */
+function toolParams(tool: ModelTool | undefined): Record<string, unknown> {
+  if (!tool) return {};
+  return {
+    tools: [
+      {
+        type: 'function',
+        function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+      },
+    ],
+    tool_choice: { type: 'function', function: { name: tool.name } },
+  };
+}
+
+/**
  * 把 SDK 抛出来的东西翻成这一层的错码。认不出来的一律原样抛。
  *
  * 原样抛是有意的：拼不成 URL 这类本地配置的毛病，SDK 抛的是裸 TypeError，不裹。
@@ -134,13 +205,14 @@ async function collectStream(
   params: ChatCompletionCreateParamsStreaming,
   url: string,
   onDelta: (delta: string) => void,
+  signal: AbortSignal,
 ): Promise<ModelResponse> {
   let full = '';
   let started = false;
   let emitted = false;
 
   try {
-    const stream = await client.chat.completions.create(params);
+    const stream = await client.chat.completions.create(params, { signal });
     started = true;
     for await (const chunk of stream) {
       // choices 整个缺键的分片（有些网关只推一段 usage）会让 [0] 直接抛 TypeError。
@@ -151,16 +223,26 @@ async function collectStream(
       onDelta(delta);
     }
   } catch (error) {
+    // 中止排在最前面：被喊停的流和半路断掉的流长得一样，得先分辨出来，
+    // 不然一次「不要了」会被当成这次没读完，重发一遍。
+    if (signal.aborted) throw aborted(signal, url, emitted);
     if (!started) throw asModelCallError(error, url);
     throw streamFailure(error, url, emitted);
   }
+
+  // 被中止的流未必抛错：SDK 收到底层读到一半被中止时是把迭代就地收尾（它自己的分类见
+  // createAbortableSSESource），这一条不拦，超时会被当成一次「答到一半就结束」的正常答复
+  // ——拿到手的是一段残文，调用方却以为那是对它的完整回答。
+  if (signal.aborted) throw aborted(signal, url, emitted);
 
   // 一个字的正文都没收到，跟一次收完时收到空白是同一件事。
   // 但吐过空白分片的另说：调用方手里已经拿到一段了，重发会接在它后面。
   if (full.trim() === '') {
     throw new ModelCallError('transient', `${url} 的答复正文是空的`, { partialOutput: emitted });
   }
-  return { content: full };
+  // 流式那一侧不接受工具，见上面那条拦：走到这儿的答复一定是正文写出来的。
+  // 思考那一段不取：它走的是分片上的另一个字段，眼下这一步没有调用方，等真有人用再接。
+  return { content: full, toolCall: null, reasoning: null };
 }
 
 /**
@@ -169,9 +251,9 @@ async function collectStream(
  * 走官方 SDK 而不是自己拼 HTTP，图的是流式那一侧：SSE 的分片、半包、收尾都由它管，
  * 而它的错误对象保留着状态码、响应头和解析开的报文——这几点是选它而不是选 LangChain 那层包装的原因。
  *
- * 不传 response_format：端口收到的是一次拼好的提示词，里面没有结构定义，
- * 而发言那几问要的本来就是一段自然语言。结构化与否由调用方在提示词里说清、自己解析，
- * 端口不替它选。
+ * 要结构化就由调用方给一份工具定义，这儿用 tool_choice 点名那一个工具逼它调；不给就是写一段话。
+ * 不走 response_format：那也是「按 schema 输出 JSON」，但形状约束不如工具硬，
+ * 而且这几问每次要的东西不一样，工具定义得按这一次的形状现造。
  */
 export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, fetch: send } = options;
@@ -181,8 +263,8 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
     return new OpenAI({
       apiKey: access.apiKey,
       baseURL: endpointOf(access.baseUrl),
-      timeout: timeoutMs,
-      // 重试归上层那一层管。SDK 自己再试一遍就是两层重试相乘，一次失败能烧掉十几次调用，
+      // 超时与中止都归信号管，见 callSignal。
+      // 重试归上层那一层管：SDK 自己再试一遍就是两层重试相乘，一次失败能烧掉十几次调用，
       // 而且最后报出来的错分不清是哪一层在试。
       maxRetries: 0,
       ...(send ? { fetch: send } : {}),
@@ -193,9 +275,12 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
     async generate(
       request: ModelRequest,
       access: ModelAccess,
-      onDelta?: (delta: string) => void,
+      call: ModelCallOptions = {},
     ): Promise<ModelResponse> {
       const url = `${endpointOf(access.baseUrl)}/chat/completions`;
+      // 已经喊停的 signal 由 SDK 自己拦下：它一个请求都不会发，抛出来的错照样落到下面那条
+      // 「signal 已中止」的判定上。这儿不再多查一遍。
+      const signal = callSignal(call, call.timeoutMs ?? timeoutMs);
       const client = clientFor(access);
       const messages: ChatCompletionMessageParam[] = [
         { role: 'system', content: request.system },
@@ -203,14 +288,21 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
       ];
       // 关思维链那个参数各家写法不一样，形状由能力声明带进来；这家没有就是空对象。
       const extra = access.capability.reasoningOff ?? {};
-      const params = { model: access.model, messages, ...extra };
+      const params = { model: access.model, messages, ...extra, ...toolParams(request.tool) };
 
-      if (onDelta) return collectStream(client, { ...params, stream: true }, url, onDelta);
+      if (call.onDelta) {
+        // 走工具时没有正文可推：真到这一步是调用方把两个口子一起给了，当场停下比闷着不吐字强。
+        if (request.tool) {
+          throw new ModelCallError('fatal', '流式与工具一起给：走工具时没有正文可以一段段推');
+        }
+        return collectStream(client, { ...params, stream: true }, url, call.onDelta, signal);
+      }
 
       let answer: unknown;
       try {
-        answer = await client.chat.completions.create(params);
+        answer = await client.chat.completions.create(params, { signal });
       } catch (error) {
+        if (signal.aborted) throw aborted(signal, url, false);
         // SDK 只在 content-type 不是 JSON 时把正文原样交出来；它认了 JSON 头而正文又不是 JSON 时，
         // 抛的是它自己 JSON.parse 的裸 SyntaxError，带不进 APIError。这跟网关塞段 HTML 是一回事
         // ——这次没拿到，重发就有戏。不裹的话它会穿过重试层，报一个指不到端点的解析错。
@@ -234,11 +326,25 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
         });
       }
 
-      // min(1) 已经保证有第一条，空正文才是要拦的那个：它走到调用方那儿只会变成一句
+      // min(1) 已经保证有第一条，空答复才是要拦的那个：它走到调用方那儿只会变成一句
       // 「模型没答」，那时已经看不见这次请求的来龙去脉了。同样是这次没拿到。
-      const text = content.data.choices[0].message.content;
-      if (text.trim() === '') throw new ModelCallError('transient', `${url} 的答复正文是空的`);
-      return { content: text };
+      //
+      // 走工具时正文本来就是空的，答案在 tool_calls 那一头：只看正文会把这次判成没拿到，
+      // 白重试三次还是同一个结果。
+      const message = content.data.choices[0].message;
+      const text = message.content ?? '';
+      const invoked = message.tool_calls?.[0];
+      if (text.trim() === '' && !invoked) {
+        throw new ModelCallError('transient', `${url} 的答复正文是空的`);
+      }
+
+      return {
+        content: text,
+        toolCall: invoked
+          ? { name: invoked.function.name, arguments: invoked.function.arguments }
+          : null,
+        reasoning: message.reasoning_content ?? null,
+      };
     },
   };
 }

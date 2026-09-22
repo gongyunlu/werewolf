@@ -12,10 +12,14 @@ describe('警徽处理', () => {
   });
 
   it('也可以撕掉', async () => {
-    const state = { ...makeState(6), sheriffId: 'p1' };
+    // 当选过的局面，竞选早已落定；撕徽只动 sheriffId，不该把它退回去。
+    const state = { ...makeState(6), sheriffId: 'p1', sheriffElectionSettled: true };
     const actions = stubActions({ decideBadge: async () => ({ kind: 'tear' }) });
 
-    expect((await handOverBadge(state, actions, 'p1')).sheriffId).toBeNull();
+    const after = await handOverBadge(state, actions, 'p1');
+
+    expect(after.sheriffId).toBeNull();
+    expect(after.sheriffElectionSettled).toBe(true);
   });
 
   it('移交给已经出局的人会抛错', async () => {

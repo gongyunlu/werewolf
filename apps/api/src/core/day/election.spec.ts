@@ -175,6 +175,8 @@ describe('警长竞选', () => {
     const result = await runSheriffElection(makeState(6), actions, MINUTE);
 
     expect(result.state.sheriffId).toBeNull();
+    // 竞选到此为止，落定之后不再有警长。
+    expect(result.state.sheriffElectionSettled).toBe(true);
   });
 });
 
@@ -205,6 +207,8 @@ describe('警长竞选 · 被狼人自爆打断', () => {
     expect(result.aborted).toBe(true);
     expect(result.state.sheriffId).toBeNull();
     expect(result.state.sheriffElectionSuspended).toEqual(['p1', 'p2']);
+    // 挂起待续，还不算落定。
+    expect(result.state.sheriffElectionSettled).toBe(false);
     // 爆在警上发言之前，这一天就到这儿了。
     expect(result.speeches).toEqual([]);
   });
@@ -222,6 +226,7 @@ describe('警长竞选 · 被狼人自爆打断', () => {
     expect(result.aborted).toBe(false);
     expect(result.state.sheriffId).toBe('p1');
     expect(result.state.sheriffElectionSuspended).toBeNull();
+    expect(result.state.sheriffElectionSettled).toBe(true);
     expect(result.speeches).toEqual([]);
   });
 
@@ -241,6 +246,8 @@ describe('警长竞选 · 被狼人自爆打断', () => {
     expect(result.aborted).toBe(true);
     expect(result.state.sheriffId).toBeNull();
     expect(result.state.sheriffElectionSuspended).toBeNull();
+    // 双爆作废：不会再续一轮，跟走完了一样算落定。
+    expect(result.state.sheriffElectionSettled).toBe(true);
   });
 
   it('昨天上警的人已经出局就不再问他', async () => {

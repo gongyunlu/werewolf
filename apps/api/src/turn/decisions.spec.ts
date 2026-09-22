@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { decisionShape, type DecisionShape } from './decisions';
+import { decisionShape, toolOf, type DecisionShape } from './decisions';
 
 /** 座位号换回玩家 id 的对照，用例里就是座位号加个前缀。 */
 const TO_ID = (seatNo: number): string => `p${seatNo}`;
@@ -134,5 +134,43 @@ describe('决定形状', () => {
       toId: 'p2',
     });
     expect(shape.toCore({ kind: 'tear' }, TO_ID)).toEqual({ kind: 'tear' });
+  });
+});
+
+describe('工具定义', () => {
+  it('形状裹进壳里发出去，顶层那份 $schema 剥掉', () => {
+    const tool = toolOf(z.object({ seatNo: z.number() }), '交这次的答案');
+
+    expect(tool.name).toBe('submit');
+    expect(tool.description).toBe('交这次的答案');
+    // 壳是必须的：工具参数只收 object 的 JSON Schema，形状本身不一定是。
+    expect(tool.parameters).toMatchObject({
+      type: 'object',
+      required: ['value'],
+      additionalProperties: false,
+    });
+    // $schema 是 JSON Schema 给自己写的版本声明，与这次要交的东西无关；留着它模型会连它一起抄回来交差。
+    expect(tool.parameters).not.toHaveProperty('$schema');
+    expect(tool.parameters).toMatchObject({ properties: { value: { type: 'object' } } });
+  });
+
+  it('座位取值集照原样进参数，模型看到的候选就是 Core 给的那几个', () => {
+    const schema = decisionShape('seat', { seatNos: [7, 3] }).schema as z.ZodType;
+
+    expect(toolOf(schema, '投票').parameters).toMatchObject({
+      properties: { value: { enum: [7, 3] } },
+    });
+  });
+
+  it('顶层不是 object 的形状照样交得出去：壳挡在端点那一关前面', () => {
+    const seat = decisionShape('seatOrNone', { seatNos: [4] }).schema as z.ZodType;
+    const witch = decisionShape('witchDecision', { seatNos: [2], antidoteAllowed: true })
+      .schema as z.ZodType;
+
+    // 座位号是 {anyOf: [...]}、女巫那三选一是 anyOf 拼出来的，顶层都没有 type；
+    // 不裹壳直接发，端点会把整份请求一起拒掉（tools.0.function.parameters must be a JSON Schema of type object）。
+    for (const schema of [seat, witch]) {
+      expect(toolOf(schema, '交这次的答案').parameters.type).toBe('object');
+    }
   });
 });

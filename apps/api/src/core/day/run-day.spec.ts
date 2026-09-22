@@ -166,28 +166,30 @@ describe('走完一个白天', () => {
     expect(result.state.sheriffId).toBeNull();
   });
 
-  it('发言中间有狼自爆：后面的人不再发言，也没有投票', async () => {
+  it('常规发言阶段不再开自爆窗口：一天只问一次，发言照走完', async () => {
     const state = withRoles({ ...makeState(6), day: 2, sheriffId: 'p1' }, { p4: ROLES.WEREWOLF });
+    let blastCalls = 0;
     const spoken: string[] = [];
     const actions = stubActions({
       speak: async (_turn, playerId) => {
         spoken.push(playerId);
         return playerId;
       },
-      // 听完 p2、p3 才爆；没配 vote，真走到投票那一步会当场失败。
-      wolfBlast: async () => spoken.length === 3,
+      // 第二次问起才肯爆：这一天只在常规发言之前问过一次，第二次不会来。
+      wolfBlast: async () => {
+        blastCalls += 1;
+        return blastCalls > 1;
+      },
       chooseSpeechSide: async () => 'right',
+      vote: ballotOf({ p1: 'p2', p2: 'p2', p3: 'p2', p4: 'p2', p5: 'p2', p6: 'p2' }),
     });
 
     const result = await runDay({ state, actions, minute: 22 });
 
-    expect(result.speeches.map((speech) => speech.playerId)).toEqual(['p2', 'p3', 'p4']);
-    expect(result.exiledId).toBeNull();
-    expect(playerOf(result.state, 'p4')).toMatchObject({
-      isAlive: false,
-      deathDay: 2,
-      deathCause: DEATH_CAUSES.SELF_DESTRUCT,
-    });
+    expect(blastCalls).toBe(1);
+    expect(spoken).toEqual(['p2', 'p3', 'p4', 'p5', 'p6', 'p1']);
+    expect(playerOf(result.state, 'p4').isAlive).toBe(true);
+    expect(result.exiledId).toBe('p2');
   });
 
   it('无警长时：死者占位、方向按单顺双逆', async () => {

@@ -36,8 +36,24 @@ export class ModelCallError extends Error {
 }
 
 /**
+ * 交上来的东西不合规定的结构。
+ * message 进日志，写清是什么东西、交上来的是什么；diagnosis 是给模型看的那一句，
+ * 只说错在哪一类——重问时它要照着这句改，说成「不符合要求」等于没说。
+ */
+export class InvalidOutputError extends ModelCallError {
+  constructor(
+    message: string,
+    readonly diagnosis: string,
+    options?: ModelCallErrorOptions,
+  ) {
+    super('invalid_output', message, options);
+    this.name = 'InvalidOutputError';
+  }
+}
+
+/**
  * 模型接入身份：端点、型号、密钥、这个接入点的能力。
- * 端点和密钥都不进任何冻结快照，见 turn/snapshot.ts。
+ * 端点和密钥都不进快照，见 turn/snapshot.ts。
  */
 export interface ModelAccess {
   baseUrl: string;
@@ -48,30 +64,59 @@ export interface ModelAccess {
   capability: ModelCapability;
 }
 
+/** 一份工具定义。要模型按固定形状交东西时给这个，比在提示词里贴 schema 硬。 */
+export interface ModelTool {
+  name: string;
+  /** 这次要它交什么，给模型看的说明。 */
+  description: string;
+  /** 参数的 JSON Schema。 */
+  parameters: Record<string, unknown>;
+}
+
 /** 一次模型请求。提示词怎么拼由调用方决定，端口不管内容。 */
 export interface ModelRequest {
   /** 系统提示词：这名玩家是谁、守着哪些规矩。 */
   system: string;
   /** 用户提示词：这一刻的局面与这次要定的事。 */
   prompt: string;
+  /**
+   * 要它走这个工具交答案；不给就是让它写一段话。
+   * 一次只给一个：这几问每次只要一件东西，没有多工具的场景。
+   */
+  tool?: ModelTool;
 }
 
 export interface ModelResponse {
-  /** 模型原文。是不是结构化由调用方自己解析，端口不替它判。 */
+  /** 模型原话。走工具时是空串——答案在 toolCall 那一头。 */
   content: string;
+  /** 走工具交上来的那份参数，原样一串 JSON 文本；没走工具就是 null。 */
+  toolCall: { name: string; arguments: string } | null;
+  /**
+   * 交答案之前它自己那段推理，原文。跟 content 是分开的两段，各说各的。
+   * 这一问端点没给（思考关着、或这一家本来就不给）就是 null。
+   */
+  reasoning: string | null;
+}
+
+/** 一次调用的可选口子。一次调用一个，不进端口的构造参数。 */
+export interface ModelCallOptions {
+  /**
+   * 给了就走流式：收到一段交出去一段，返回值仍是拼起来的全文；不给就一次收完。
+   * 合成一个方法是为了让调用方不用分辨手里这个端口是哪一种。
+   */
+  onDelta?: (delta: string) => void;
+  /** 调用方中止这次调用。已经吐出去的字收不回来，会带着 partialOutput 抛。 */
+  signal?: AbortSignal;
+  /** 这一次的上限毫秒数，不给就用端口自己的。 */
+  timeoutMs?: number;
 }
 
 /** 模型端口：一次行动里所有对模型的请求都从这里出去。 */
 export interface ModelPort {
-  /**
-   * 要一份答复。
-   *
-   * 给了 onDelta 就走流式：收到一段交出去一段，返回值仍是拼起来的全文；不给就一次收完。
-   * 合成一个方法是为了让调用方不用分辨手里这个端口是哪一种。
-   */
+  /** 要一份答复。 */
   generate(
     request: ModelRequest,
     access: ModelAccess,
-    onDelta?: (delta: string) => void,
+    options?: ModelCallOptions,
   ): Promise<ModelResponse>;
 }

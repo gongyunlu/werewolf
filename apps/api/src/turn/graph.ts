@@ -1,21 +1,20 @@
 import { END, ReducedValue, START, StateGraph, StateSchema } from '@langchain/langgraph';
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 import { z } from 'zod';
-import { actionKey } from '../core/identity';
-import type { ModelAccess, ModelPort } from '../llm/model-port';
-import { ModelCallError } from '../llm/model-port';
-import { parseJsonOutput } from '../llm/parse-json-output';
+import type { ModelAccess, ModelPort, ModelTool } from '../llm/model-port';
+import { InvalidOutputError } from '../llm/model-port';
+import { toolOf } from './decisions';
 import { ACTION_PRESETS } from './presets';
 import {
   CRITIQUE_SCHEMA,
   renderCritique,
   renderGenerate,
   renderRevise,
-  TURN_PROMPT_NAMES_ALL,
   type RenderedPrompt,
   type RenderedTurn,
 } from './prompt';
-import { decisionSchemaJson, type ActionRequest, type TurnRuntime } from './request';
-import { decisionInputHash, type Critique, type DecisionSnapshot } from './snapshot';
+import { actionKeyOf, decisionSchemaJson, type ActionRequest, type TurnRuntime } from './request';
+import type { Critique, DecisionSnapshot } from './snapshot';
 
 /** 一次行动交出去的东西。 */
 export interface TurnOutcome {
@@ -26,11 +25,12 @@ export interface TurnOutcome {
 }
 
 const TurnState = new StateSchema({
-  request: z.custom<ActionRequest>(),
   draft: z.string().default(''),
   decision: z.custom<unknown>().default(() => null),
   // 通道名叫 verdict 而不是 critique：通道名不能和节点名撞车，那边已经占了 critique。
   verdict: z.custom<Critique | null>().default(() => null),
+  // 最终那版决定之前模型自己那段推理。生成时写下、修订覆盖它；质疑那一问不写。
+  reasoning: z.string().nullable().default(null),
   prompts: new ReducedValue(
     z.array(z.custom<RenderedPrompt>()).default(() => []),
     {
@@ -38,12 +38,20 @@ const TurnState = new StateSchema({
     },
   ),
   outcome: z.custom<TurnOutcome | null>().default(() => null),
+  // 这次行动里模型一共交歪了几回。生成、质疑、修订各加各的，合起来是这一趟的总数——
+  // 它只进快照，不参与判定；为 0 就是这一趟每一问都一次交对。
+  retries: new ReducedValue(z.number().default(0), {
+    reducer: (current, update) => current + update,
+  }),
 });
 
 type TurnStateValue = typeof TurnState.State;
 
 /** 端口与接入身份从 config 走，不进图状态——进了状态就会跟着检查点落库。 */
 const RUNTIME_KEY = 'turnRuntime';
+
+/** 行动请求同样走 config：它带着 zod 那份校验器，写进检查点的是存不回来的东西。 */
+const REQUEST_KEY = 'turnRequest';
 
 interface TurnConfig {
   configurable?: Record<string, unknown>;
@@ -54,7 +62,7 @@ interface TurnConfig {
  * 取不到就是有人绕过 runActionGraph 直接 invoke 了这张图，那是误用，当场炸。
  *
  * @param config 图的运行配置，端口与接入身份都从这个口子递进来
- * @returns 模型端口、接入身份，以及整局冻好的那六条提示词
+ * @returns 模型端口、接入身份，以及提示词的来处
  */
 function turnRuntime(config: TurnConfig | undefined): TurnRuntime {
   const runtime = config?.configurable?.[RUNTIME_KEY] as TurnRuntime | undefined;
@@ -63,20 +71,62 @@ function turnRuntime(config: TurnConfig | undefined): TurnRuntime {
 }
 
 /**
- * 问模型一次，拿回它的原文。
+ * 取出这次行动的请求。
+ * 接着跑时它是重新递进来的那一份，不是从检查点读回的：键一样，递进来的就一样。
+ *
+ * @param config 图的运行配置
+ * @returns 这次的行动请求
+ */
+function turnRequest(config: TurnConfig | undefined): ActionRequest {
+  const request = config?.configurable?.[REQUEST_KEY] as ActionRequest | undefined;
+  if (!request) throw new Error('行动图缺少行动请求');
+  return request;
+}
+
+/** 一问的答复。答案与推理是分开的两段，各有各的空法：答案可能在工具那一头，推理可能端点没给。 */
+export interface Answer {
+  content: string;
+  reasoning: string | null;
+  /** 给了工具却只写了一段话，没走工具交。不给工具的那几问（发言）恒为 false。 */
+  noToolCall: boolean;
+}
+
+/**
+ * 问模型一次，拿回它交的答案与它自己那段推理。
  * 只递两段正文过去：模板的版本与来源是给自己记账的，不进模型那一侧。
+ *
+ * 两段分开接：答案那一头要走校验，推理那一头不校验，原样留着给人看。
  *
  * @param port 模型端口
  * @param access 接入身份，模型端点与能力声明
  * @param turn 渲染好的这一对提示词
- * @returns 模型输出的原文，这里不解析
+ * @param tool 要它走哪个工具交；不给就是让它写一段话
+ * @returns 这一问的答复：答案原文（走工具时取参数那一头）、它写答案之前的推理，以及有没有走工具交
  */
-async function ask(port: ModelPort, access: ModelAccess, turn: RenderedTurn): Promise<string> {
+export async function ask(
+  port: ModelPort,
+  access: ModelAccess,
+  turn: RenderedTurn,
+  tool?: ModelTool,
+): Promise<Answer> {
   const response = await port.generate(
-    { system: turn.system.text, prompt: turn.user.text },
+    { system: turn.system.text, prompt: turn.user.text, tool },
     access,
   );
-  return response.content;
+  // 走工具时答案在参数那一头、正文是空的；没给工具时才是正文。
+  return {
+    content: response.toolCall?.arguments ?? response.content,
+    reasoning: response.reasoning,
+    // 给了工具却只写了一段话：这一问它根本没交值。按 JSON 解析那一头报出来的是
+    // 「整串不是合法 JSON」，指错了地方——它写的本来就不是 JSON，是一段解释。
+    // 正文一律当解释看：正文里就算摆着一份合规的 JSON，也不算它交了（要交就走工具）。
+    noToolCall: tool !== undefined && response.toolCall === null,
+  };
+}
+
+/** 这次行动交给模型的工具。没有形状的那几问（发言）让它写一段话，不走工具。 */
+function toolFor(request: ActionRequest): ModelTool | undefined {
+  return request.schema ? toolOf(request.schema, request.context.task) : undefined;
 }
 
 /**
@@ -91,33 +141,53 @@ function used(turn: RenderedTurn): RenderedPrompt[] {
 }
 
 /**
- * 解析模型输出，再按 schema 校验一遍。
- * 两种失败归同一个错码：对调用方来说「不是 JSON」和「是 JSON 但字段不对」是一件事——模型没照要求交。
+ * 解析模型输出的那一串，再按 schema 校验一遍。
+ * 三种失败归同一个错码：对调用方来说「不是 JSON」「壳没裹对」「值不对」是一件事——模型没照要求交。
+ * 分成三句诊断是为了给模型看：它要照着那句话改，说成「不符合要求」等于没说。
  *
- * @param content 模型输出的原文
+ * 不剥代码围栏、不抽片段：这几问都是走工具交的，拿到手的就是工具参数那一串 JSON。
+ *
+ * @param content 模型交上来的那一串
  * @param schema 要求的形状
- * @param access 接入身份，由它的能力声明决定要不要剥代码围栏
  * @param what 出错信息里指代这份输出的说法，比如「3 号这次的决定」
  * @returns 校验过的结果
  */
-function parseStructured<S extends z.ZodType>(
+export function parseStructured<S extends z.ZodType>(
   content: string,
   schema: S,
-  access: ModelAccess,
   what: string,
 ): z.infer<S> {
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    raw = parseJsonOutput(content, access.capability.allowCodeFence);
+    parsed = JSON.parse(content);
   } catch (error) {
-    throw new ModelCallError('invalid_output', `${what}不是合法 JSON`, { cause: error });
+    throw new InvalidOutputError(
+      `${what}不是合法 JSON；交上来的是 ${content}`,
+      '整串不是合法 JSON',
+      { cause: error },
+    );
   }
+
+  // 交上来的得是裹着壳的那个对象（顶层得是 object 才收，见 decisions 的 toolOf），
+  // 那一层不是这次要交的东西，校验前先剥掉。壳本身没交对也算不合规——
+  // 整串就是 null 的话，取 .value 抛的是裸 TypeError，上面那层认不出来，会跳过重问直接停掉整局。
+  // 忘了裹壳（顶层是对象但没有 value）也算壳没交对：归到壳那一类，它会去补壳而不是改值。
+  if (typeof parsed !== 'object' || parsed === null || !('value' in parsed)) {
+    throw new InvalidOutputError(
+      `${what}不是裹着壳的对象；交上来的是 ${content}`,
+      '没裹在规定的那个对象里',
+    );
+  }
+  const raw = (parsed as { value: unknown }).value;
 
   const checked = schema.safeParse(raw);
   if (!checked.success) {
-    throw new ModelCallError('invalid_output', `${what}不符合要求：${checked.error.message}`, {
-      cause: checked.error,
-    });
+    // 交上来的原物一并写进错里：只报「不符合要求」的话，跑完一局回来查不出它到底答了什么。
+    throw new InvalidOutputError(
+      `${what}不符合要求：${checked.error.message}；交上来的是 ${JSON.stringify(raw)}`,
+      '交的那个值不合这次要求的形状',
+      { cause: checked.error },
+    );
   }
   return checked.data;
 }
@@ -126,32 +196,99 @@ function parseStructured<S extends z.ZodType>(
 const INVALID_OUTPUT_RETRIES = 2;
 
 /**
- * 问一次并当场解析；模型答得不合规就再问。
+ * 问一次并当场解析；模型答得不合规就带着上一次的失败原因再问。
  *
- * 再问的是同一份提示词：采样是随机的，再问一次是另一次采样，不是重放，所以有机会答对。
- * 一局要问几百次，一次答歪就让整局停下来，代价比多花两次调用大得多。
+ * 再问的不能是同一份题面：模型上一回就是看着那份答错的，一字不改地再发一遍，它没有理由换个答案
+ * ——实测那次连问三次交回来的是同一个座位号。附上去的是「你交的是什么、这次要的是什么」。
+ *
+ * 一局要问几百次，一次答歪就让整局停下来，代价比多花两次调用大得多；三次都不行才抛。
  *
  * 这一层跟端口那一层的重试不是一回事：端口重发的是「这次没拿到」，它看不见解析。
  * 问一次也放在 try 外面，正是这个分工：端口自己的失败，上面那一层已经重试过了，
  * 再裹进来重问就是两层的次数相乘。
  *
- * @param askOnce 问一次，拿回模型的原文
+ * @param askOnce 问一次，拿回模型的原文与它的推理；带一条上一次的失败说明，第一次为 null
  * @param parse 把原文解析成要的形状，不合规当场抛
- * @returns 原文与解析后的结果
+ * @param noteOf 由交上来的原文与它错在哪一类，生成那条失败说明
+ * @returns 原文、它的推理、解析后的结果，以及为这次解析重问了几回
  */
-async function askParsed<T>(
-  askOnce: () => Promise<string>,
+export async function askParsed<T>(
+  askOnce: (note: string | null) => Promise<Answer>,
   parse: (content: string) => T,
-): Promise<{ content: string; parsed: T }> {
+  noteOf: (raw: string, diagnosis: string) => string,
+): Promise<{ content: string; reasoning: string | null; parsed: T; retries: number }> {
+  let note: string | null = null;
+
   for (let attempt = 0; ; attempt += 1) {
-    const content = await askOnce();
+    const answer = await askOnce(note);
     try {
-      return { content, parsed: parse(content) };
+      // 给了工具却没走工具：它一个值都没交。落到下面按 JSON 解析去，报出来的是「不是合法
+      // JSON」——那句话把它写的一段解释当成了没写好的 JSON，指错了地方，它照着重交还是交不上。
+      if (answer.noToolCall) {
+        throw new InvalidOutputError(
+          `这一问给了工具，它没走工具交；写的是 ${answer.content}`,
+          '没走工具交，只写了正文',
+        );
+      }
+      // 重问过的话，交出的是最后那一版——被作废那几版的推理没有留的价值。
+      return {
+        content: answer.content,
+        reasoning: answer.reasoning,
+        parsed: parse(answer.content),
+        retries: attempt,
+      };
     } catch (error) {
-      if (!(error instanceof ModelCallError) || error.code !== 'invalid_output') throw error;
+      // 只认带诊断的那一个：拿不出「错在哪一类」，重问的题面就跟上一次一字不差，白问。
+      if (!(error instanceof InvalidOutputError)) throw error;
       if (attempt >= INVALID_OUTPUT_RETRIES) throw error;
+      note = noteOf(answer.content, error.diagnosis);
     }
   }
+}
+
+/**
+ * 上一次没交成，附回题面的那条说明。
+ *
+ * 说清三件事：交上来的是什么、错在哪一类、这次能交什么。只写「不合要求」等于没给可纠正的依据，
+ * 模型只能照着原样再掷一次。也不带校验器那句原文——那是英文的 zod 报错（code/path/values
+ * 一整套），进题面只是把噪声递给模型，不告诉它该改成什么。
+ *
+ * 候选只按「目标」说，不说成整份取值域：投票、提刀、守护那几问合法的还有弃票与空过，
+ * 警徽那一问还有「撕掉」，女巫还有「都不用」——说成「只能选这些」是把范围说小了。
+ * 题面里那句本来也是「可以选的目标只有下面这些」。
+ *
+ * @param options 这次能选的座位；没有候选的那一问（质疑）给空数组
+ * @param raw 上一次交上来的原文
+ * @param diagnosis 错在哪一类，由解析那一头给出
+ * @param explainInThinking 末句要不要点它去思考里说清改选的理由；只有要留思考的那几问给真
+ * @returns 追加到题面末尾的那一行
+ */
+export function retryNote(
+  options: readonly string[],
+  raw: string,
+  diagnosis: string,
+  explainInThinking = false,
+): string {
+  const expected =
+    options.length > 0
+      ? `这次的目标只能从这些里选：${options.join('、')}`
+      : '这次要按题里写明的形状交';
+  const explain = explainInThinking
+    ? '重交时在思考里说清上一次为什么不成立、这次为什么改选它。'
+    : '';
+
+  return `上一次交的「${raw}」不作数：${diagnosis}。${expected}。${explain}`;
+}
+
+/**
+ * 把那条说明接在正文末尾，紧挨着「交上来」那句话。
+ *
+ * @param turn 渲染好的这一对提示词
+ * @param note 上一次的失败说明
+ * @returns 换了用户那一段的提示词对，系统那一段原样
+ */
+export function noted(turn: RenderedTurn, note: string): RenderedTurn {
+  return { ...turn, user: { ...turn.user, text: `${turn.user.text}\n${note}` } };
 }
 
 /**
@@ -160,12 +297,11 @@ async function askParsed<T>(
  *
  * @param request 这次行动，由它带出决定该有的形状
  * @param draft 模型交上来的原文
- * @param access 接入身份
  * @returns 校验过的结果；发言就是原文
  */
-function parseDecision(request: ActionRequest, draft: string, access: ModelAccess): unknown {
+function parseDecision(request: ActionRequest, draft: string): unknown {
   if (!request.schema) return draft;
-  return parseStructured(draft, request.schema, access, `${request.actorId} 这次的决定`);
+  return parseStructured(draft, request.schema, `${request.actorId} 这次的决定`);
 }
 
 /**
@@ -180,18 +316,21 @@ async function generateNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
-  const { port, access, prompts } = turnRuntime(config);
-  const turn = renderGenerate(
-    prompts,
-    state.request.context,
-    decisionSchemaJson(state.request.schema),
+  const { port, access, promptSource } = turnRuntime(config);
+  const request = turnRequest(config);
+  const turn = await renderGenerate(
+    promptSource,
+    request.context,
+    decisionSchemaJson(request.schema),
   );
-  const { content, parsed } = await askParsed(
-    () => ask(port, access, turn),
-    (draft) => parseDecision(state.request, draft, access),
+  const tool = toolFor(request);
+  const { content, reasoning, parsed, retries } = await askParsed(
+    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool),
+    (draft) => parseDecision(request, draft),
+    (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
-  return { draft: content, decision: parsed, prompts: used(turn) };
+  return { draft: content, decision: parsed, prompts: used(turn), retries, reasoning };
 }
 
 /**
@@ -206,15 +345,30 @@ async function critiqueNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
-  const { port, access, prompts } = turnRuntime(config);
-  const schemaJson = decisionSchemaJson(state.request.schema);
-  const turn = renderCritique(prompts, state.request.context, state.draft, schemaJson);
-  const { parsed } = await askParsed(
-    () => ask(port, access, turn),
-    (content) => parseStructured(content, CRITIQUE_SCHEMA, access, '质疑的结论'),
+  const { port, access, promptSource } = turnRuntime(config);
+  const request = turnRequest(config);
+  // 形状给工具那一份，和草稿同一层；给内层 schema 的话，多出来的壳会被判成形式错误。
+  const turn = await renderCritique(
+    promptSource,
+    request.context,
+    state.draft,
+    toolFor(request)?.parameters ?? null,
+  );
+  // 它那段推理不接：质疑只判行不行，不构成这次决定的依据，留下来的只有结论。
+  const { parsed, retries } = await askParsed(
+    (note) =>
+      ask(
+        port,
+        access,
+        note === null ? turn : noted(turn, note),
+        toolOf(CRITIQUE_SCHEMA, '这次质疑的结论'),
+      ),
+    (content) => parseStructured(content, CRITIQUE_SCHEMA, '质疑的结论'),
+    // 质疑那一问没有候选；它那段推理不留，也不点它去思考里说理。
+    (raw, diagnosis) => retryNote([], raw, diagnosis),
   );
 
-  return { verdict: parsed, prompts: used(turn) };
+  return { verdict: parsed, prompts: used(turn), retries };
 }
 
 /**
@@ -231,43 +385,44 @@ async function reviseNode(
 ): Promise<Partial<TurnStateValue>> {
   if (!state.verdict) throw new Error('走到修订却没有质疑结论');
 
-  const { port, access, prompts } = turnRuntime(config);
-  const schemaJson = decisionSchemaJson(state.request.schema);
-  const turn = renderRevise(
-    prompts,
-    state.request.context,
+  const { port, access, promptSource } = turnRuntime(config);
+  const request = turnRequest(config);
+  const schemaJson = decisionSchemaJson(request.schema);
+  const turn = await renderRevise(
+    promptSource,
+    request.context,
     state.draft,
     state.verdict.issues,
     schemaJson,
   );
-  const { content, parsed } = await askParsed(
-    () => ask(port, access, turn),
-    (draft) => parseDecision(state.request, draft, access),
+  const tool = toolFor(request);
+  const { content, reasoning, parsed, retries } = await askParsed(
+    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool),
+    (draft) => parseDecision(request, draft),
+    (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
-  return { draft: content, decision: parsed, prompts: used(turn) };
+  return { draft: content, decision: parsed, prompts: used(turn), retries, reasoning };
 }
 
 /**
  * 收口，把结果和它的来历一起打包。
- * 快照的 prompts 只记这次真渲染过的那几条，哈希里那份是整局六条全量：
- * 复算要答的是「这局用的是哪六条」，与这次走没走到质疑无关。
+ * 快照的 prompts 记的是这次真渲染过的那几条——哪条取到的是平台哪一版，全在那个数组里。
  *
  * @param state 图状态，这里读行动请求、草稿、决定与用过的提示词
- * @param config 图的运行配置，整局冻好的提示词从它取
+ * @param config 图的运行配置，接入身份从它取
  * @returns 这次行动的最终产物
  */
 function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnStateValue> {
-  const { access, prompts: frozen } = turnRuntime(config);
-  const { request } = state;
+  const { access } = turnRuntime(config);
+  const request = turnRequest(config);
   const schemaJson = decisionSchemaJson(request.schema);
-  const key = actionKey(request.scope, request.actionType, request.actorId, request.actionOrdinal);
 
   return {
     outcome: {
       decision: state.decision,
       snapshot: {
-        actionKey: key,
+        actionKey: actionKeyOf(request),
         actionType: request.actionType,
         actorId: request.actorId,
         actionOrdinal: request.actionOrdinal,
@@ -277,21 +432,11 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
         context: request.context,
         schema: schemaJson,
         prompts: state.prompts,
-        inputHash: decisionInputHash({
-          actionKey: key,
-          actionType: request.actionType,
-          actionOrdinal: request.actionOrdinal,
-          preset: request.preset,
-          model: access.model,
-          capability: access.capability,
-          context: request.context,
-          schema: schemaJson,
-          // 整局冻的那六条全进哈希，包括这次没走到的：输入变没变与该走哪条路无关。
-          prompts: TURN_PROMPT_NAMES_ALL.map((name) => frozen[name]),
-        }),
         draft: state.draft,
         critique: state.verdict,
         decision: state.decision,
+        reasoning: state.reasoning,
+        retries: state.retries,
       },
     },
   };
@@ -300,11 +445,12 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
 /**
  * 生成之后问不问质疑。
  *
- * @param state 图状态，这里只读行动档位
+ * @param state 图状态，这里什么都不读
+ * @param config 图的运行配置，行动档位从它取
  * @returns 下一个节点：要质疑就走 critique，不要就直接收口
  */
-function needsCritique(state: TurnStateValue): 'critique' | 'finalize' {
-  return ACTION_PRESETS[state.request.preset].critique ? 'critique' : 'finalize';
+function needsCritique(_state: TurnStateValue, config: TurnConfig): 'critique' | 'finalize' {
+  return ACTION_PRESETS[turnRequest(config).preset].critique ? 'critique' : 'finalize';
 }
 
 /**
@@ -318,36 +464,79 @@ function afterCritique(state: TurnStateValue): 'revise' | 'finalize' {
 }
 
 /** 行动图：先生成，按档位决定要不要质疑，质疑没过才修订，修订完直接收口。 */
-const actionGraph = new StateGraph(TurnState)
-  .addNode('generate', generateNode)
-  .addNode('critique', critiqueNode)
-  .addNode('revise', reviseNode)
-  .addNode('finalize', finalizeNode)
-  .addEdge(START, 'generate')
-  .addConditionalEdges('generate', needsCritique, ['critique', 'finalize'])
-  .addConditionalEdges('critique', afterCritique, ['revise', 'finalize'])
-  .addEdge('revise', 'finalize')
-  .addEdge('finalize', END)
-  .compile();
+function buildActionGraph(saver?: BaseCheckpointSaver) {
+  const builder = new StateGraph(TurnState)
+    .addNode('generate', generateNode)
+    .addNode('critique', critiqueNode)
+    .addNode('revise', reviseNode)
+    .addNode('finalize', finalizeNode)
+    .addEdge(START, 'generate')
+    .addConditionalEdges('generate', needsCritique, ['critique', 'finalize'])
+    .addConditionalEdges('critique', afterCritique, ['revise', 'finalize'])
+    .addEdge('revise', 'finalize')
+    .addEdge('finalize', END);
+
+  return saver ? builder.compile({ checkpointer: saver }) : builder.compile();
+}
+
+/** 不带进度的图：编一次用到底。 */
+const plainGraph = buildActionGraph();
+
+/** 每种存法各编一张图：编译不便宜，而一局要跑几百次行动。 */
+const graphsBySaver = new WeakMap<BaseCheckpointSaver, typeof plainGraph>();
+
+function actionGraphOf(saver: BaseCheckpointSaver | undefined): typeof plainGraph {
+  if (!saver) return plainGraph;
+  const cached = graphsBySaver.get(saver) ?? buildActionGraph(saver);
+  graphsBySaver.set(saver, cached);
+  return cached;
+}
+
+/** 这一次行动接着上次跑还是从头跑。 */
+export interface ActionGraphOptions {
+  /** 存放执行进度的地方；不给就是跑完即弃。 */
+  saver?: BaseCheckpointSaver;
+  /** 上一跑断在半路、这一次接着跑完。 */
+  resume?: boolean;
+}
 
 /**
  * 执行一次行动图，返回最终结果与快照。
- * 这张图只跑一次，跑完就结束了。
+ *
+ * 一次行动一条线程，线程键就是行动键，谁也不会接着别人的半截状态往下跑。
+ * 接着跑时从断点往下走：前面那几个节点已经问过的模型调用不再重问——采样是随机的，
+ * 重问一次问出来的就不是同一份答案了，那一局也不再是同一局。
+ *
  * 质疑是独立的，不会把不合要求的草稿往下传：留到质疑那里再发现，白花一次调用。
  * 修订是独立的，不会再回头质疑：改完的那版才是最终决定。
  *
  * @param runtime 模型端口与接入身份
  * @param request 行动请求，包含行动类型、玩家身份、行动档位、行动序号、局面与任务、输出形状等信息
+ * @param options 执行进度的存法，以及这一次是接着上次跑还是从头跑
  * @returns 最终结果与快照，包含校验过的结果、快照信息等
  */
 export async function runActionGraph(
   runtime: TurnRuntime,
   request: ActionRequest,
+  options: ActionGraphOptions = {},
 ): Promise<TurnOutcome> {
-  const settled = await actionGraph.invoke(
-    { request },
-    { configurable: { [RUNTIME_KEY]: runtime } },
-  );
+  const { saver, resume } = options;
+  const graph = actionGraphOf(saver);
+  const config = {
+    configurable: {
+      [RUNTIME_KEY]: runtime,
+      [REQUEST_KEY]: request,
+      // 线程键取行动键：落库那份进度按它归档，一局里每一问各是各的。
+      thread_id: actionKeyOf(request),
+    },
+    // 每一步跑完就落盘，不留到下一步再去写：中间断了，那一步的答案就白问了。
+    durability: 'sync' as const,
+  };
+
+  // 空线程拿 null 起跑会当场抛：库里没有断点时，这一轮的开头还得自己喂进去。
+  const behind =
+    resume === true && saver !== undefined && (await saver.getTuple(config)) !== undefined;
+  const settled = await graph.invoke(behind ? null : {}, config);
   if (!settled.outcome) throw new Error('行动图跑完了却没有结果');
   return settled.outcome;
 }

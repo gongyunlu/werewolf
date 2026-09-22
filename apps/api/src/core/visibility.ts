@@ -35,3 +35,13 @@ export function visibleVisibilities(observer: Observer): VisibilityType[] {
 
   return visibilities;
 }
+
+/**
+ * 一条事实发生那一刻的受众：此刻能看到这种可见性的人。
+ * 用那一刻的玩家状态算，算出来就定格——之后谁出局、谁用掉解药都不再改这份名单。
+ */
+export function audienceOf(players: readonly PlayerState[], visibility: VisibilityType): string[] {
+  return players
+    .filter((player) => visibleVisibilities(player).includes(visibility))
+    .map((player) => player.id);
+}

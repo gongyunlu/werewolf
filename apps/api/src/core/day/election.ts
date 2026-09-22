@@ -39,13 +39,19 @@ export async function runSheriffElection(
   const alive = base.players.filter((player) => player.isAlive);
   const speeches: Speech[] = [];
   const idle = (from: GameState): SheriffElectionResult => ({
-    state: from,
+    state: { ...from, sheriffElectionSettled: true },
     aborted: false,
     speeches,
   });
   /** 竞选被自爆打断。ids 是挂起下来待续的上警名单，为续轮或无人上警时留空。 */
   const suspend = (from: GameState, ids: readonly string[]): SheriffElectionResult => ({
-    state: { ...from, sheriffElectionSuspended: ids.length > 0 ? ids : null },
+    state: {
+      ...from,
+      sheriffElectionSuspended: ids.length > 0 ? ids : null,
+      // 名单为空有两条路：续轮再爆（警徽作废），以及无人上警时首爆（本来就没人可续）。
+      // 两种都不该再有警长，跟走完了一样算落定。
+      sheriffElectionSettled: ids.length === 0,
+    },
     aborted: true,
     speeches,
   });
@@ -138,5 +144,9 @@ async function askCandidacy(
 }
 
 function elect(state: GameState, speeches: Speech[], winnerId: string): SheriffElectionResult {
-  return { state: { ...state, sheriffId: winnerId }, aborted: false, speeches };
+  return {
+    state: { ...state, sheriffId: winnerId, sheriffElectionSettled: true },
+    aborted: false,
+    speeches,
+  };
 }

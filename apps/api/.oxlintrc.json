@@ -18,5 +18,5 @@
     "typescript/no-extraneous-class": ["warn", { "allowWithDecorator": true }],
     "import/no-unassigned-import": ["warn", { "allow": ["reflect-metadata"] }]
   },
-  "ignorePatterns": ["node_modules", "dist", "build", "out", "coverage", "*.d.ts"]
+  "ignorePatterns": ["node_modules", "dist", "build", "out", "coverage", "*.d.ts", "src/generated"]
 }

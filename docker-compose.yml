@@ -1,0 +1,28 @@
+# 本项目的对局库。开发口令是明文，只映射到本机。
+# 端口 5434 不用 5432：本机 5432 上另有一个同名库，靠端口区分，别连错。
+#
+# 项目名钉死是有原因的：默认按目录名推导会得到 `werewolf`，而本机已经躺着一个同名卷
+# werewolf_postgres_data（另一套数据留下的），起出来的就是别人那份。名字一改卷名跟着变，
+# 才是两套真的分开的资源。
+name: werewolf-app
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: werewolf
+      POSTGRES_PASSWORD: werewolf
+      POSTGRES_DB: werewolf
+    ports:
+      - '127.0.0.1:5434:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U werewolf -d werewolf']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

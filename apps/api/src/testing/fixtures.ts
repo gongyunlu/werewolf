@@ -3,6 +3,25 @@ import type { GameSetup } from '../boards/setup';
 import type { ActionProvider } from '../core/actions';
 import { factionOf, type DealableRole } from '../core/roles';
 import { createGameState, patchPlayer, type GameState, type PlayerState } from '../core/state';
+import type { GameSkills } from '../skills/game-skills';
+import type { Skill } from '../skills/skill-loader';
+
+/** 填空用的那一份正文：id 原样写进正文，一眼看得出这一问挂了哪几段。 */
+function stubSkill(id: string): Skill {
+  return { id, description: `描述：${id}`, content: `正文：${id}` };
+}
+
+/**
+ * 填空用的技能环境。
+ * 行动图与端口那些用例验的是流程，不是正文写了什么，读真文件只会让改 md 牵动一片用例。
+ */
+export function stubSkills(): GameSkills {
+  return {
+    ruleset: stubSkill('ruleset/test'),
+    role: (role) => stubSkill(`roles/${role}`),
+    scenario: (id) => stubSkill(`scenarios/${id}`),
+  };
+}
 
 /** 造 n 人局，玩家 id 是 p1、p2……boardId 只为凑快照的类型，跟座位无关。 */
 export function makeState(playerCount: number, hasSheriff = true): GameState {
@@ -61,6 +80,7 @@ export function stubActions(overrides: Partial<ActionProvider> = {}): ActionProv
     vote: async () => notConfigured('vote'),
     chooseSpeechSide: async () => notConfigured('chooseSpeechSide'),
     decideBadge: async () => notConfigured('decideBadge'),
+    wolfSpeech: async () => notConfigured('wolfSpeech'),
     wolfProposal: async () => notConfigured('wolfProposal'),
     guardProtect: async () => notConfigured('guardProtect'),
     seerCheck: async () => notConfigured('seerCheck'),

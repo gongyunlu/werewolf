@@ -1,10 +1,24 @@
 import { DEATH_CAUSES, FACTIONS, ROLES } from '@werewolf/shared';
-import type { RandomSource } from '../boards/deal';
 import { ballotOf, makeState, playerOf, stubActions, withRoles } from '../testing/fixtures';
-import { runGame } from './loop';
+import type { ActionProvider } from './actions';
+import { nextPhaseInstanceId, nodeNameOf, phaseInstanceId } from './identity';
+import { runGame, type StageAnchor } from './loop';
+import type { GameState } from './state';
 
-/** 狼队刀口一致时用不上，只为凑接口。 */
-const random: RandomSource = () => 0;
+/**
+ * 狼队提刀按夜给：每只狼自己数自己提了几回，同一夜提的都一样。
+ * 同一夜里几只狼提的人不一样就要抽签，抽出来的是谁跟用例写死的那个对不上；
+ * 列末那个人的目标之后一夜一夜接着用。
+ */
+function wolfTargetsByNight(targets: readonly string[]) {
+  const asked = new Map<string, number>();
+
+  return async (wolfId: string): Promise<string> => {
+    const nth = (asked.get(wolfId) ?? 0) + 1;
+    asked.set(wolfId, nth);
+    return targets[Math.min(nth, targets.length) - 1];
+  };
+}
 
 describe('推到终局', () => {
   it('最后一狼夜里被毒死，天亮公布完就结束，白天不用走', async () => {
@@ -22,7 +36,7 @@ describe('推到终局', () => {
       witchDecision: async () => ({ kind: 'poison', targetId: 'p1' }),
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     expect(result.winner).toBe(FACTIONS.GOOD);
     expect(playerOf(result.state, 'p1').isAlive).toBe(false);
@@ -38,6 +52,7 @@ describe('推到终局', () => {
       p6: ROLES.SEER,
     });
     const actions = stubActions({
+      wolfSpeech: async () => '今晚听你们的。',
       wolfProposal: async () => 'p4',
       seerCheck: async () => 'p1',
       wolfBlast: async () => false,
@@ -46,7 +61,7 @@ describe('推到终局', () => {
       wolfKingShot: async () => 'p5',
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     expect(result.winner).toBe(FACTIONS.WEREWOLF);
     expect(playerOf(result.state, 'p1')).toMatchObject({ deathCause: DEATH_CAUSES.EXECUTION });
@@ -68,13 +83,10 @@ describe('推到终局', () => {
         p6: ROLES.SEER,
       },
     );
-    let night = 0;
     const asked: string[][] = [];
     const actions = stubActions({
-      wolfProposal: async () => {
-        night += 1;
-        return night === 1 ? 'p6' : 'p4';
-      },
+      wolfSpeech: async () => '今晚听你们的。',
+      wolfProposal: wolfTargetsByNight(['p6', 'p4']),
       seerCheck: async () => 'p2',
       wolfBlast: async () => false,
       speak: async (turn, playerId) => `${turn}:${playerId}`,
@@ -87,7 +99,7 @@ describe('推到终局', () => {
       },
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     expect(result.winner).toBe(FACTIONS.WEREWOLF);
     // p4 当晚就被狼刀，他还在候选名单里，说明移交算在放逐那一刻，没等到第二天早晨。
@@ -106,13 +118,10 @@ describe('推到终局', () => {
         p6: ROLES.SEER,
       },
     );
-    let night = 0;
     const asked: string[][] = [];
     const actions = stubActions({
-      wolfProposal: async () => {
-        night += 1;
-        return night === 1 ? 'p6' : 'p3';
-      },
+      wolfSpeech: async () => '今晚听你们的。',
+      wolfProposal: wolfTargetsByNight(['p6', 'p3']),
       seerCheck: async () => 'p2',
       wolfBlast: async () => false,
       speak: async (turn, playerId) => `${turn}:${playerId}`,
@@ -125,7 +134,7 @@ describe('推到终局', () => {
       },
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     // p4 是先挨了狼王那一枪的，他不在候选名单里——警徽排在技能之后，不是之前。
     expect(asked).toEqual([['p1', 'p2', 'p3', 'p5']]);
@@ -151,7 +160,7 @@ describe('推到终局', () => {
       vote: ballotOf({ p1: 'p1', p2: 'p1', p3: 'p1', p4: 'p1', p5: 'p1' }),
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     expect(result.winner).toBe(FACTIONS.GOOD);
     expect(playerOf(result.state, 'p1')).toMatchObject({ deathCause: DEATH_CAUSES.EXECUTION });
@@ -181,7 +190,7 @@ describe('推到终局', () => {
       vote: async () => null,
     });
 
-    const result = await runGame({ state, actions, random, minuteOf: () => 22 });
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
 
     expect(result.state.day).toBe(2);
     expect(result.winner).toBe(FACTIONS.GOOD);
@@ -193,5 +202,225 @@ describe('推到终局', () => {
     });
     // 两次入夜、一次死讯结算、一次白天：序号跨天一路往上涨，不按天重置。
     expect(result.state.phaseInstanceId).toBe('node/4/night');
+  });
+});
+
+/**
+ * 两天的牌：一只狼、预言家、女巫、守卫、猎人、一个平民。
+ * 头一夜刀掉猎人 p6，天亮他不开枪；第一天放逐女巫 p3，第二夜刀掉预言家 p2，
+ * 第二天放逐狼 p1——两轮下来四格都走得到，终局也不在头一天。
+ * 猎人摆在夜里那一刀上：天亮那一格要真问一句，接着跑才接得住这一格。
+ */
+function board(): GameState {
+  return withRoles(makeState(6, false), {
+    p1: ROLES.WEREWOLF,
+    p2: ROLES.SEER,
+    p3: ROLES.WITCH,
+    p4: ROLES.GUARD,
+    p5: ROLES.VILLAGER,
+    p6: ROLES.HUNTER,
+  });
+}
+
+/** 这一局的固定打法：全按局面里看得见的东西作答，同一问走到哪一遍都答同一个。 */
+function plan(): Partial<ActionProvider> {
+  return {
+    // 三狼以上才轮得到商议，这里只有这一条线要验，说了什么都不影响刀口。
+    wolfSpeech: async () => '今晚听你们的。',
+    // p6 还在就刀他，他没了就刀预言家 p2：恢复重跑时手里那份局面跟断的那一次一样，答案也就一样。
+    wolfProposal: async (_wolfId, candidates) => (candidates.includes('p6') ? 'p6' : 'p2'),
+    guardProtect: async () => null,
+    // 头一夜查 p1，往后从还能查的人里挑头一个：同一个人不能查第二遍。
+    seerCheck: async (_seerId, candidates) => (candidates.includes('p1') ? 'p1' : candidates[0]),
+    witchDecision: async () => ({ kind: 'none' }),
+    // 猎人挨了夜里的刀，天亮不开枪：这一格要真问一句，接着跑才接得住这一格。
+    hunterShot: async () => null,
+    wolfBlast: async () => false,
+    speak: async (turn, playerId) => `${turn}:${playerId}`,
+    // 女巫 p3 还在就都投她；她出局了就顺着候选投第一个不是自己的人。
+    vote: async (_turn, playerId, candidates) =>
+      candidates.includes('p3') ? 'p3' : (candidates.find((id) => id !== playerId) ?? null),
+  };
+}
+
+/** 三只狼、七名平民的牌：每晚狼队都提得出三个不同的平民，投票放逐的又是平民。 */
+const PACK: readonly string[] = ['p1', 'p2', 'p3'];
+const VILLAGERS = new Set(['p6', 'p7', 'p8', 'p9', 'p10', 'p11', 'p12']);
+
+function packBoard(): GameState {
+  return withRoles(makeState(12, false), {
+    p1: ROLES.WEREWOLF,
+    p2: ROLES.WEREWOLF,
+    p3: ROLES.WEREWOLF,
+    p4: ROLES.SEER,
+    p5: ROLES.WITCH,
+  });
+}
+
+/** 三只狼按座位认领三个不同的平民：三票并列就得抽签，刀口由这一格的随机流定。 */
+function packPlan(): Partial<ActionProvider> {
+  return {
+    ...plan(),
+    wolfProposal: async (wolfId, candidates) =>
+      candidates.filter((id) => VILLAGERS.has(id))[PACK.indexOf(wolfId)] ?? null,
+    // 每天都放逐头一个还活着的平民：狼一只都不走，夜里的抽签才能一夜一夜接着来。
+    vote: async (_turn, playerId, candidates) =>
+      candidates.find((id) => VILLAGERS.has(id) && id !== playerId) ?? null,
+  };
+}
+
+/**
+ * 每次提问记一行，每个锚点也记一行（`#节点实例`）。
+ * 一局里每一步都手写一遍转发太啰嗦，代理只做记录，转发还给原样那套动作。
+ */
+function loggingActions(inner: ActionProvider, log: string[]): ActionProvider {
+  return new Proxy(inner, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property);
+      if (typeof value !== 'function') return value;
+
+      return (...args: unknown[]) => {
+        log.push(`${String(property)} ${args.map((arg) => JSON.stringify(arg)).join(' ')}`);
+        return (value as (...rest: unknown[]) => unknown)(...args);
+      };
+    },
+  }) as ActionProvider;
+}
+
+/** 从整跑那份日志里截出某一格之后的那一段：接着跑就该只问这一段里的问题。 */
+function tailFrom(full: readonly string[], anchor: StageAnchor): string[] {
+  const at = full.indexOf(`#${anchor.phaseInstanceId}`);
+  if (at < 0) throw new Error(`整跑里没有这一格：${anchor.phaseInstanceId}`);
+  return full.slice(at);
+}
+
+/** 谁还活着。 */
+function livesOf(state: GameState): boolean[] {
+  return state.players.map((player) => player.isAlive);
+}
+
+/** 谁在第几天怎么出局的：这一局死的人凑起来是同一批，只看活没活着分不出刀口换没换过人。 */
+function deathsOf(state: GameState): string[] {
+  return state.players.map(
+    (player) =>
+      `${player.id} ${player.isAlive} ${player.deathDay ?? '-'} ${player.deathCause ?? '-'}`,
+  );
+}
+
+describe('断点续跑', () => {
+  /** 跑一局，把提问与锚点都记下来；resume 给了就从那一格接着跑。 */
+  async function play(
+    options: {
+      resume?: StageAnchor;
+      minuteOf?: (day: number) => number;
+      board?: GameState;
+      plan?: Partial<ActionProvider>;
+    } = {},
+  ) {
+    const log: string[] = [];
+    const anchors: StageAnchor[] = [];
+    const actions = loggingActions(stubActions(options.plan ?? plan()), log);
+
+    const result = await runGame({
+      // 接着跑时交给它的是新开的一局的局面：局面该以锚点里那份为准。
+      state: options.board ?? board(),
+      actions,
+      minuteOf: options.minuteOf ?? (() => 22),
+      resume: options.resume,
+      onStage: async (anchor) => {
+        anchors.push(anchor);
+        log.push(`#${anchor.phaseInstanceId}`);
+      },
+    });
+
+    return { result, log, anchors };
+  }
+
+  it.each(['night', 'deathSkills', 'day', 'exileSkills'])(
+    '从第一轮的 %s 那一格接着跑：前面那几格不重放，终局与整跑一样',
+    async (stage) => {
+      const full = await play();
+      const anchor = full.anchors.find((item) => nodeNameOf(item.phaseInstanceId) === stage);
+      if (!anchor) throw new Error(`整跑没走到 ${stage} 这一格`);
+
+      const resumed = await play({ resume: anchor });
+
+      // 接着跑那一格的序号跟锚点里的一模一样：重推一次，答过的那些提问就全换了键。
+      expect(resumed.log[0]).toBe(`#${anchor.phaseInstanceId}`);
+      expect(resumed.log).toEqual(tailFrom(full.log, anchor));
+      expect(resumed.result.winner).toBe(full.result.winner);
+      expect(livesOf(resumed.result.state)).toEqual(livesOf(full.result.state));
+    },
+  );
+
+  it('锚点不在这一天的四格上：当场抛，不闷头从头跑一局', async () => {
+    const full = await play();
+
+    // 锚点是从库里取回来的，来路不明的行得挡在这一步，别拿它当进度使。
+    const stale = { ...full.anchors[0], phaseInstanceId: phaseInstanceId(9, 'night_resolve') };
+
+    await expect(play({ resume: stale })).rejects.toThrow('锚点不在这一天的四格上');
+  });
+
+  it('锚点里那份局面不在这一格上：当场抛，不拿错位的进度接着跑', async () => {
+    const full = await play();
+    const anchor = full.anchors.find((item) => nodeNameOf(item.phaseInstanceId) === 'day');
+    if (!anchor) throw new Error('整跑没走到白天这一格');
+
+    // 认格按行里那份、做键按局面里那份；两份对不上，跑起来的格与落下的锚点就分家了。
+    const crossed = {
+      ...anchor,
+      state: { ...anchor.state, phaseInstanceId: phaseInstanceId(0, 'init') },
+    };
+
+    await expect(play({ resume: crossed })).rejects.toThrow('锚点里那份局面不在这一格上');
+  });
+
+  it('接着跑落在放逐技能那一格、这一格又没人可问：下一格另起一个新实例', async () => {
+    const full = await play();
+    const anchor = full.anchors.find((item) => nodeNameOf(item.phaseInstanceId) === 'exileSkills');
+    if (!anchor) throw new Error('整跑没走到放逐技能这一格');
+
+    // 没人被放逐就不进这一格，恢复标记得跟着这一轮作废；留着的话，第二天的夜间
+    // 会顶着这一格的名字跑，从那儿起每一问的键都跟着换了名字。
+    const resumed = await play({ resume: { ...anchor, input: { deaths: [] } } });
+
+    expect(resumed.log[0]).toBe(`#${nextPhaseInstanceId(anchor.phaseInstanceId, 'night')}`);
+  });
+
+  it('恢复落在白天那一格：分钟数取锚点里那份，不重新问时钟', async () => {
+    const full = await play({ minuteOf: () => 22 });
+    const anchor = full.anchors.findLast((item) => nodeNameOf(item.phaseInstanceId) === 'day');
+    if (!anchor) throw new Error('整跑没走到白天这一格');
+
+    // 时钟在核心外面，换了分钟数这一局的发言方向就跟着换一套；接着跑要的还是断那一次那个。
+    const resumed = await play({ resume: anchor, minuteOf: () => 99 });
+
+    expect(resumed.log).toEqual(tailFrom(full.log, anchor));
+  });
+
+  it('狼队并列提刀：重进那一格抽回的是同一个数，后面几夜的刀口一路对得上', async () => {
+    const full = await play({ board: packBoard(), plan: packPlan() });
+    const anchor = full.anchors.find((item) => nodeNameOf(item.phaseInstanceId) === 'day');
+    if (!anchor) throw new Error('整跑没走到白天这一格');
+
+    // 抽签每夜抽一次，抽到的数只认那一格：换上按局铺一条流的写法，
+    // 接着跑第二夜会抽到整跑头一夜抽过的那个数，从这一夜起刀口就换了人。
+    const resumed = await play({ resume: anchor, board: packBoard(), plan: packPlan() });
+
+    expect(full.result.winner).toBe(FACTIONS.WEREWOLF);
+    // 七名平民一个不剩：四夜抽签一路抽歪的话，死的就不止这些、也不止这些人。
+    expect(livesOf(full.result.state).filter((alive) => !alive)).toHaveLength(VILLAGERS.size);
+    expect(deathsOf(resumed.result.state)).toEqual(deathsOf(full.result.state));
+  });
+
+  it('整跑不留锚点也照跑：这一跑没有下一段要接', async () => {
+    const state = board();
+    const actions = stubActions(plan());
+
+    const result = await runGame({ state, actions, minuteOf: () => 22 });
+
+    expect(result.winner).toBe(FACTIONS.GOOD);
+    expect(result.state.day).toBe(2);
   });
 });

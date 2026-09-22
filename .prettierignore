@@ -3,3 +3,6 @@ dist
 build
 coverage
 pnpm-lock.yaml
+
+# Prisma 生成的客户端
+**/generated/prisma/

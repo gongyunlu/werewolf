@@ -6,7 +6,7 @@ import { alivePlayers, type GameState } from '../state';
 import { announceDay, type NightDeath } from './announce';
 import { settleBadgeAfterDeaths } from './badge';
 
-/** 自爆窗口：campaign 首轮警上，campaign_resume 竞选续轮，day 白天发言前一次、之后每段发言各一次。 */
+/** 自爆窗口：campaign 首轮警上，campaign_resume 竞选续轮，day 白天常规发言之前一次。 */
 export type BlastWindow = 'campaign' | 'campaign_resume' | 'day';
 
 export interface BlastResult {
