@@ -5,6 +5,9 @@ import type { ZodType } from 'zod';
 /** 响应体与共享契约不符时使用 */
 const SCHEMA_MISMATCH = 'RESPONSE_SCHEMA_MISMATCH';
 
+/** 请求由调用方主动中止。 */
+const CANCELED = 'CANCELED';
+
 /**
  * 调用方只需面对这一种错误类型。status 缺失表示压根没拿到响应（网络中断、被取消等）。
  */
@@ -20,9 +23,27 @@ export class ApiError extends Error {
   }
 }
 
+/** 界面要显示的那一句话。经手的错误都已经过 toApiError，取 message 就够。 */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '未知错误';
+}
+
+/** 主动取消不作为网络故障展示。 */
+export function isCanceled(error: unknown): boolean {
+  return error instanceof ApiError && error.code === CANCELED;
+}
+
 export function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error;
+  }
+
+  // 取消不是故障，单独给一个自己的码，调用方按码认，不必去猜 axios 那些常量
+  if (axios.isCancel(error)) {
+    return new ApiError(error instanceof Error ? error.message : '请求已取消', {
+      code: CANCELED,
+      cause: error,
+    });
   }
 
   if (axios.isAxiosError(error)) {

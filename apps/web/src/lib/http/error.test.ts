@@ -1,7 +1,7 @@
 import { HealthResponseSchema } from '@werewolf/shared';
-import { AxiosError, AxiosHeaders } from 'axios';
+import { AxiosError, AxiosHeaders, CanceledError } from 'axios';
 import { describe, expect, it } from 'vitest';
-import { ApiError, parseResponse, toApiError } from './error';
+import { ApiError, isCanceled, parseResponse, toApiError } from './error';
 
 describe('toApiError', () => {
   it('原样返回已经是 ApiError 的错误', () => {
@@ -49,6 +49,15 @@ describe('toApiError', () => {
     });
 
     expect(toApiError(error).message).toBe('请求失败');
+  });
+
+  it('被取消的请求给一个自己的码，调用方一眼认得出不是故障', () => {
+    const canceled = toApiError(new CanceledError('canceled'));
+
+    expect(canceled.code).toBe('CANCELED');
+    expect(isCanceled(canceled)).toBe(true);
+    expect(isCanceled(new ApiError('别的错', { code: 'HTTP_500' }))).toBe(false);
+    expect(isCanceled(new Error('压根不是这一路的错'))).toBe(false);
   });
 });
 

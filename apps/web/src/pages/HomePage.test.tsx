@@ -1,30 +1,17 @@
 import { render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchHealth } from '@/lib/api-client';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, expect, it } from 'vitest';
 import { HomePage } from './HomePage';
 
-vi.mock('@/lib/api-client', () => ({
-  fetchHealth: vi.fn(),
-}));
-
-describe('HomePage', () => {
-  afterEach(() => {
-    vi.mocked(fetchHealth).mockReset();
-  });
-
-  it('后端可用时展示健康状态', async () => {
-    vi.mocked(fetchHealth).mockResolvedValue({ status: 'ok' });
-
-    render(<HomePage />);
-
-    expect(await screen.findByText('后端状态：ok')).toBeInTheDocument();
-  });
-
-  it('后端不可用时展示不可用', async () => {
-    vi.mocked(fetchHealth).mockRejectedValue(new Error('503'));
-
-    render(<HomePage />);
-
-    expect(await screen.findByText('后端状态：不可用')).toBeInTheDocument();
+describe('首页', () => {
+  it('提供观战与参赛者管理入口', () => {
+    render(
+      <MemoryRouter>
+        <HomePage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('heading', { name: 'AI 狼人杀' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '开始观战' })).toHaveAttribute('href', '/games');
+    expect(screen.getByRole('link', { name: '管理参赛者' })).toHaveAttribute('href', '/agents');
   });
 });
