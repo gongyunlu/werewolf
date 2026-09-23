@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { gameStoresProvider } from '../store/stores.provider';
+import { StoresModule } from '../store/stores.module';
 import { ActionsController } from './actions.controller';
 
 @Module({
+  imports: [StoresModule],
   controllers: [ActionsController],
-  providers: [gameStoresProvider],
 })
 export class ActionsModule {}

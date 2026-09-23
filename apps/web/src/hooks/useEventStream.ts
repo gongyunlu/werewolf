@@ -1,6 +1,4 @@
-import type { EventSourceMessage } from 'eventsource-parser';
 import { useEffect, useRef, useState } from 'react';
-import { openEventStream } from '@/lib/sse';
 
 export interface EventStreamState {
   /** 当前是否已连上 */
@@ -15,12 +13,12 @@ export interface UseEventStreamOptions {
 }
 
 /**
- * 把事件流绑到组件生命周期上：挂载订阅、卸载关闭，传输分帧在 lib/sse.ts。
+ * 挂载订阅、卸载关闭；分帧、重连与 Last-Event-ID 由浏览器处理。
  * onMessage 走 ref 转发，回调变化不会触发重连，调用方不用为它做 memo。
  */
 export function useEventStream(
   url: string | null,
-  onMessage: (message: EventSourceMessage) => void,
+  onMessage: (message: MessageEvent<string>) => void,
   options: UseEventStreamOptions = {},
 ): EventStreamState {
   const { enabled = true } = options;
@@ -40,23 +38,21 @@ export function useEventStream(
       return;
     }
 
-    const handle = openEventStream(url, {
-      handlers: {
-        onMessage: (message) => handlerRef.current(message),
-        onOpen: () => {
-          setConnected(true);
-          setError(null);
-        },
-        onError: (failure) => {
-          setConnected(false);
-          setError(failure);
-        },
-      },
+    const source = new EventSource(url);
+    const receive = (message: MessageEvent<string>) => handlerRef.current(message);
+    source.addEventListener('message', receive);
+    source.addEventListener('preview', receive as EventListener);
+    source.addEventListener('open', () => {
+      setConnected(true);
+      setError(null);
+    });
+    source.addEventListener('error', () => {
+      setConnected(false);
+      setError(new Error('事件流连接已断开'));
     });
 
     return () => {
-      handle.close();
-      void handle.closed;
+      source.close();
       setConnected(false);
     };
   }, [url, enabled]);

@@ -71,18 +71,27 @@ export function scriptedModel(answers: readonly ScriptedStep[]): RecordingModel 
 
   return {
     calls,
-    async generate(request: ModelRequest): Promise<ModelResponse> {
+    async generate(request: ModelRequest, _access, call): Promise<ModelResponse> {
       calls.push(request);
       const step = answers[index];
       index += 1;
       if (step === undefined) throw new Error(`脚本模型只准备了 ${answers.length} 次回答`);
       if (step instanceof Error) throw step;
-      if (typeof step === 'string') return responseOf(request, step);
-      // 拒交那一格：给不给工具都不走它，正文就是它写的那段话。
-      if ('refusal' in step) {
-        return { content: step.refusal, toolCall: null, reasoning: step.reasoning ?? null };
-      }
-      return responseOf(request, step.answer, step.reasoning);
+
+      const response =
+        typeof step === 'string'
+          ? responseOf(request, step)
+          : // 拒交那一格：给不给工具都不走它，正文就是它写的那段话。
+            'refusal' in step
+            ? { content: step.refusal, toolCall: null, reasoning: step.reasoning ?? null }
+            : responseOf(request, step.answer, step.reasoning);
+
+      // 真端口只要接了 onDelta 就边走边吐，这儿照做：用例才分得清「没走流」和
+      // 「走了流却没人接」。走工具的那一问只有思考那一头，跟真端口一致。
+      call?.onDelta?.({ channel: 'reasoning', text: '先想一下。' });
+      if (!response.toolCall) call?.onDelta?.({ channel: 'content', text: response.content });
+
+      return response;
     },
   };
 }

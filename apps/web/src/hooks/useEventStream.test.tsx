@@ -1,131 +1,86 @@
-import { renderHook, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEventStream } from './useEventStream';
 
-const encoder = new TextEncoder();
+/** 只模拟浏览器事件，SSE 解析和重连不再由应用实现。 */
+class FakeEventSource extends EventTarget {
+  static instances: FakeEventSource[] = [];
+  close = vi.fn();
 
-function abortError() {
-  return new DOMException('已中止', 'AbortError');
-}
-
-/** 伪造一个挂着等消息的事件流，只有被中止才断开 */
-function stubStream(chunks: string[], status = 200) {
-  const signals: AbortSignal[] = [];
-  const closed = vi.fn();
-
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (_url: string, options?: { signal?: AbortSignal }) => {
-      const signal = options?.signal;
-      let index = 0;
-
-      if (signal) {
-        signals.push(signal);
-      }
-
-      const reader = {
-        read: async () => {
-          if (signal?.aborted) {
-            throw abortError();
-          }
-
-          if (index < chunks.length) {
-            return { value: encoder.encode(chunks[index++]), done: false };
-          }
-
-          await new Promise((_resolve, reject) => {
-            signal?.addEventListener('abort', () => {
-              closed();
-              reject(abortError());
-            });
-          });
-
-          return { value: undefined, done: true };
-        },
-      };
-
-      return {
-        ok: status < 400,
-        status,
-        body: { getReader: () => reader },
-      };
-    }),
-  );
-
-  return { signals, closed };
+  constructor(readonly url: string) {
+    super();
+    FakeEventSource.instances.push(this);
+  }
 }
 
 describe('useEventStream', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('EventSource', FakeEventSource);
   });
+  afterEach(() => vi.unstubAllGlobals());
 
-  it('挂载后接收消息，并把连接状态置为已连接', async () => {
-    stubStream(['data: {"n":1}\n\n']);
+  it('接收事实和预览，断开时清除连接状态，重连后清除错误', () => {
+    const received = vi.fn();
+    const { result } = renderHook(() => useEventStream('/api/games/1/events', received));
+    const source = FakeEventSource.instances[0];
+    act(() => source.dispatchEvent(new Event('open')));
+    expect(result.current.connected).toBe(true);
 
-    const received: string[] = [];
-    const { result } = renderHook(() =>
-      useEventStream('/api/games/1/stream', (message) => received.push(message.data)),
-    );
-
-    await waitFor(() => expect(received).toEqual(['{"n":1}']));
+    act(() => {
+      source.dispatchEvent(new MessageEvent('message', { data: '事实', lastEventId: '7' }));
+      source.dispatchEvent(new MessageEvent('preview', { data: '预览' }));
+    });
+    expect(received.mock.calls.map(([event]) => [event.type, event.data])).toEqual([
+      ['message', '事实'],
+      ['preview', '预览'],
+    ]);
+    act(() => source.dispatchEvent(new Event('error')));
+    expect(result.current.connected).toBe(false);
+    expect(result.current.error).toBeInstanceOf(Error);
+    act(() => source.dispatchEvent(new Event('open')));
     expect(result.current.connected).toBe(true);
     expect(result.current.error).toBeNull();
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
-  it('卸载时中止连接', async () => {
-    const { signals } = stubStream(['data: 一条\n\n']);
-
-    const { unmount } = renderHook(() => useEventStream('/api/games/1/stream', vi.fn()));
-
-    await waitFor(() => expect(signals).toHaveLength(1));
-    expect(signals[0]?.aborted).toBe(false);
-
-    unmount();
-
-    expect(signals[0]?.aborted).toBe(true);
-  });
-
-  it('enabled 为 false 时不发起连接', async () => {
-    stubStream([]);
-
-    renderHook(() => useEventStream('/api/games/1/stream', vi.fn(), { enabled: false }));
-
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('url 为 null 时不发起连接', async () => {
-    stubStream([]);
-
-    renderHook(() => useEventStream(null, vi.fn()));
-
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('重渲染传入新的回调不会重连', async () => {
-    stubStream(['data: 一条\n\n']);
-
-    const { rerender } = renderHook(
-      ({ handler }: { handler: (message: { data: string }) => void }) =>
-        useEventStream('/api/games/1/stream', handler),
-      { initialProps: { handler: vi.fn() } },
+  it('回调更新不重连，后续消息发给新的回调', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const { rerender } = renderHook(({ handler }) => useEventStream('/events', handler), {
+      initialProps: { handler: first },
+    });
+    rerender({ handler: second });
+    act(() =>
+      FakeEventSource.instances[0].dispatchEvent(new MessageEvent('message', { data: '新消息' })),
     );
-
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-
-    rerender({ handler: vi.fn() });
-
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledOnce();
+    expect(FakeEventSource.instances).toHaveLength(1);
   });
 
-  it('连接失败时记录错误', async () => {
-    stubStream([], 500);
-
-    const { result } = renderHook(() =>
-      useEventStream('/api/games/1/stream', vi.fn(), { enabled: true }),
+  it('切换地址、禁用和卸载时关闭旧连接', () => {
+    const { rerender, unmount, result } = renderHook(
+      ({ url, enabled }) => useEventStream(url, vi.fn(), { enabled }),
+      { initialProps: { url: '/one', enabled: true } },
     );
-
-    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+    const first = FakeEventSource.instances[0];
+    act(() => first.dispatchEvent(new Event('open')));
+    rerender({ url: '/two', enabled: true });
+    expect(first.close).toHaveBeenCalledOnce();
     expect(result.current.connected).toBe(false);
+    const second = FakeEventSource.instances[1];
+    rerender({ url: '/two', enabled: false });
+    expect(second.close).toHaveBeenCalledOnce();
+    rerender({ url: '/two', enabled: true });
+    const third = FakeEventSource.instances[2];
+    unmount();
+    expect(third.close).toHaveBeenCalledOnce();
+  });
+
+  it('没有地址或已禁用时不创建连接', () => {
+    renderHook(() => useEventStream(null, vi.fn()));
+    renderHook(() => useEventStream('/events', vi.fn(), { enabled: false }));
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 });

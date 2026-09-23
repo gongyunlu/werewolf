@@ -1,3 +1,4 @@
+import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
 import { ACTION_TYPES } from '@werewolf/shared';
 import { z } from 'zod';
 import { phaseInstanceId, type ActionScope } from '../core/identity';
@@ -55,7 +56,8 @@ function withModel(answers: readonly (string | Error)[]) {
     model,
     runtime: {
       port: model,
-      access: ACCESS,
+      accessFor: () => ACCESS,
+      memoriesFor: () => [],
       promptSource: LOCAL_TURN_PROMPTS,
       skills: stubSkills(),
     },
@@ -70,14 +72,37 @@ function withModel(answers: readonly (string | Error)[]) {
 class FakeClient {
   readonly checkpoints: Row[] = [];
   readonly writes: Row[] = [];
+  failChannel: string | null = null;
+  unavailable = false;
+
+  async $transaction<T>(run: (client: FakeClient) => Promise<T>): Promise<T> {
+    const checkpoints = this.checkpoints.map((row) => ({ ...row }));
+    const writes = this.writes.map((row) => ({ ...row }));
+    try {
+      return await run(this);
+    } catch (error) {
+      this.checkpoints.splice(0, this.checkpoints.length, ...checkpoints);
+      this.writes.splice(0, this.writes.length, ...writes);
+      throw error;
+    }
+  }
 
   /** 主键那几条写在 where 里：`{a: 1}` 与 `{主键: {a: 1}}` 两种写法都要认。 */
   private static hits(row: Row, where: Row): boolean {
-    return Object.entries(where).every(([key, value]) =>
-      typeof value === 'object' && value !== null
+    return Object.entries(where).every(([key, value]) => {
+      if (key === 'AND') return (value as Row[]).every((part) => FakeClient.hits(row, part));
+      if (key === 'metadata') {
+        const filter = value as { path: string[]; equals: unknown };
+        return (row.metadata as Row)[filter.path[0]] === filter.equals;
+      }
+      if (key === 'checkpointId' && typeof value === 'object' && value !== null) {
+        const filter = value as { lt?: string; in?: string[] };
+        return filter.lt ? String(row[key]) < filter.lt : filter.in!.includes(String(row[key]));
+      }
+      return typeof value === 'object' && value !== null
         ? Object.entries(value as Row).every(([field, part]) => row[field] === part)
-        : row[key] === value,
-    );
+        : row[key] === value;
+    });
   }
 
   readonly graphCheckpoint = {
@@ -85,10 +110,21 @@ class FakeClient {
       this.checkpoints.find((row) => FakeClient.hits(row, where)),
     findFirst: async ({ where, orderBy }: { where: Row; orderBy?: Row }) => {
       const found = this.checkpoints.filter((row) => FakeClient.hits(row, where));
-      // 落库顺序就是时间序：每落一份中间都隔着一次落库往返。按它认这个排序说的是哪一头。
-      return orderBy?.createdAt === 'desc' ? found.at(-1) : found.at(0);
+      if (orderBy?.checkpointId === 'desc') {
+        return found.toSorted((a, b) =>
+          String(b.checkpointId).localeCompare(String(a.checkpointId)),
+        )[0];
+      }
+      return found[0];
     },
+    findMany: jest.fn(async ({ where, take }: { where: Row; take?: number }) =>
+      this.checkpoints
+        .filter((row) => FakeClient.hits(row, where))
+        .toSorted((a, b) => String(b.checkpointId).localeCompare(String(a.checkpointId)))
+        .slice(0, take),
+    ),
     upsert: async ({ where, create, update }: { where: Row; create: Row; update: Row }) => {
+      if (this.unavailable) throw new Error('数据库暂时不可用');
       const found = this.checkpoints.find((row) => FakeClient.hits(row, where));
       if (found) Object.assign(found, update);
       else this.checkpoints.push({ ...create, createdAt: this.checkpoints.length });
@@ -101,7 +137,7 @@ class FakeClient {
   };
 
   readonly graphCheckpointWrite = {
-    findMany: async ({ where }: { where: Row }) =>
+    findMany: jest.fn(async ({ where }: { where: Row }) =>
       this.writes
         .filter((row) => FakeClient.hits(row, where))
         .toSorted(
@@ -111,7 +147,10 @@ class FakeClient {
         )
         // 读到的是 JSON 的 null：哨兵是递出去时那一侧的说法，库里存的还是 null。
         .map((row) => ({ ...row, value: row.value === Prisma.JsonNull ? null : row.value })),
+    ),
     upsert: async ({ where, create, update }: { where: Row; create: Row; update: Row }) => {
+      if (create.channel === this.failChannel) this.unavailable = true;
+      if (this.unavailable) throw new Error('数据库暂时不可用');
       const found = this.writes.find((row) => FakeClient.hits(row, where));
       if (found) Object.assign(found, update);
       else this.writes.push(create);
@@ -130,6 +169,76 @@ function saverOn(client: FakeClient) {
 }
 
 describe('行动图的进度落在对局库里', () => {
+  it('查询历史在库内过滤和限量，并批量读取分支结果', async () => {
+    const client = new FakeClient();
+    const saver = saverOn(client);
+    const config = { configurable: { thread_id: actionKeyOf(request()) } };
+    for (const id of ['1', '2', '3', '4']) {
+      const saved = await saver.put(
+        config,
+        {
+          v: 4,
+          id,
+          ts: '2026-09-23T00:00:00Z',
+          channel_values: {},
+          channel_versions: {},
+          versions_seen: {},
+        },
+        { source: id === '3' ? 'input' : 'loop', step: Number(id), parents: {} },
+        {},
+      );
+      await saver.putWrites(saved, [['value', id]], 'task');
+    }
+    const rows = [];
+    for await (const row of saver.list(config, {
+      before: { configurable: { checkpoint_id: '4' } },
+      filter: { source: 'loop' },
+      limit: 2,
+    }))
+      rows.push(row);
+    expect(rows.map((row) => row.checkpoint.id)).toEqual(['2', '1']);
+    expect(rows.map((row) => row.pendingWrites)).toEqual([
+      [['task', 'value', '2']],
+      [['task', 'value', '1']],
+    ]);
+    expect(client.graphCheckpoint.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 2,
+        orderBy: { checkpointId: 'desc' },
+        where: expect.objectContaining({
+          AND: [{ metadata: { path: ['source'], equals: 'loop' } }],
+        }),
+      }),
+    );
+    expect(client.graphCheckpointWrite.findMany).toHaveBeenCalledTimes(1);
+    expect((await saver.getTuple(config))?.checkpoint.id).toBe('4');
+  });
+
+  it('节点结果写到一半失败时整批回滚，恢复后重新执行节点', async () => {
+    const client = new FakeClient();
+    client.failChannel = 'y';
+    const produce = jest.fn(() => ({ x: 1, y: 2 }));
+    const graph = new StateGraph(
+      new StateSchema({ x: z.number().default(0), y: z.number().default(0) }),
+    )
+      .addNode('produce', produce)
+      .addEdge(START, 'produce')
+      .addEdge('produce', END)
+      .compile({ checkpointer: saverOn(client) });
+    const config = {
+      configurable: { thread_id: actionKeyOf(request()) },
+      durability: 'sync' as const,
+    };
+
+    await expect(graph.invoke({}, config)).rejects.toThrow('数据库暂时不可用');
+    expect(client.writes.some((row) => row.channel === 'x')).toBe(false);
+
+    client.failChannel = null;
+    client.unavailable = false;
+    await expect(graph.invoke(null, config)).resolves.toMatchObject({ x: 1, y: 2 });
+    expect(produce).toHaveBeenCalledTimes(2);
+  });
+
   it('一次行动跑完，检查点与写入都落在行动键那条线程下、这一局名下', async () => {
     const client = new FakeClient();
     const ask = request();

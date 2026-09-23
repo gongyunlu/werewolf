@@ -33,6 +33,8 @@ export interface DecisionSnapshot {
   decision: unknown;
   /** 最终那版决定之前模型自己那段推理，原文；端点没给（思考关着）就是 null。 */
   reasoning: string | null;
+  /** 生成、复核、修订及格式重试的推理输出耗时总和。旧记录没有此项。 */
+  thinkingMs?: number | null;
   /** 这一趟里模型交歪了几回（0 = 每一问都一次交对）。是那三问的合计，分不出是哪一问歪的。 */
   retries: number;
 }

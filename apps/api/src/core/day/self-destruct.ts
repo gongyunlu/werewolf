@@ -1,6 +1,8 @@
 import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import type { ActionProvider } from '../actions';
+import { seatNames, type FlowObserver } from '../flow';
 import { inWolfChannel } from '../roles';
+import { settleActions } from '../parallel';
 import { decideWhiteWolfTake } from '../skills/white-wolf';
 import { alivePlayers, type GameState } from '../state';
 import { checkWin } from '../win';
@@ -38,18 +40,32 @@ export async function runBlastWindow(
   window: BlastWindow,
   actions: ActionProvider,
   observe?: (state: GameState) => void,
+  onFlow?: FlowObserver,
 ): Promise<BlastResult> {
   const pack = alivePlayers(state).filter((player) => inWolfChannel(player.role));
 
-  const answers = await Promise.all(
+  await onFlow?.(state, {
+    key: `${window}-blast-start`,
+    text: '进入自爆窗口，狼人同时决定是否自爆。',
+  });
+
+  const answers = await settleActions(
     pack.map((wolf) => actions.wolfBlast(wolf.id, window === 'campaign_resume')),
   );
   const blaster = pack.find((_, index) => answers[index]);
-  if (!blaster) return { state, blasted: false };
+  if (!blaster) {
+    await onFlow?.(state, { key: `${window}-blast-result`, text: '无人自爆，继续当前流程。' });
+    return { state, blasted: false };
+  }
+  await onFlow?.(state, {
+    key: `${window}-blast-result`,
+    text: `${blaster.seatNo} 号自爆出局，今天剩余的发言和投票结束。`,
+  });
 
   const blast = announceDay(state, [
     { playerId: blaster.id, cause: DEATH_CAUSES.SELF_DESTRUCT },
   ]).state;
+  observe?.(blast);
   // 自爆是个原子出局事件，先单独落地、当场判一次：爆的是最后一只狼就到此为止，
   // 白狼王不再有机会带人，警徽也不必结。胜负只由 checkWin 一处说，见 skills/white-wolf.ts。
   if (checkWin(blast) !== null) return { state: blast, blasted: true };
@@ -60,6 +76,11 @@ export async function runBlastWindow(
     taken === null ? [] : [{ playerId: taken, cause: DEATH_CAUSES.WHITE_WOLF_TAKE }];
 
   const announced = deaths.length === 0 ? blast : announceDay(blast, deaths).state;
+  if (taken)
+    await onFlow?.(announced, {
+      key: `${window}-blast-take`,
+      text: `白狼王带走了 ${seatNames(announced, [taken])}。`,
+    });
   observe?.(announced);
   // 带走的那张也可能是最后一个神职或最后一张平民，分出来了也没必要再问警徽给谁。
   if (checkWin(announced) !== null) return { state: announced, blasted: true };

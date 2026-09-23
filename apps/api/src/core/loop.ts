@@ -1,8 +1,9 @@
 import { DEATH_CAUSES, type Faction } from '@werewolf/shared';
 import type { ActionProvider } from './actions';
+import { seatNames, type FlowObserver } from './flow';
 import { announceDay, type NightDeath } from './day/announce';
 import { settleBadgeAfterDeaths } from './day/badge';
-import type { ExileBallot } from './day/exile';
+import type { BallotObserver } from './vote';
 import { runDay } from './day/run-day';
 import { triggerDeathSkills } from './deaths';
 import { nextPhaseInstanceId, nodeNameOf, type PhaseInstanceId } from './identity';
@@ -40,11 +41,9 @@ export interface GameLoopInput {
   observe?: (state: GameState) => void;
   /** 落锚点的口子。不给就不留断点，这一跑断了只能从头再来。 */
   onStage?: (anchor: StageAnchor) => Promise<void>;
-  /**
-   * 交出 Core 收齐后才定得下来、外面看不到的事实。眼下只有票型：一轮投票并发问出去，
-   * 各人的落点要等 Core 计完票才知道结果，这里是一次放逐投完之后唯一的出口。
-   */
-  onFacts?: (ballots: readonly ExileBallot[]) => Promise<void>;
+  /** 每轮计票后立即发布票型，后续发言与投票才能看到。 */
+  onBallot?: BallotObserver;
+  onFlow?: FlowObserver;
   /** 从哪一格接着跑。局面与这一格的输入都以它为准，它前面那几格一概不重放。 */
   resume?: StageAnchor;
   /** 天数上限，默认 20；到点还没分出胜负就是引擎没停下来。 */
@@ -70,7 +69,15 @@ const DEFAULT_MAX_DAYS = 20;
  * 于是断在哪一格，重进的就是哪一格——把它前面那几格再跑一遍不叫恢复。
  */
 export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
-  const { actions, minuteOf, observe, onStage, onFacts, maxDays = DEFAULT_MAX_DAYS } = input;
+  const {
+    actions,
+    minuteOf,
+    observe,
+    onStage,
+    onBallot,
+    onFlow,
+    maxDays = DEFAULT_MAX_DAYS,
+  } = input;
   const resume = input.resume ?? null;
   let state = resume?.state ?? input.state;
   // 这一轮从第几格起跑：恢复落在哪一格就从哪一格起，之后每轮都整轮走。
@@ -111,9 +118,24 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
 
     if (from <= 0) {
       const entered = await enter('night', state, {});
-      const night = await runNight({ state: entered, actions, random: stageRandom(entered) });
+      const night = await runNight({
+        state: entered,
+        actions,
+        random: stageRandom(entered),
+        onFlow,
+      });
 
       const dawn = announceDay(night.state, night.deaths);
+      await onFlow?.(dawn.state, {
+        key: 'dawn',
+        phase: 'day',
+        text: night.deaths.length
+          ? `天亮了，昨晚 ${seatNames(
+              dawn.state,
+              night.deaths.map((death) => death.playerId),
+            )} 倒牌。`
+          : '天亮了，昨晚是平安夜。',
+      });
       const winner = checkWin(dawn.state);
       if (winner !== null) return { state: dawn.state, winner };
 
@@ -128,6 +150,7 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
         dead,
         actions,
         observe,
+        onFlow,
       );
       const winner = checkWin(woken);
       if (winner !== null) return { state: woken, winner };
@@ -143,9 +166,9 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
         actions,
         minute,
         observe,
+        onBallot,
+        onFlow,
       });
-      // 计完票才有的东西，交出去再判胜负：这一步不提问，早交晚交都不影响谁赢。
-      if (day.ballots.length > 0) await onFacts?.(day.ballots);
 
       const winner = checkWin(day.state);
       if (winner !== null) return { state: day.state, winner };
@@ -164,6 +187,7 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
         exileDeaths,
         actions,
         observe,
+        onFlow,
       );
       const winner = checkWin(woken);
       if (winner !== null) return { state: woken, winner };

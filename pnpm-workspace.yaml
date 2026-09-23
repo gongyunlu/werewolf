@@ -2,9 +2,15 @@ packages:
   - 'apps/*'
   - 'packages/*'
 
+overrides:
+  # shadcn 的 MCP SDK 需要提供 zod/v3 导出的版本。
+  'shadcn>zod': '^3.25.76'
+
 allowBuilds:
   '@parcel/watcher': true
   '@prisma/client': true
   esbuild: true
+  # bullmq 的传递依赖，只是个可选的加速件，不带它照样跑。
+  msgpackr-extract: false
   prisma: true
   unrs-resolver: true

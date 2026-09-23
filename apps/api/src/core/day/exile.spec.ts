@@ -1,5 +1,6 @@
 import { ballotOf, stubActions, makeState } from '../../testing/fixtures';
 import { runExile } from './exile';
+import type { Ballot } from '../vote';
 
 /** 当天已经走过的白天发言顺序，23 分的个位 3（单数）顺时针，从 3 号位起。 */
 const SPEECH_ORDER = [3, 4, 5, 6, 1, 2];
@@ -9,6 +10,23 @@ function stateWithSheriff(playerCount: number, sheriffId: string | null) {
 }
 
 describe('放逐', () => {
+  it('首轮票型在 PK 发言前发布，PK 票型在返回前发布', async () => {
+    const published: Ballot[] = [];
+    const actions = stubActions({
+      vote: async (turn, id) =>
+        turn === 'exile' ? (id === 'p1' || id === 'p2' ? 'p1' : 'p2') : 'p1',
+      speak: async () => {
+        expect(published.map((ballot) => ballot.round)).toEqual(['exile']);
+        expect(published[0].outcome).toEqual({ kind: 'tie', tiedIds: ['p1', 'p2'] });
+        return '根据刚公布的票型发言';
+      },
+    });
+    await runExile(makeState(4), actions, [1, 2, 3, 4], async (ballot) => {
+      published.push(ballot);
+    });
+    expect(published.map((ballot) => ballot.round)).toEqual(['exile', 'exile_pk']);
+  });
+
   it('唯一最高票的人被放逐', async () => {
     const actions = stubActions({
       vote: ballotOf({ p1: 'p3', p2: 'p3', p3: 'p2', p4: 'p3', p5: 'p6', p6: 'p5' }),
@@ -43,8 +61,7 @@ describe('放逐', () => {
     expect(result.state).toBe(state);
   });
 
-  // 警长投了票，放逐就平不了：1.5 加整数凑不出两个相等的和。平票只能出在没警徽或警长弃票的局。
-  it('有没有警长环节不打紧，警徽在不在手上才决定平票能不能出现', async () => {
+  it('警徽是否在场决定是否给警长投向的候选人加权', async () => {
     // 同一组票：p1 投 p2、p2 与 p3 各得三票，没有加权时正好平。
     const tied = ballotOf({ p1: 'p2', p2: 'p3', p3: 'p2', p4: 'p3', p5: 'p2', p6: 'p3' });
 
@@ -74,7 +91,7 @@ describe('放逐', () => {
   });
 
   it('警长弃票时平票照样会出现', async () => {
-    // 上一条的前提是警长投了票。弃票让他的 1.5 票不落地，全场票权退回整数。
+    // 弃票让警长的 1.5 票不落地，全场票权退回整数。
     const actions = stubActions({
       speak: async () => '发言',
       vote: async (turn, playerId) =>
@@ -89,6 +106,21 @@ describe('放逐', () => {
       ['exile_pk', 2],
       ['exile_pk', 3],
     ]);
+  });
+
+  it('警长投给第三名时，两名最高票仍可平票进入 PK', async () => {
+    const first = ballotOf({ p1: 'p4', p2: 'p2', p3: 'p2', p4: 'p3', p5: 'p3', p6: null });
+    const result = await runExile(
+      stateWithSheriff(6, 'p1'),
+      stubActions({
+        speak: async () => 'PK 发言',
+        vote: async (turn, id) => (turn === 'exile' ? first(turn, id) : 'p2'),
+      }),
+      SPEECH_ORDER,
+    );
+    expect(result.ballots[0].outcome).toEqual({ kind: 'tie', tiedIds: ['p2', 'p3'] });
+    expect(result.speeches).toHaveLength(2);
+    expect(result.exiledId).toBe('p2');
   });
 
   it('平票时平票者按相反顺序 PK 发言，由非平票的存活玩家再投一次', async () => {

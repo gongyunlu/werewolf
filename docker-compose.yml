@@ -7,6 +7,22 @@
 name: werewolf-app
 
 services:
+  # 队列与事件推送共用这一个。端口 6380 不用 6379：旧项目那两个 Redis 还占着 6378/6379。
+  # 开 AOF 是因为「排上队还没跑的局」得扛得住重启，那是队列存在的理由。
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:6380:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -26,3 +42,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

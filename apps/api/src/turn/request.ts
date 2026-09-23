@@ -1,7 +1,8 @@
-import type { ActionType } from '@werewolf/shared';
+import type { ActionType, PreviewChunk } from '@werewolf/shared';
 import { z } from 'zod';
+import type { SeatAccess } from '../agents/seat-context';
 import { actionKey, type ActionScope } from '../core/identity';
-import type { ModelAccess, ModelPort } from '../llm/model-port';
+import type { ModelPort } from '../llm/model-port';
 import type { PromptSource } from '../llm/prompt-template';
 import type { GameSkills } from '../skills/game-skills';
 import type { ActionPresetName } from './presets';
@@ -33,7 +34,7 @@ export interface TurnContext {
   /** 这次能选什么，来自端口方法的 candidates；只有「做/不做」两态的行动为空。 */
   options: readonly string[];
   /**
-   * 这一问要带上的技能正文，按「板子 → 角色 → 场景」排，缺哪一段就少哪一段。
+   * 这一问要带上的技能正文，按「板子 → 角色 → 场景 → 人设与策略」排，缺哪一段就少哪一段。
    * 每问都带一份，带上之后它就是这次提问实打实的输入。
    */
   skill: readonly string[];
@@ -63,11 +64,23 @@ export function actionKeyOf(request: ActionRequest): string {
  */
 export interface TurnRuntime {
   port: ModelPort;
-  access: ModelAccess;
+  /**
+   * 谁在答就用谁那份接入身份，按座位取。开局那份阵容里排了人的格子各有各的端点与密钥，
+   * 没排人的格子共用同一份；不是某个玩家在答的那几问（折摘要）传 null。
+   */
+  accessFor: SeatAccess;
+  /** 这一格挂着的人设与策略，拼在技能正文后面。没排人的格子是空数组。 */
+  memoriesFor: (seatNo: number) => readonly string[];
   /** 提示词的来处。图里哪条走到才取哪两条，取到的 production 版本是什么就是什么。 */
   promptSource: PromptSource;
   /** 这一局的技能正文，由持有这一局的人按板子取一次，整局共用。 */
   skills: GameSkills;
+  /**
+   * 观战那一头的预览口子：模型边写边推给正在看的人。
+   * 不给就不走流式——命令行跑的局没有观战页，就是不给；worker 那头发起的局一律给上，
+   * 此刻没人在看的也照推，由中转那边丢掉：本地一次 publish，不值得为此多传一个参数进来。
+   */
+  preview?: (chunk: PreviewChunk) => void;
 }
 
 /**

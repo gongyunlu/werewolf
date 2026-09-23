@@ -12,6 +12,8 @@ export const EVENT_KINDS = {
   WOLF_SUMMARY: 'wolf_summary',
   BALLOT: 'ballot',
   SHERIFF: 'sheriff',
+  /** 法官提示和技能回执仅供观战，玩家上下文已包含当前局面与技能结果。 */
+  SYSTEM: 'system',
   OTHER: 'other',
 } as const;
 
@@ -42,7 +44,8 @@ export interface StoredEvent {
 /** 事件库。真跑那份落 Postgres，用例用内存替身。 */
 export interface EventStore {
   /** 这局已经记下的，按发生顺序。 */
-  list(gameId: string): Promise<readonly StoredEvent[]>;
+  list(gameId: string, after?: number): Promise<readonly StoredEvent[]>;
+  positions(gameId: string): Promise<readonly Pick<StoredEvent, 'eventKey' | 'seq'>[]>;
   /** 记一条。同一个 eventKey 写第二遍是 bug：重放与同一趟里的重记各有拦处，能写到这一层就是有人越界了。 */
   append(gameId: string, event: StoredEvent): Promise<void>;
 }

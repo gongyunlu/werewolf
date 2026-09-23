@@ -18,7 +18,7 @@ export interface ModelGameInput {
   setup: GameSetup;
   /** 玩家 id，按座位下标对齐。 */
   playerIds: readonly string[];
-  /** 模型端口与接入身份。 */
+  /** 模型端口与逐座位的接入身份。 */
   runtime: Omit<TurnRuntime, 'promptSource'>;
   /** 提示词的来处。 */
   promptSource: PromptSource;
@@ -42,7 +42,11 @@ export interface ModelGameResult extends GameLoopResult {
 export async function runModelGame(input: ModelGameInput): Promise<ModelGameResult> {
   // 默认写进用完即弃的那几份：调用方不交存档过来，这一跑就没有下一段要接。
   const stores = input.stores ?? memoryStores();
-  const actions = modelActions({ ...input.runtime, promptSource: input.promptSource }, stores);
+  const actions = modelActions(
+    { ...input.runtime, promptSource: input.promptSource },
+    stores,
+    input.resume?.phaseInstanceId,
+  );
 
   const settled = await runGame({
     state: createGameState(input.setup, input.playerIds),
@@ -52,10 +56,16 @@ export async function runModelGame(input: ModelGameInput): Promise<ModelGameResu
     // 每进一格都落一份锚点：这一跑断了，下一跑就能从断的那一格接着跑。
     onStage: (anchor) => stores.steps.append(input.setup.gameId, anchor),
     // 票型的定局只有 Core 有，由它交出来，适配器照记进台账。
-    onFacts: (ballots) => actions.recordBallots(ballots),
+    onBallot: (ballot) => actions.recordBallot(ballot),
+    onFlow: actions.recordFlow,
     resume: input.resume,
     maxDays: input.maxDays,
   });
 
+  await actions.recordFlow(settled.state, {
+    key: 'game-over',
+    phase: 'day',
+    text: `对局结束，${settled.winner === 'werewolf' ? '狼人' : settled.winner === 'good' ? '好人' : '第三方'}阵营获胜。`,
+  });
   return { ...settled, outcomes: actions.outcomes() };
 }

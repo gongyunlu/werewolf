@@ -1,5 +1,6 @@
 import { DEATH_CAUSES, ROLES, type DeathCause } from '@werewolf/shared';
 import type { ActionProvider } from './actions';
+import { seatNames, type FlowObserver } from './flow';
 import { announceDay, type NightDeath } from './day/announce';
 import { decideHunterShot, hunterCanShoot } from './skills/hunter';
 import { decideWolfKingTake, wolfKingCanTake } from './skills/wolf-king';
@@ -20,6 +21,7 @@ export async function triggerDeathSkills(
   deaths: readonly NightDeath[],
   actions: ActionProvider,
   observe?: (state: GameState) => void,
+  onFlow?: FlowObserver,
 ): Promise<GameState> {
   let current = state;
   // 边遍历边往尾巴上追加，连锁就自动排进了同一轮。
@@ -35,6 +37,10 @@ export async function triggerDeathSkills(
 
     // 带走的人先落地再入队；撞上已经出局的人会在这里抛错，一人只公布一次死讯。
     current = announceDay(current, [shot]).state;
+    await onFlow?.(current, {
+      key: `death-skill-${player.id}`,
+      text: `${player.seatNo} 号发动出局技能，带走了 ${seatNames(current, [shot.playerId])}。`,
+    });
     // 下一个要问的人该看到他已经出局，见 GameLoopInput.observe。
     observe?.(current);
     pending.push(shot);

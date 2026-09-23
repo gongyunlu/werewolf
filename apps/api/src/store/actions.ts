@@ -1,4 +1,22 @@
 import type { ActionType } from '@werewolf/shared';
+import { z } from 'zod';
+
+/** 列表读取的快照字段；旧记录可以没有思考或耗时。 */
+export const ActionSnapshotFields = z.object({
+  context: z.object({
+    task: z.string(),
+    actor: z.object({ seatNo: z.number(), role: z.string() }),
+    day: z.number(),
+  }),
+  decision: z.unknown(),
+  reasoning: z.string().nullable().default(null),
+  thinkingMs: z.number().nullable().optional(),
+});
+
+/** outcome 只含列表所需字段，不含可见历史、提示词和思考正文。 */
+export interface StoredActionSummary extends StoredAction {
+  hasReasoning: boolean;
+}
 
 /** 一次提问立下的意图：问的是谁、问的什么、问的时候台账到哪儿。 */
 export interface ActionIntent {
@@ -29,6 +47,7 @@ export interface ActionStore {
   find(actionKey: string): Promise<StoredAction | null>;
   /** 取回这一局的全部记录，按问的先后排；没立过就是空数组。没答完的那几行也在里头。 */
   list(gameId: string): Promise<StoredAction[]>;
+  summaries(gameId: string): Promise<StoredActionSummary[]>;
   /** 立意图。已经立过的不再写，先立那份原样留着。 */
   begin(intent: ActionIntent): Promise<void>;
   /** 答完，补上结果。 */

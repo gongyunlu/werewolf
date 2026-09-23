@@ -42,6 +42,38 @@ const INTENT = {
 };
 
 describe('内存行动记录', () => {
+  it('摘要只保留展示字段，不携带思考正文、提示词和完整上下文', async () => {
+    const store = memoryActions();
+    await store.begin(INTENT);
+    await store.finish(INTENT.actionKey, {
+      snapshot: {
+        context: {
+          task: '投票',
+          day: 1,
+          actor: { seatNo: 2, role: '平民', playerId: 'p2' },
+          visible: ['长篇历史'],
+        },
+        decision: 'p5',
+        reasoning: '长篇思考',
+        prompts: ['长篇提示词'],
+        thinkingMs: 123,
+      },
+    });
+    const rows = await store.summaries('g1');
+    expect(rows[0]).toMatchObject({
+      hasReasoning: true,
+      outcome: {
+        snapshot: {
+          context: { task: '投票', day: 1, actor: { seatNo: 2, role: '平民' } },
+          decision: 'p5',
+          thinkingMs: 123,
+        },
+      },
+    });
+    expect(JSON.stringify(rows)).not.toContain('长篇');
+    expect(await store.summaries('other')).toEqual([]);
+  });
+
   it('没立过就是空的', async () => {
     expect(await memoryActions().find(INTENT.actionKey)).toBeNull();
   });
@@ -126,5 +158,24 @@ describe('内存阶段锚点', () => {
     await store.append('g1', anchorOf(1, 'night', {}));
 
     expect(await store.last('g2')).toBeNull();
+  });
+
+  it('几局一起问：每局认自己最后那份，没落过锚点的局不在表里', async () => {
+    const store = memorySteps();
+    await store.append('g1', anchorOf(1, 'night', {}));
+    await store.append('g1', anchorOf(3, 'day', {}));
+    await store.append('g2', anchorOf(2, 'vote', {}));
+
+    const latest = await store.latest(['g1', 'g2', 'g3']);
+
+    expect(latest.get('g1')?.phaseInstanceId).toBe(phaseInstanceId(3, 'day'));
+    expect(latest.get('g2')?.phaseInstanceId).toBe(phaseInstanceId(2, 'vote'));
+    // 没落过锚点的那局不在表里：列表页据此把它的天数与存活人数写成空。
+    expect(latest.has('g3')).toBe(false);
+    expect(latest.size).toBe(2);
+  });
+
+  it('一局都不问就空着回来', async () => {
+    expect((await memorySteps().latest([])).size).toBe(0);
   });
 });

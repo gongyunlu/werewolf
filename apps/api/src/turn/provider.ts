@@ -1,7 +1,8 @@
 import { ACTION_TYPES, VISIBILITY_TYPES } from '@werewolf/shared';
 import type { ActionProvider, BallotTurn, SpeechTurn, WitchDecision } from '../core/actions';
-import type { ExileBallot } from '../core/day/exile';
-import { actionKey } from '../core/identity';
+import type { Ballot } from '../core/vote';
+import type { FlowObserver } from '../core/flow';
+import { actionKey, nodeNameOf, type PhaseInstanceId } from '../core/identity';
 import { audienceOf } from '../core/visibility';
 import type { GameState } from '../core/state';
 import { recordingModelPort } from '../llm/recording-model-port';
@@ -28,8 +29,9 @@ import { summarize } from './summary';
 export interface ModelActions extends ActionProvider {
   /** 接给 runGame 的 observe：Core 每改完一次局面就会调它。 */
   observe(state: GameState): void;
-  /** 接给 runGame 的 onFacts：计完票的定局由 Core 从这儿交过来，记进台账。 */
-  recordBallots(ballots: readonly ExileBallot[]): Promise<void>;
+  /** 本轮计票后记入台账。 */
+  recordBallot(ballot: Ballot): Promise<void>;
+  recordFlow: FlowObserver;
   /**
    * 这局做过的全部决定，按跑完的先后。
    * 同一批并发提问（投票、提刀、自爆）里谁先跑完由模型延迟决定，那个先后不代表牌桌上的先后。
@@ -46,6 +48,8 @@ interface AskInput<K extends DecisionShapeName> {
   shape: K;
   /** 这一问属于哪个场景；不给就是没有场景正文可带。 */
   scenario?: ScenarioId;
+  /** 狼队商议直接提交，公开发言仍按行动类型复核。 */
+  preset?: ActionRequest['preset'];
   /** 这次能选的玩家 id；做/不做两态的行动不传。 */
   candidates?: readonly string[];
   /** 解药那一支摆不摆得出来，只有女巫那一问会传。 */
@@ -94,7 +98,7 @@ function oneLine(text: string): string {
 }
 
 /** 票型写成人话：谁投了谁、谁弃票，再接一句计票结果。 */
-function ballotText(ballot: ExileBallot, seatNoOf: (playerId: string) => number): string {
+function ballotText(ballot: Ballot, seatNoOf: (playerId: string) => number): string {
   const casts = ballot.casts
     .map((cast) =>
       cast.targetId === null
@@ -112,15 +116,40 @@ function ballotText(ballot: ExileBallot, seatNoOf: (playerId: string) => number)
         ? `${outcome.tiedIds.map((id) => `${seatNoOf(id)} 号`).join('、')}平票`
         : '全员弃票';
 
-  return `${ballot.round === 'exile' ? '放逐投票' : '放逐 PK 投票'}：${casts}；${result}。`;
+  const names: Record<BallotTurn, string> = {
+    campaign: '警长竞选投票',
+    campaign_pk: '警长竞选 PK 投票',
+    exile: '放逐投票',
+    exile_pk: '放逐 PK 投票',
+  };
+  return `${names[ballot.round]}：${casts}；${result}。`;
 }
 
-export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelActions {
+export function modelActions(
+  runtime: TurnRuntime,
+  stores: GameStores,
+  resumePhase?: PhaseInstanceId,
+): ModelActions {
   let current: GameState | null = null;
   let process: Promise<Ledger> | undefined;
   const ordinal = actionOrdinals();
   const taken: TurnOutcome[] = [];
-
+  // 旧版本没有法官播报。恢复时只播接下来发生的流程，不把过去的提示追加到时间线末尾。
+  let replaying: Promise<Set<string>> | undefined;
+  function replayingKeys(): Promise<Set<string>> {
+    return (replaying ??= resumePhase
+      ? stores.actions
+          .list(stateNow().gameId)
+          .then(
+            (rows) =>
+              new Set(
+                rows
+                  .filter((row) => row.phaseInstanceId === resumePhase && row.status === 'done')
+                  .map((row) => row.actionKey),
+              ),
+          )
+      : Promise.resolve(new Set<string>()));
+  }
   function stateNow(): GameState {
     if (current === null) throw new Error('还没收到当前局面：Core 得先交一次');
     return current;
@@ -213,10 +242,11 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
   }
 
   /**
-   * 这一问要带的技能正文，按「板子 → 角色 → 场景」排。
+   * 这一问要带的技能正文，按「板子 → 角色 → 场景 → 这个人自己的人设与策略」排。
    *
    * 每问都带一份：系统提示词明说过没写出来的就是看不到的、别替规则补全，
-   * 所以模型手里关于狼人杀的全部知识就是这三段，不带它就只能瞎猜。
+   * 所以模型手里关于狼人杀的全部知识就是前几段，不带它就只能瞎猜；
+   * 人设与策略排在最后，它管的是这个人怎么答，不掺进规则正文里。
    */
   function skillFor(state: GameState, playerId: string, scenario?: ScenarioId): string[] {
     const player = playerOf(state, playerId);
@@ -225,6 +255,7 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
       runtime.skills.ruleset.content,
       runtime.skills.role(player.role).content,
       ...(scenario ? [runtime.skills.scenario(scenario).content] : []),
+      ...runtime.memoriesFor(player.seatNo),
     ];
   }
 
@@ -255,7 +286,10 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
   ): Promise<TurnOutcome> {
     if (remembered) {
       // 落进去的就是这次行动交出去的原物，认领回它的类型而已。
-      if (remembered.status === 'done') return remembered.outcome as TurnOutcome;
+      if (remembered.status === 'done') {
+        (await replayingKeys()).delete(key);
+        return remembered.outcome as TurnOutcome;
+      }
     } else {
       await stores.actions.begin({
         actionKey: key,
@@ -270,10 +304,8 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
 
     const outcome = await runActionGraph(logged(key), request, {
       saver: stores.checkpoints,
-      // 立过意图却没答完的，图上那份进度接着跑完，前面问过的那些不再重问。
       resume: remembered?.status === 'running',
     });
-    // 答完才补结果：这一行半途断了，下次重走到这里才会去问模型，而不是拿半截当答复。
     await stores.actions.finish(key, outcome);
     return outcome;
   }
@@ -284,6 +316,7 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
    * 模型答的座位号再沿着同一张对照表换回 id。
    */
   async function ask<K extends DecisionShapeName>(input: AskInput<K>): Promise<DecisionShapes[K]> {
+    await replayingKeys();
     const state = stateNow();
     const facts = await ledgerNow();
     // 折摘要要在拼题面之前：下面取的就是台账，晚一步取的还是没折的那一份。
@@ -304,7 +337,7 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
       actionType: input.actionType,
       actorId: input.actorId,
       actionOrdinal,
-      preset: presetOf(input.actionType),
+      preset: input.preset ?? presetOf(input.actionType),
       context: turnContextOf({
         state,
         // 记录里留着当时那个记号，按它取回那一刻的台账：断了再起时这份是整份铺回来的，
@@ -339,12 +372,22 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
     },
     outcomes: () => taken,
 
-    async recordBallots(ballots) {
-      for (const ballot of ballots) {
-        // 键按这一格拼：重走这一段时落的是同一个键，台账那边认出来不再记第二遍。
-        const key = `${stateNow().phaseInstanceId}/ballot/${ballot.round}`;
-        await record(key, publicFact(EVENT_KINDS.BALLOT, ballotText(ballot, seatNoOf)));
-      }
+    async recordFlow(state, event) {
+      if ((await replayingKeys()).size > 0) return;
+      const facts = await ledgerNow();
+      const phase = event.phase ?? nodeNameOf(state.phaseInstanceId);
+      await facts.add(
+        `${state.phaseInstanceId}/flow/${phase}/${event.key}`,
+        state.day,
+        event.text,
+        event.audience ?? state.players.map((player) => player.id),
+        event.kind ?? EVENT_KINDS.SYSTEM,
+      );
+    },
+
+    async recordBallot(ballot) {
+      const key = `${stateNow().phaseInstanceId}/ballot/${ballot.round}`;
+      await record(key, publicFact(EVENT_KINDS.BALLOT, ballotText(ballot, seatNoOf)));
     },
 
     async runForSheriff(playerId) {
@@ -353,8 +396,6 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
         actorId: playerId,
         task: '决定是否上警竞选警长。',
         shape: 'yesOrNo',
-        fact: (run) =>
-          run ? publicFact(EVENT_KINDS.SHERIFF, `${seatNoOf(playerId)} 号上警。`) : null,
       });
     },
 
@@ -364,8 +405,6 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
         actorId: playerId,
         task: '要不要退水退出竞选。退水之后既不能被选，也没有票。',
         shape: 'yesOrNo',
-        fact: (gone) =>
-          gone ? publicFact(EVENT_KINDS.SHERIFF, `${seatNoOf(playerId)} 号退水。`) : null,
       });
     },
 
@@ -386,7 +425,7 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
     },
 
     // 这一问自己不留事实：一轮投票是并发问的，答完只是各自的落点，谁赢由 Core 收齐后计票。
-    // 答完就记等于让同轮的人看到别人的票，规则里没有这回事。票型的定局由 Core 交出来，见 recordBallots。
+    // 同轮投票期间不可见，收齐计票后才由 Core 发布。
     async vote(round, playerId, candidates) {
       return ask({
         actionType: ACTION_TYPES.VOTE,
@@ -439,9 +478,11 @@ export function modelActions(runtime: TurnRuntime, stores: GameStores): ModelAct
         actorId: wolfId,
         task: `狼队商议第 ${round} 轮，轮到你说话。`,
         shape: 'speech',
+        preset: 'quick',
         extra: [
           `本轮发言顺序：${order.map((id) => `${seatNoOf(id)} 号`).join('、')}。`,
           '你说的话只有狼队看得到，会进后面发言者的上下文。',
+          '只讨论当前刀口和紧接着的分工，优先用 2—4 句话说清。已有共识简短确认，有新增信息再调整；不要重复队友的整套计划，也不要预演数日后的分支。',
         ],
         fact: (content) =>
           wolfFact(EVENT_KINDS.WOLF_SPEECH, `${seatNoOf(wolfId)} 号商议发言：${oneLine(content)}`),

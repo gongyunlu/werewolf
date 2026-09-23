@@ -1,6 +1,6 @@
 import type { DealableRole } from '../core/roles';
 import { ALL_BOARDS, handOf, type BoardId } from './boards';
-import { dealRoles, type RandomSource } from './deal';
+import { shuffled, type RandomSource } from './deal';
 
 /** 一个座位分到的牌。 */
 export interface SeatAssignment {
@@ -26,7 +26,7 @@ export function createGameSetup(input: {
   random: RandomSource;
 }): GameSetup {
   const board = ALL_BOARDS[input.boardId];
-  const dealt = dealRoles(handOf(board), input.random);
+  const dealt = shuffled(handOf(board), input.random);
 
   return {
     gameId: input.gameId,

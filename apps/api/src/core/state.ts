@@ -1,4 +1,4 @@
-import { PHASES, type DeathCause, type Faction, type Phase } from '@werewolf/shared';
+import type { DeathCause, Faction } from '@werewolf/shared';
 import type { GameSetup } from '../boards/setup';
 import { phaseInstanceId, type PhaseInstanceId } from './identity';
 import { factionOf, type DealableRole } from './roles';
@@ -39,7 +39,6 @@ export interface GameState {
   phaseInstanceId: PhaseInstanceId;
   /** 当前天数，从 1 起。 */
   day: number;
-  phase: Phase;
   players: PlayerState[];
   /** 本局有没有警长环节，建局时定下；为 false 时整段跳过竞选。 */
   hasSheriff: boolean;
@@ -70,7 +69,6 @@ export function createGameState(setup: GameSetup, playerIds: readonly string[]):
     gameId: setup.gameId,
     phaseInstanceId: phaseInstanceId(0, 'init'),
     day: 1,
-    phase: PHASES.NIGHT,
     hasSheriff: setup.hasSheriff,
     sheriffId: null,
     sheriffElectionSuspended: null,

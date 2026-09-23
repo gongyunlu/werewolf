@@ -1,13 +1,22 @@
 import { PrismaPg } from '@prisma/adapter-pg';
-import type { ActionType } from '@werewolf/shared';
+import {
+  AGENT_MEMORY_TYPES,
+  GAME_STATUSES,
+  type ActionType,
+  type AgentMemories,
+  type AgentMemoryType,
+  type GameStatus,
+} from '@werewolf/shared';
 import { parsePhaseInstanceId, type PhaseInstanceId } from '../core/identity';
+import type { StageAnchor } from '../core/loop';
 import type { GameState } from '../core/state';
 import { Prisma, PrismaClient } from '../generated/prisma/client';
-import type { ActionStore, StoredAction } from './actions';
+import type { ActionStore, StoredAction, StoredActionSummary } from './actions';
+import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
 import type { AskedPromptStore } from './asked';
 import { prismaCheckpoints } from './checkpoints';
 import { EVENT_KINDS, type EventKind, type EventStore } from './events';
-import type { GameStore } from './games';
+import type { GameStore, RosterSeat, StoredGame } from './games';
 import type { StepStore } from './steps';
 import type { GameStores } from './stores';
 
@@ -19,6 +28,7 @@ export function openPrismaClient(connectionString: string): PrismaClient {
 export function prismaStores(client: PrismaClient): GameStores {
   return {
     games: prismaGames(client),
+    agents: prismaAgents(client),
     events: prismaEvents(client),
     actions: prismaActions(client),
     steps: prismaSteps(client),
@@ -32,23 +42,183 @@ export function prismaGames(client: PrismaClient): GameStore {
   return {
     async find(gameId) {
       const row = await client.game.findUnique({ where: { id: gameId } });
-      if (!row) return null;
-      return { gameId: row.id, boardId: row.boardId, winner: row.winner };
+      return row ? storedGame(row) : null;
     },
 
     async open(game) {
       await client.game.upsert({
         where: { id: game.gameId },
-        create: { id: game.gameId, boardId: game.boardId },
+        create: {
+          id: game.gameId,
+          boardId: game.boardId,
+          roster: game.roster as unknown as Prisma.InputJsonValue,
+        },
         // 已经立过档的留着：它记的是开局那一刻，重开一次不该把它换掉。
+        // 顺带也不改状态：接着跑一局没跑完的，它排到哪儿就是哪儿。
         update: {},
       });
     },
 
-    async finish(gameId, winner) {
-      await client.game.update({ where: { id: gameId }, data: { winner } });
+    async finish(gameId, winner, state) {
+      await client.game.update({
+        where: { id: gameId },
+        data: {
+          winner,
+          finalState: state as unknown as Prisma.InputJsonValue,
+          status: GAME_STATUSES.FINISHED,
+        },
+      });
+    },
+
+    async setStatus(gameId, status) {
+      await client.game.update({ where: { id: gameId }, data: { status } });
+    },
+
+    async list() {
+      const rows = await client.game.findMany({ orderBy: { createdAt: 'desc' } });
+      return rows.map(storedGame);
     },
   };
+}
+
+/** 一行档案摊成存储那一头的样子：认一行与列一页用的是同一种行，摊法只此一份。 */
+function storedGame(row: Prisma.GameModel): StoredGame {
+  return {
+    gameId: row.id,
+    boardId: row.boardId,
+    // 阵容这一列是自己写进去的，读回来按原样算；没写过（老行、命令行开的局）算空。
+    roster: (row.roster ?? []) as unknown as RosterSeat[],
+    winner: row.winner,
+    finalState: row.finalState as unknown as GameState | null,
+    status: gameStatusOf(row.status),
+    createdAt: row.createdAt,
+  };
+}
+
+/** agent 档案的真身。名字是对局里认人的那一个，重名最后由库的唯一键挡住，不在这儿先查一遍。 */
+export function prismaAgents(client: PrismaClient): AgentStore {
+  return {
+    async list(includeInactive) {
+      const rows = await client.agent.findMany({
+        where: includeInactive ? {} : { isActive: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      return rows.map(storedAgent);
+    },
+
+    async find(id) {
+      const row = await client.agent.findUnique({ where: { id } });
+      return row ? storedAgent(row) : null;
+    },
+
+    async findByName(name) {
+      const row = await client.agent.findUnique({ where: { name } });
+      return row ? storedAgent(row) : null;
+    },
+
+    async findMany(ids) {
+      const rows = await client.agent.findMany({ where: { id: { in: [...ids] } } });
+      return rows.map(storedAgent);
+    },
+
+    async create(input) {
+      try {
+        return storedAgent(await client.agent.create({ data: input }));
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError)) throw error;
+        const adapterError = error.meta?.driverAdapterError as
+          { cause?: { constraint?: { index?: string } } } | undefined;
+        if (
+          error.code === 'P2002' &&
+          ((Array.isArray(error.meta?.target) && error.meta.target.includes('name')) ||
+            adapterError?.cause?.constraint?.index === 'agents_name_key')
+        ) {
+          throw new DuplicateAgentNameError(input.name);
+        }
+        throw error;
+      }
+    },
+
+    async update(id, patch) {
+      return storedAgent(await client.agent.update({ where: { id }, data: patch }));
+    },
+
+    async memories(agentId) {
+      const rows = await client.agentMemory.findMany({
+        where: { agentId },
+        orderBy: { sort: 'asc' },
+      });
+      const of = (type: AgentMemoryType) =>
+        rows
+          .filter((row) => memoryTypeOf(row.type) === type)
+          .map((row) => ({ title: row.title, body: row.body }));
+
+      return { persona: of(AGENT_MEMORY_TYPES.PERSONA), strategy: of(AGENT_MEMORY_TYPES.STRATEGY) };
+    },
+
+    async memoriesMany(ids) {
+      const rows = await client.agentMemory.findMany({
+        where: { agentId: { in: [...ids] } },
+        orderBy: { sort: 'asc' },
+      });
+      const grouped = new Map<string, AgentMemories>();
+      for (const row of rows) {
+        const mine = grouped.get(row.agentId) ?? { persona: [], strategy: [] };
+        mine[memoryTypeOf(row.type)].push({ title: row.title, body: row.body });
+        grouped.set(row.agentId, mine);
+      }
+
+      // 要过的 id 一个不落：没写过人设的那几个给空的两类，读的人不必自己补。
+      return new Map(
+        ids.map((id) => [id, grouped.get(id) ?? { persona: [], strategy: [] }] as const),
+      );
+    },
+
+    async replaceMemories(agentId, memories) {
+      // 整批替换得在一个事务里：中间断掉会留下半份，而半份人设比没有更糟——它看着是完整的。
+      await client.$transaction([
+        client.agentMemory.deleteMany({ where: { agentId } }),
+        client.agentMemory.createMany({ data: memoryRows(agentId, memories) }),
+      ]);
+    },
+  };
+}
+
+/** 一行 agent 摊成存储那一头的样子。 */
+function storedAgent(row: Prisma.AgentModel): StoredAgent {
+  return {
+    id: row.id,
+    name: row.name,
+    modelName: row.modelName,
+    baseUrl: row.baseUrl,
+    apiKeyCiphertext: row.apiKeyCiphertext,
+    apiKeyHint: row.apiKeyHint,
+    tag: row.tag,
+    isActive: row.isActive,
+    notes: row.notes,
+  };
+}
+
+/** 两类条目摊成一串待写的行：sort 按各自在交上来那一份里的位置定。 */
+function memoryRows(agentId: string, memories: AgentMemories): Prisma.AgentMemoryCreateManyInput[] {
+  const rowsOf = (type: AgentMemoryType, items: readonly { title: string; body: string }[]) =>
+    items.map((item, sort) => ({ agentId, type, sort, title: item.title, body: item.body }));
+
+  return [
+    ...rowsOf(AGENT_MEMORY_TYPES.PERSONA, memories.persona),
+    ...rowsOf(AGENT_MEMORY_TYPES.STRATEGY, memories.strategy),
+  ];
+}
+
+/**
+ * 类别列由本层写进去，取值域就是 AGENT_MEMORY_TYPES；读到别的说明这行来路不明。
+ * 认下它更糟：这一条既不进人设也不进策略，等于悄悄少了一条。
+ */
+function memoryTypeOf(value: string): AgentMemoryType {
+  if (!Object.values(AGENT_MEMORY_TYPES).includes(value as AgentMemoryType)) {
+    throw new Error(`人设与策略里有个不认识的类别：${value}`);
+  }
+  return value as AgentMemoryType;
 }
 
 /**
@@ -58,9 +228,14 @@ export function prismaGames(client: PrismaClient): GameStore {
  */
 export function prismaEvents(client: PrismaClient): EventStore {
   return {
-    async list(gameId) {
-      const rows = await client.gameEvent.findMany({
+    positions: (gameId) =>
+      client.gameEvent.findMany({
         where: { gameId },
+        select: { eventKey: true, seq: true },
+      }),
+    async list(gameId, after = 0) {
+      const rows = await client.gameEvent.findMany({
+        where: { gameId, seq: { gt: after } },
         orderBy: { seq: 'asc' },
         select: { seq: true, eventKey: true, day: true, text: true, kind: true, audience: true },
       });
@@ -82,6 +257,26 @@ export function prismaEvents(client: PrismaClient): EventStore {
  */
 export function prismaActions(client: PrismaClient): ActionStore {
   return {
+    summaries: (gameId) => client.$queryRaw<StoredActionSummary[]>`
+      SELECT action_key AS "actionKey", game_id AS "gameId",
+        phase_instance_id AS "phaseInstanceId", action_type AS "actionType",
+        actor_id AS "actorId", action_ordinal AS "actionOrdinal", ledger_seq AS "ledgerSeq", status,
+        COALESCE(outcome #>> '{snapshot,reasoning}', '') <> '' AS "hasReasoning",
+        CASE WHEN status = 'done' THEN jsonb_build_object('snapshot', jsonb_build_object(
+          'context', jsonb_build_object(
+            'task', outcome #> '{snapshot,context,task}',
+            'day', outcome #> '{snapshot,context,day}',
+            'actor', jsonb_build_object(
+              'seatNo', outcome #> '{snapshot,context,actor,seatNo}',
+              'role', outcome #> '{snapshot,context,actor,role}'
+            )
+          ),
+          'decision', outcome #> '{snapshot,decision}',
+          'thinkingMs', outcome #> '{snapshot,thinkingMs}'
+        )) ELSE NULL END AS outcome
+      FROM action_records WHERE game_id = ${gameId}
+      ORDER BY created_at ASC, action_key ASC
+    `,
     async find(actionKey) {
       const row = await client.actionRecord.findUnique({ where: { actionKey } });
       return row ? storedAction(row) : null;
@@ -90,8 +285,8 @@ export function prismaActions(client: PrismaClient): ActionStore {
     async list(gameId) {
       const rows = await client.actionRecord.findMany({
         where: { gameId },
-        // 按落库先后排，跟阶段锚点一个道理：每落一行中间都隔着一次落库往返，撞不上同一个时刻。
-        orderBy: { createdAt: 'asc' },
+        // 并发提问可能同毫秒写入，用行动键固定同一批的显示次序。
+        orderBy: [{ createdAt: 'asc' }, { actionKey: 'asc' }],
       });
       return rows.map(storedAction);
     },
@@ -133,6 +328,19 @@ function storedAction(row: Prisma.ActionRecordModel): StoredAction {
   };
 }
 
+/** 库里那一行摊成锚点。局面整份存的是 JSON：每个字段都可空、没有可选的，存读无损，认领回它的类型即可。 */
+function anchorOf(row: {
+  phaseInstanceId: string;
+  state: Prisma.JsonValue;
+  input: Prisma.JsonValue;
+}): StageAnchor {
+  return {
+    phaseInstanceId: phaseInstanceIdOf(row.phaseInstanceId),
+    state: row.state as unknown as GameState,
+    input: row.input,
+  };
+}
+
 /**
  * 阶段锚点的真身。
  * 同一格落第二遍不再写：重进那一格时序号不推进，落的是同一份，先落那份留着。
@@ -145,13 +353,36 @@ export function prismaSteps(client: PrismaClient): StepStore {
         where: { gameId },
         orderBy: { createdAt: 'desc' },
       });
-      if (!row) return null;
-      return {
-        phaseInstanceId: phaseInstanceIdOf(row.phaseInstanceId),
-        // 局面整份存的是 JSON：每个字段都可空、没有可选的，存读无损，认领回它的类型即可。
-        state: row.state as unknown as GameState,
-        input: row.input,
-      };
+      return row ? anchorOf(row) : null;
+    },
+
+    async latest(gameIds) {
+      if (gameIds.length === 0) return new Map();
+
+      // 先只问键（一行两个短字段，一局几十格也没多大），再按这些键把局面取回来。
+      // 图省事一次拉回整份局面按 gameId 挑头一个，等于为一屏卡片把每局的每一步都拖进内存。
+      const keys = await client.gameStep.findMany({
+        where: { gameId: { in: [...gameIds] } },
+        select: { gameId: true, phaseInstanceId: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      // 新落的那一份排在前面，每局认头一个。
+      const newest = new Map<string, string>();
+      for (const key of keys) {
+        if (!newest.has(key.gameId)) newest.set(key.gameId, key.phaseInstanceId);
+      }
+
+      // 一份锚点都没有（这几局全没开跑，或者整张表还空着）就到这儿为止：
+      // 空的条件数组交下去要靠引擎自己去解释，不押这一注。
+      if (newest.size === 0) return new Map();
+
+      const rows = await client.gameStep.findMany({
+        where: {
+          OR: [...newest].map(([gameId, phaseInstanceId]) => ({ gameId, phaseInstanceId })),
+        },
+      });
+
+      return new Map(rows.map((row) => [row.gameId, anchorOf(row)]));
     },
 
     async append(gameId, anchor) {
@@ -214,4 +445,15 @@ function statusOf(value: string): 'running' | 'done' {
   if (value !== 'running' && value !== 'done')
     throw new Error(`行动记录里有个不认识的状态：${value}`);
   return value;
+}
+
+/**
+ * 队列位置列由本层与队列写进去，取值域就是 shared 的 GAME_STATUSES。
+ * 读到别的说明这行来路不明：当成「排队中」摆到列表上，会骗人去等一局永远不会开始的局。
+ */
+function gameStatusOf(value: string): GameStatus {
+  if (!Object.values(GAME_STATUSES).includes(value as GameStatus)) {
+    throw new Error(`对局档案里有个不认识的状态：${value}`);
+  }
+  return value as GameStatus;
 }

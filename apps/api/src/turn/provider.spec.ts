@@ -1,5 +1,5 @@
-import { ACTION_TYPES, ROLES } from '@werewolf/shared';
-import type { ExileBallot } from '../core/day/exile';
+import { ACTION_TYPES, ROLES, type PreviewChunk } from '@werewolf/shared';
+import type { Ballot } from '../core/vote';
 import { actionKey } from '../core/identity';
 import { patchPlayer, type GameState } from '../core/state';
 import type { ModelCapability } from '../llm/model-capability';
@@ -11,6 +11,7 @@ import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { scriptedModel, type RecordingModel } from '../testing/model';
 import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
+import type { TurnRuntime } from './request';
 
 const ACCESS: ModelAccess = {
   baseUrl: 'https://model.example.test/v1',
@@ -28,12 +29,23 @@ function quality(...generated: readonly string[]): string[] {
   return generated.flatMap((answer) => [answer, ACCEPT]);
 }
 
-/** 造一副接了脚本模型的行动提供者，并把当前局面交给它。 */
-async function withActions(state: GameState, answers: readonly (string | Error)[]) {
+/** 造一副接了脚本模型的行动提供者，并把当前局面交给它。preview 给了就收下推出的每一片。 */
+async function withActions(
+  state: GameState,
+  answers: readonly (string | Error)[],
+  preview?: TurnRuntime['preview'],
+) {
   const model = scriptedModel(answers);
   const stores = memoryStores();
   const actions = modelActions(
-    { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+    {
+      port: model,
+      accessFor: () => ACCESS,
+      memoriesFor: () => [],
+      promptSource: LOCAL_TURN_PROMPTS,
+      skills: stubSkills(),
+      ...(preview ? { preview } : {}),
+    },
     stores,
   );
   actions.observe(state);
@@ -241,8 +253,8 @@ describe('模型行动提供者', () => {
 
     it('商议发言落在狼队频道上：后说的狼读得到，频道外的人读不到', async () => {
       const { model, actions } = await withActions(packState(), [
-        ...quality('今晚刀 7 号？'),
-        ...quality('我跟你。'),
+        '今晚刀 7 号？',
+        '我跟你。',
         ...quality('我过。'),
       ]);
 
@@ -257,10 +269,16 @@ describe('模型行动提供者', () => {
       // 商议发言不带白天那份场景正文：它开头写着「所有人都会听到」，在狼队频道上是句假话。
       expect(decided(model)[0].system).not.toContain('正文：scenarios/');
       expect(decided(model)[2].system).toContain('正文：scenarios/day_speech');
+      expect(model.calls).toHaveLength(4);
+      expect(actions.outcomes().map((outcome) => outcome.snapshot.preset)).toEqual([
+        'quick',
+        'quick',
+        'quality',
+      ]);
     });
 
     it('受众是当时还在狼队频道里的人：出局的狼不算，平民也不算', async () => {
-      const { actions, stores } = await withActions(packState(), quality('今晚刀 7 号？'));
+      const { actions, stores } = await withActions(packState(), ['今晚刀 7 号？']);
 
       await actions.wolfSpeech('p1', 1, ['p1', 'p2']);
 
@@ -271,9 +289,9 @@ describe('模型行动提供者', () => {
 
   describe('票型那条事实', () => {
     /** 记一轮票型，把落进台账的那一条取回来。 */
-    async function recorded(ballot: ExileBallot): Promise<string> {
+    async function recorded(ballot: Ballot): Promise<string> {
       const { actions, stores } = await withActions(sixPlayerState(), []);
-      await actions.recordBallots([ballot]);
+      await actions.recordBallot(ballot);
 
       const row = (await stores.events.list('g1')).find((event) => event.text.includes('投票：'));
       if (!row) throw new Error('没记下这一轮票型');
@@ -315,6 +333,50 @@ describe('模型行动提供者', () => {
           outcome: { kind: 'none' },
         }),
       ).toBe('放逐投票：1 号弃票；全员弃票。');
+    });
+  });
+
+  describe('观战那一头的推流', () => {
+    /** 一副收预览的行动提供者；chunks 就是这一轮推出去的全部。 */
+    async function watching(state: GameState, answers: readonly (string | Error)[]) {
+      const chunks: PreviewChunk[] = [];
+      const built = await withActions(state, answers, (chunk) => chunks.push(chunk));
+      return { ...built, chunks };
+    }
+
+    it('并发行动各自推送，行动键与座位不会混在一起', async () => {
+      const wolves = withRoles(makeState(6), {
+        p1: ROLES.WEREWOLF,
+        p2: ROLES.WEREWOLF,
+        p3: ROLES.WEREWOLF,
+      });
+      const { actions, chunks } = await watching(wolves, ['false', 'false', 'false']);
+
+      // 自爆、提刀、投票这三处都是 core 那边 Promise.all 一起发出来的。
+      const asked = await Promise.all([
+        actions.wolfBlast('p1', false),
+        actions.wolfBlast('p2', false),
+        actions.wolfBlast('p3', false),
+      ]);
+
+      expect(asked).toEqual([false, false, false]);
+      expect(new Set(chunks.map((chunk) => chunk.seatNo))).toEqual(new Set([1, 2, 3]));
+      expect(new Set(chunks.map((chunk) => chunk.actionKey)).size).toBe(3);
+      expect(
+        chunks.filter((chunk) => chunk.channel === 'node' && chunk.status === 'completed'),
+      ).toHaveLength(6);
+    });
+
+    it('一前一后分别问就各推各的：这一刻只有它一张卡片', async () => {
+      const { actions, chunks } = await watching(sixPlayerState(), quality('4', '4'));
+
+      await actions.vote('exile', 'p1', ['p4']);
+      await actions.vote('exile', 'p2', ['p4']);
+
+      // 走工具的那一问只有思考那一头，每问两趟（生成、质疑）各一片。
+      expect(chunks.filter((one) => one.channel !== 'node').map((one) => one.seatNo)).toEqual([
+        1, 1, 2, 2,
+      ]);
     });
   });
 
@@ -432,8 +494,9 @@ describe('模型行动提供者', () => {
   });
 
   describe('台账', () => {
-    it('上警、退水、警徽去向、发言方向各留下一条', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), [
+    it('报名和退水由 Core 统一公布，单人答复不会提前进入他人的上下文', async () => {
+      const state = sixPlayerState();
+      const { model, actions, stores } = await withActions(state, [
         'true',
         'true',
         ...quality('{"kind":"tear"}'),
@@ -443,12 +506,23 @@ describe('模型行动提供者', () => {
 
       await actions.runForSheriff('p3');
       await actions.withdraw('p4');
+      expect(await stores.events.list(state.gameId)).toEqual([]);
+      await actions.recordFlow(state, {
+        key: 'candidacy-result',
+        kind: 'sheriff',
+        text: '上警名单：3 号、4 号。',
+      });
+      await actions.recordFlow(state, {
+        key: 'withdraw-result',
+        kind: 'sheriff',
+        text: '退水名单：4 号。',
+      });
       await actions.decideBadge('p5', ['p1', 'p2']);
       await actions.chooseSpeechSide('p5', 1);
       await actions.speak('day', 'p6', []);
 
       expect(decided(model)[4].prompt).toMatch(
-        /【第 1 天】[\s\S]*3 号上警。[\s\S]*4 号退水。[\s\S]*5 号撕掉了警徽。[\s\S]*警长 5 号决定从左边开始。/,
+        /【第 1 天】[\s\S]*上警名单：3 号、4 号。[\s\S]*退水名单：4 号。[\s\S]*5 号撕掉了警徽。[\s\S]*警长 5 号决定从左边开始。/,
       );
     });
 
@@ -483,6 +557,39 @@ describe('模型行动提供者', () => {
   });
 
   describe('提交记录', () => {
+    it('恢复旧存档时不在末尾补播已走过的流程，追上进度后正常播报', async () => {
+      const state = sixPlayerState();
+      const { model, actions, stores } = await withActions(state, ['true', 'false']);
+      await actions.runForSheriff('p1');
+      await actions.runForSheriff('p2');
+      const resumed = modelActions(
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
+        stores,
+        state.phaseInstanceId,
+      );
+      resumed.observe(state);
+      await resumed.recordFlow(state, { key: 'candidacy-start', text: '开始上警报名' });
+      expect(await resumed.runForSheriff('p1')).toBe(true);
+      await resumed.recordFlow(state, { key: 'past', text: '不应补到末尾的过去提示' });
+      expect(await stores.events.list(state.gameId)).toEqual([]);
+      expect(await resumed.runForSheriff('p2')).toBe(false);
+      await resumed.recordFlow(state, {
+        key: 'candidacy-result',
+        text: '上警名单：1 号。',
+        kind: 'sheriff',
+      });
+      expect((await stores.events.list(state.gameId)).map((event) => event.text)).toEqual([
+        '上警名单：1 号。',
+      ]);
+      expect(model.calls).toHaveLength(2);
+    });
+
     it('同一个键上答完过的那一次原样复用，不再问模型', async () => {
       const state = sixPlayerState();
       const { model, actions, stores } = await withActions(state, quality('过', '别的'));
@@ -491,7 +598,13 @@ describe('模型行动提供者', () => {
 
       // 断了再起：重走到同一问上，答过的那一行原样取回。
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -509,7 +622,13 @@ describe('模型行动提供者', () => {
       // 复用认的是行动键：同一局里它唯一确定一次提问，取不回别人的答案。
       // 局面变了也照样认这一行——当初答出来的就是对局历史里的那一份，不该被重问覆盖。
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe({ ...state, day: 3 });
@@ -545,7 +664,13 @@ describe('模型行动提供者', () => {
       const asked = model.calls.length;
 
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -562,7 +687,13 @@ describe('模型行动提供者', () => {
       const asked = model.calls.length;
 
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -582,7 +713,13 @@ describe('模型行动提供者', () => {
       await actions.speak('day', 'p3', []);
 
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -599,7 +736,13 @@ describe('模型行动提供者', () => {
       await expect(actions.speak('day', 'p3', [])).rejects.toThrow('模型那边断了');
 
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -618,7 +761,13 @@ describe('模型行动提供者', () => {
       const asked = model.calls.length;
 
       const resumed = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       resumed.observe(state);
@@ -636,7 +785,13 @@ describe('模型行动提供者', () => {
       // 候选是 4、5 号，先答一个不在里面的 7 号，附上说明重问一次才交对，之后接质疑。
       const model = scriptedModel(['7', '5', ACCEPT]);
       const actions = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         stores,
       );
       actions.observe(state);
@@ -737,7 +892,13 @@ describe('模型行动提供者', () => {
     it('还没收到局面就调用是误用，当场抛', async () => {
       const model = scriptedModel(quality('过'));
       const actions = modelActions(
-        { port: model, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() },
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
         memoryStores(),
       );
 

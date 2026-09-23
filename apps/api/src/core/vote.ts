@@ -1,3 +1,6 @@
+import type { BallotTurn } from './actions';
+import { settleActions } from './parallel';
+
 /**
  * 放逐与警长竞选（含各自的平票 PK）共用的投票轮次，候选范围由调用方给。
  * 竞选阶段还没有警长，weightedVoterId 为 null。弃票不设开关，有投票权的人任何一轮都能不投。
@@ -16,6 +19,15 @@ export interface VoteCast {
   voterId: string;
   targetId: string | null;
 }
+
+/** 收齐并计票后才能公开的本轮票型。 */
+export interface Ballot {
+  round: BallotTurn;
+  casts: readonly VoteCast[];
+  outcome: VoteOutcome;
+}
+
+export type BallotObserver = (ballot: Ballot) => Promise<void>;
 
 /** 计票结果。 */
 export type VoteOutcome =
@@ -76,7 +88,7 @@ export async function collectVotes(
   round: VoteRound,
   ask: (voterId: string) => Promise<string | null>,
 ): Promise<VoteCast[]> {
-  return Promise.all(
+  return settleActions(
     round.voters.map(async (voterId) => ({ voterId, targetId: await ask(voterId) })),
   );
 }

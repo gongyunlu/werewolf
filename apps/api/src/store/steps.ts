@@ -12,4 +12,9 @@ export interface StepStore {
   append(gameId: string, anchor: StageAnchor): Promise<void>;
   /** 这一局最后落的那一份；一份都没有就是 null。 */
   last(gameId: string): Promise<StageAnchor | null>;
+  /**
+   * 这几局各自最后落的那一份，按对局 id 取。一份都没有的那局不在表里。
+   * 列表页要一屏算好几局的存活人数与天数：挨个 last 就是一屏一次的循环查库。
+   */
+  latest(gameIds: readonly string[]): Promise<Map<string, StageAnchor>>;
 }

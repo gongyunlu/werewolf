@@ -83,10 +83,12 @@ describe('提示词渲染', () => {
   it('没有技能正文就不接那一段，末尾不留空行', async () => {
     const turn = await renderGenerate(offline, { ...context, skill: [] }, SCHEMA_JSON);
 
-    expect(turn.system.text.endsWith('别替规则补全。')).toBe(true);
+    expect(turn.system.text).not.toContain('板子正文');
+    expect(turn.system.text.endsWith('保持原样。')).toBe(true);
+    expect(turn.system.text).toContain('推理过程也使用简体中文');
   });
 
-  it('质疑者拿不到技能正文，修订的那一版拿得到', async () => {
+  it('复核只拿板子规则，角色和场景策略只给生成与修订', async () => {
     const critique = await renderCritique(offline, context, '{"targetId":"p1"}', SCHEMA_JSON);
     const revise = await renderRevise(
       offline,
@@ -96,7 +98,9 @@ describe('提示词渲染', () => {
       SCHEMA_JSON,
     );
 
-    expect(critique.system.text).not.toContain('板子正文');
+    expect(critique.system.text).toContain('板子正文');
+    expect(critique.system.text).not.toContain('角色正文');
+    expect(critique.system.text).not.toContain('场景正文');
     expect(revise.system.text).toContain('板子正文');
   });
 

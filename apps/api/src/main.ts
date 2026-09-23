@@ -14,6 +14,8 @@ async function bootstrap() {
   // 统一挂在 /api 下，前端开发代理和线上同源部署都不用额外改写路径
   app.setGlobalPrefix('api');
   app.useGlobalFilters(new ApiExceptionFilter());
+  // 退出时把队列与数据库收干净：worker 不关会在退出前接着领任务，连接不关要等对端超时。
+  app.enableShutdownHooks();
 
   await app.listen(env.API_PORT);
   Logger.log(`API 已启动：http://localhost:${env.API_PORT}`, 'Bootstrap');

@@ -1,7 +1,16 @@
-import { END, ReducedValue, START, StateGraph, StateSchema } from '@langchain/langgraph';
+import {
+  END,
+  ReducedValue,
+  START,
+  StateGraph,
+  StateSchema,
+  type LangGraphRunnableConfig,
+} from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
+import { randomUUID } from 'node:crypto';
+import type { ActionStep } from '@werewolf/shared';
 import { z } from 'zod';
-import type { ModelAccess, ModelPort, ModelTool } from '../llm/model-port';
+import type { ModelAccess, ModelPort, ModelTool, StreamDelta } from '../llm/model-port';
 import { InvalidOutputError } from '../llm/model-port';
 import { toolOf } from './decisions';
 import { ACTION_PRESETS } from './presets';
@@ -31,6 +40,11 @@ const TurnState = new StateSchema({
   verdict: z.custom<Critique | null>().default(() => null),
   // 最终那版决定之前模型自己那段推理。生成时写下、修订覆盖它；质疑那一问不写。
   reasoning: z.string().nullable().default(null),
+  critiqueReasoning: z.string().nullable().default(null),
+  thinkingMs: z.number().nullable().default(null),
+  totalThinkingMs: new ReducedValue(z.number().nullable().default(null), {
+    reducer: (current, update) => (update === null ? current : (current ?? 0) + update),
+  }),
   prompts: new ReducedValue(
     z.array(z.custom<RenderedPrompt>()).default(() => []),
     {
@@ -47,44 +61,53 @@ const TurnState = new StateSchema({
 
 type TurnStateValue = typeof TurnState.State;
 
-/** 端口与接入身份从 config 走，不进图状态——进了状态就会跟着检查点落库。 */
-const RUNTIME_KEY = 'turnRuntime';
+// 模型接入与校验器只存在于本次调用，不写入检查点。
+const TurnContext = z.object({
+  runtime: z.custom<TurnRuntime>(),
+  request: z.custom<ActionRequest>(),
+});
+type TurnConfig = LangGraphRunnableConfig<z.infer<typeof TurnContext>>;
 
-/** 行动请求同样走 config：它带着 zod 那份校验器，写进检查点的是存不回来的东西。 */
-const REQUEST_KEY = 'turnRequest';
-
-interface TurnConfig {
-  configurable?: Record<string, unknown>;
+/** 往外推给观战那一头的一片：这是第几趟问、哪条通道、到目前写成了什么。 */
+export interface StreamChunk {
+  thinkingMs?: number;
+  callId: string;
+  channel: StreamDelta['channel'];
+  /** 这一路到目前的全文，不是增量。 */
+  text: string;
 }
 
 /**
- * 取出这次行动的运行环境。
- * 取不到就是有人绕过 runActionGraph 直接 invoke 了这张图，那是误用，当场炸。
+ * 把这一问的身份补到往外推的那片上。
+ * callId 由 ask 铸，一次模型调用一个：模型答歪了会带着话说重问，那是新的一趟，
+ * 观战那头的卡片跟着重开，不会把两趟的字接在一起。
  *
- * @param config 图的运行配置，端口与接入身份都从这个口子递进来
- * @returns 模型端口、接入身份，以及提示词的来处
+ * @param request 这次行动，行动键、座位与类型都从它取
+ * @param step 走到图里哪一步，观战那头按它显示「正在生成」还是「正在重做」
+ * @param preview 观战那一头的口子；没人看就是 undefined，返回 undefined 走一次收完那条路
  */
-function turnRuntime(config: TurnConfig | undefined): TurnRuntime {
-  const runtime = config?.configurable?.[RUNTIME_KEY] as TurnRuntime | undefined;
-  if (!runtime) throw new Error('行动图缺少模型端口');
-  return runtime;
-}
+function previewFor(
+  request: ActionRequest,
+  step: string,
+  preview: TurnRuntime['preview'],
+): ((chunk: StreamChunk) => void) | undefined {
+  if (!preview) return undefined;
 
-/**
- * 取出这次行动的请求。
- * 接着跑时它是重新递进来的那一份，不是从检查点读回的：键一样，递进来的就一样。
- *
- * @param config 图的运行配置
- * @returns 这次的行动请求
- */
-function turnRequest(config: TurnConfig | undefined): ActionRequest {
-  const request = config?.configurable?.[REQUEST_KEY] as ActionRequest | undefined;
-  if (!request) throw new Error('行动图缺少行动请求');
-  return request;
+  return (chunk) => {
+    preview({
+      actionKey: actionKeyOf(request),
+      day: request.context.day,
+      seatNo: request.context.actor.seatNo,
+      actionType: request.actionType,
+      step,
+      ...chunk,
+    });
+  };
 }
 
 /** 一问的答复。答案与推理是分开的两段，各有各的空法：答案可能在工具那一头，推理可能端点没给。 */
 export interface Answer {
+  thinkingMs?: number;
   content: string;
   reasoning: string | null;
   /** 给了工具却只写了一段话，没走工具交。不给工具的那几问（发言）恒为 false。 */
@@ -101,6 +124,7 @@ export interface Answer {
  * @param access 接入身份，模型端点与能力声明
  * @param turn 渲染好的这一对提示词
  * @param tool 要它走哪个工具交；不给就是让它写一段话
+ * @param stream 边写边往外推的口子；不给就一次收完
  * @returns 这一问的答复：答案原文（走工具时取参数那一头）、它写答案之前的推理，以及有没有走工具交
  */
 export async function ask(
@@ -108,15 +132,20 @@ export async function ask(
   access: ModelAccess,
   turn: RenderedTurn,
   tool?: ModelTool,
+  stream?: (chunk: StreamChunk) => void,
 ): Promise<Answer> {
+  const callId = randomUUID();
   const response = await port.generate(
     { system: turn.system.text, prompt: turn.user.text, tool },
     access,
+    // 走工具的那几问只会收到思考：正文那一头本来就是空的。
+    stream ? { onDelta: (delta) => stream({ callId, ...delta }) } : undefined,
   );
   // 走工具时答案在参数那一头、正文是空的；没给工具时才是正文。
   return {
     content: response.toolCall?.arguments ?? response.content,
     reasoning: response.reasoning,
+    ...(response.thinkingMs !== undefined ? { thinkingMs: response.thinkingMs } : {}),
     // 给了工具却只写了一段话：这一问它根本没交值。按 JSON 解析那一头报出来的是
     // 「整串不是合法 JSON」，指错了地方——它写的本来就不是 JSON，是一段解释。
     // 正文一律当解释看：正文里就算摆着一份合规的 JSON，也不算它交了（要交就走工具）。
@@ -216,11 +245,19 @@ export async function askParsed<T>(
   askOnce: (note: string | null) => Promise<Answer>,
   parse: (content: string) => T,
   noteOf: (raw: string, diagnosis: string) => string,
-): Promise<{ content: string; reasoning: string | null; parsed: T; retries: number }> {
+): Promise<{
+  content: string;
+  reasoning: string | null;
+  parsed: T;
+  retries: number;
+  thinkingMs?: number;
+}> {
   let note: string | null = null;
+  let thinkingMs: number | undefined;
 
   for (let attempt = 0; ; attempt += 1) {
     const answer = await askOnce(note);
+    if (answer.thinkingMs !== undefined) thinkingMs = (thinkingMs ?? 0) + answer.thinkingMs;
     try {
       // 给了工具却没走工具：它一个值都没交。落到下面按 JSON 解析去，报出来的是「不是合法
       // JSON」——那句话把它写的一段解释当成了没写好的 JSON，指错了地方，它照着重交还是交不上。
@@ -236,6 +273,7 @@ export async function askParsed<T>(
         reasoning: answer.reasoning,
         parsed: parse(answer.content),
         retries: attempt,
+        ...(thinkingMs !== undefined ? { thinkingMs } : {}),
       };
     } catch (error) {
       // 只认带诊断的那一个：拿不出「错在哪一类」，重问的题面就跟上一次一字不差，白问。
@@ -316,21 +354,31 @@ async function generateNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
-  const { port, access, promptSource } = turnRuntime(config);
-  const request = turnRequest(config);
+  const { runtime, request } = config.context!;
+  const { port, accessFor, promptSource, preview } = runtime;
+  const access = accessFor(request.context.actor.seatNo);
   const turn = await renderGenerate(
     promptSource,
     request.context,
     decisionSchemaJson(request.schema),
   );
   const tool = toolFor(request);
-  const { content, reasoning, parsed, retries } = await askParsed(
-    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool),
+  const stream = previewFor(request, 'generate', preview);
+  const { content, reasoning, parsed, retries, thinkingMs } = await askParsed(
+    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool, stream),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
-  return { draft: content, decision: parsed, prompts: used(turn), retries, reasoning };
+  return {
+    draft: content,
+    decision: parsed,
+    prompts: used(turn),
+    retries,
+    reasoning,
+    thinkingMs: thinkingMs ?? null,
+    totalThinkingMs: thinkingMs ?? null,
+  };
 }
 
 /**
@@ -345,8 +393,9 @@ async function critiqueNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
-  const { port, access, promptSource } = turnRuntime(config);
-  const request = turnRequest(config);
+  const { runtime, request } = config.context!;
+  const { port, accessFor, promptSource, preview } = runtime;
+  const access = accessFor(request.context.actor.seatNo);
   // 形状给工具那一份，和草稿同一层；给内层 schema 的话，多出来的壳会被判成形式错误。
   const turn = await renderCritique(
     promptSource,
@@ -354,21 +403,29 @@ async function critiqueNode(
     state.draft,
     toolFor(request)?.parameters ?? null,
   );
-  // 它那段推理不接：质疑只判行不行，不构成这次决定的依据，留下来的只有结论。
-  const { parsed, retries } = await askParsed(
+  const stream = previewFor(request, 'critique', preview);
+  const { parsed, retries, reasoning, thinkingMs } = await askParsed(
     (note) =>
       ask(
         port,
         access,
         note === null ? turn : noted(turn, note),
         toolOf(CRITIQUE_SCHEMA, '这次质疑的结论'),
+        stream,
       ),
     (content) => parseStructured(content, CRITIQUE_SCHEMA, '质疑的结论'),
-    // 质疑那一问没有候选；它那段推理不留，也不点它去思考里说理。
+    // 质疑那一问没有候选，重试提示只说明格式问题。
     (raw, diagnosis) => retryNote([], raw, diagnosis),
   );
 
-  return { verdict: parsed, prompts: used(turn), retries };
+  return {
+    verdict: parsed,
+    prompts: used(turn),
+    retries,
+    critiqueReasoning: reasoning,
+    thinkingMs: thinkingMs ?? null,
+    totalThinkingMs: thinkingMs ?? null,
+  };
 }
 
 /**
@@ -385,8 +442,9 @@ async function reviseNode(
 ): Promise<Partial<TurnStateValue>> {
   if (!state.verdict) throw new Error('走到修订却没有质疑结论');
 
-  const { port, access, promptSource } = turnRuntime(config);
-  const request = turnRequest(config);
+  const { runtime, request } = config.context!;
+  const { port, accessFor, promptSource, preview } = runtime;
+  const access = accessFor(request.context.actor.seatNo);
   const schemaJson = decisionSchemaJson(request.schema);
   const turn = await renderRevise(
     promptSource,
@@ -396,13 +454,22 @@ async function reviseNode(
     schemaJson,
   );
   const tool = toolFor(request);
-  const { content, reasoning, parsed, retries } = await askParsed(
-    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool),
+  const stream = previewFor(request, 'revise', preview);
+  const { content, reasoning, parsed, retries, thinkingMs } = await askParsed(
+    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool, stream),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
-  return { draft: content, decision: parsed, prompts: used(turn), retries, reasoning };
+  return {
+    draft: content,
+    decision: parsed,
+    prompts: used(turn),
+    retries,
+    reasoning,
+    thinkingMs: thinkingMs ?? null,
+    totalThinkingMs: thinkingMs ?? null,
+  };
 }
 
 /**
@@ -414,8 +481,10 @@ async function reviseNode(
  * @returns 这次行动的最终产物
  */
 function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnStateValue> {
-  const { access } = turnRuntime(config);
-  const request = turnRequest(config);
+  const { runtime, request } = config.context!;
+  const { accessFor } = runtime;
+  // 快照上记的型号是这个人这一局用的那个，不是整局的默认型号。
+  const access = accessFor(request.context.actor.seatNo);
   const schemaJson = decisionSchemaJson(request.schema);
 
   return {
@@ -436,6 +505,7 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
         critique: state.verdict,
         decision: state.decision,
         reasoning: state.reasoning,
+        thinkingMs: state.totalThinkingMs,
         retries: state.retries,
       },
     },
@@ -450,7 +520,7 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
  * @returns 下一个节点：要质疑就走 critique，不要就直接收口
  */
 function needsCritique(_state: TurnStateValue, config: TurnConfig): 'critique' | 'finalize' {
-  return ACTION_PRESETS[turnRequest(config).preset].critique ? 'critique' : 'finalize';
+  return ACTION_PRESETS[config.context!.request.preset].critique ? 'critique' : 'finalize';
 }
 
 /**
@@ -465,7 +535,7 @@ function afterCritique(state: TurnStateValue): 'revise' | 'finalize' {
 
 /** 行动图：先生成，按档位决定要不要质疑，质疑没过才修订，修订完直接收口。 */
 function buildActionGraph(saver?: BaseCheckpointSaver) {
-  const builder = new StateGraph(TurnState)
+  const builder = new StateGraph(TurnState, { context: TurnContext })
     .addNode('generate', generateNode)
     .addNode('critique', critiqueNode)
     .addNode('revise', reviseNode)
@@ -523,9 +593,8 @@ export async function runActionGraph(
   const { saver, resume } = options;
   const graph = actionGraphOf(saver);
   const config = {
+    context: { runtime, request },
     configurable: {
-      [RUNTIME_KEY]: runtime,
-      [REQUEST_KEY]: request,
       // 线程键取行动键：落库那份进度按它归档，一局里每一问各是各的。
       thread_id: actionKeyOf(request),
     },
@@ -536,7 +605,95 @@ export async function runActionGraph(
   // 空线程拿 null 起跑会当场抛：库里没有断点时，这一轮的开头还得自己喂进去。
   const behind =
     resume === true && saver !== undefined && (await saver.getTuple(config)) !== undefined;
-  const settled = await graph.invoke(behind ? null : {}, config);
-  if (!settled.outcome) throw new Error('行动图跑完了却没有结果');
-  return settled.outcome;
+  let outcome: TurnOutcome | null = null;
+  let active: { id: string; name: string } | undefined;
+  const emit = (
+    task: { id: string; name: string },
+    status: ActionStep['status'],
+    text = '',
+    thinkingMs?: number | null,
+  ) => {
+    runtime.preview?.({
+      actionKey: actionKeyOf(request),
+      day: request.context.day,
+      seatNo: request.context.actor.seatNo,
+      actionType: request.actionType,
+      step: task.name,
+      callId: task.id,
+      channel: 'node',
+      status,
+      text,
+      ...(thinkingMs != null ? { thinkingMs } : {}),
+    });
+  };
+  try {
+    // 节点起止来自 LangGraph，预览只负责转换成观战契约。
+    for await (const [mode, data] of await graph.stream(behind ? null : {}, {
+      ...config,
+      streamMode: ['tasks', 'values'],
+    })) {
+      if (mode === 'values') {
+        outcome = data.outcome;
+      } else if ('input' in data) {
+        active = data;
+        emit(data, 'running');
+      } else {
+        const result = data.result as unknown as Partial<TurnStateValue>;
+        // 失败任务也会发 result，但没有状态写入；随后迭代器才抛出异常。
+        if (Object.keys(result).length > 0) {
+          emit(data, 'completed', stepContent(data.name, result), result.thinkingMs);
+          active = undefined;
+        }
+      }
+    }
+  } catch (error) {
+    if (active) emit(active, 'failed', '节点执行失败，可在恢复对局后重试。');
+    throw error;
+  }
+  if (!outcome) throw new Error('行动图跑完了却没有结果');
+  return outcome;
+}
+
+/** 展开行动时读取原生检查点中的任务结果，不额外保存一套执行日志。 */
+export async function actionSteps(saver: BaseCheckpointSaver, key: string): Promise<ActionStep[]> {
+  const graph = actionGraphOf(saver);
+  const steps = new Map<string, ActionStep>();
+  const advanced = new Map<string, Partial<TurnStateValue>>();
+  for await (const snapshot of graph.getStateHistory({ configurable: { thread_id: key } })) {
+    const nextValues = advanced.get(snapshot.config.configurable?.checkpoint_id as string);
+    for (const task of snapshot.tasks) {
+      if (task.name === START) continue;
+      if (steps.has(task.id)) continue;
+      // 续跑后旧任务可能还带着 error；后继检查点已提交才是完成的依据。
+      const result = (nextValues ?? task.result) as Partial<TurnStateValue> | undefined;
+      const failed = !nextValues && Boolean(task.error);
+      steps.set(task.id, {
+        id: task.id,
+        name: task.name,
+        status: failed ? 'failed' : result ? 'completed' : 'running',
+        content: failed ? '节点执行失败' : stepContent(task.name, result),
+        reasoning:
+          task.name === 'finalize'
+            ? null
+            : ((task.name === 'critique' ? result?.critiqueReasoning : result?.reasoning) ?? null),
+        thinkingMs: task.name === 'finalize' ? null : (result?.thinkingMs ?? null),
+      });
+    }
+    const parent = snapshot.parentConfig?.configurable?.checkpoint_id as string | undefined;
+    if (parent && snapshot.metadata?.source === 'loop' && !advanced.has(parent)) {
+      advanced.set(parent, snapshot.values as Partial<TurnStateValue>);
+    }
+  }
+  return [...steps.values()].toReversed();
+}
+
+function stepContent(name: string, result?: Partial<TurnStateValue>): string {
+  if (name === 'critique' && result?.verdict) {
+    return `${result.verdict.accept ? '复核通过' : '需要修订'}${result.verdict.issues ? `：${result.verdict.issues}` : ''}`;
+  }
+  if (name === 'finalize' && result?.outcome) return '行动结果已确认';
+  if (result && 'decision' in result) {
+    return typeof result.decision === 'string' ? result.decision : JSON.stringify(result.decision);
+  }
+  return result?.draft ?? '';
 }

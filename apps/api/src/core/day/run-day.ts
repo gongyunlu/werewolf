@@ -1,9 +1,11 @@
 import type { ActionProvider } from '../actions';
+import { seatNames, type FlowObserver } from '../flow';
 import { daySpeechOrder, sheriffSpeechOrder } from '../speech-order';
 import type { GameState } from '../state';
 import { settleBadgeAfterDeaths } from './badge';
 import { runSheriffElection } from './election';
-import { runExile, type ExileBallot } from './exile';
+import { runExile } from './exile';
+import type { Ballot, BallotObserver } from '../vote';
 import { runBlastWindow } from './self-destruct';
 import { speakInOrder, type Speech } from './speech';
 
@@ -19,6 +21,8 @@ export interface DayInput {
    * 后面还有一大串提问，只给入场时那份等于让人拿着过期的局面答。
    */
   observe?: (state: GameState) => void;
+  onBallot?: BallotObserver;
+  onFlow?: FlowObserver;
 }
 
 /** 一个白天走完之后的全部结果。 */
@@ -29,7 +33,7 @@ export interface DayResult {
   /** 被放逐的玩家；无人出局、当天被自爆打断，都是 null。 */
   exiledId: string | null;
   /** 今天投过的每一轮，按先后；没走到投票就是空的。 */
-  ballots: readonly ExileBallot[];
+  ballots: readonly Ballot[];
 }
 
 /**
@@ -39,9 +43,30 @@ export interface DayResult {
  * 放逐触发的技能同理，放逐执行完就交回外层。遗言还没有。
  */
 export async function runDay(input: DayInput): Promise<DayResult> {
-  const { actions, minute, observe } = input;
+  const { actions, minute, observe, onBallot, onFlow } = input;
 
-  const election = await runSheriffElection(input.state, actions, minute);
+  const election = await runSheriffElection(
+    input.state,
+    actions,
+    minute,
+    observe,
+    onBallot,
+    onFlow,
+  );
+  if (
+    input.state.hasSheriff &&
+    (input.state.day === 1 || input.state.sheriffElectionSuspended !== null)
+  ) {
+    await onFlow?.(election.state, {
+      key: 'election-result',
+      kind: 'sheriff',
+      text: election.state.sheriffId
+        ? `${seatNames(election.state, [election.state.sheriffId])} 当选警长。`
+        : election.state.sheriffElectionSuspended
+          ? '警长竞选被打断，下一天继续。'
+          : '警长竞选结束，本局没有警长。',
+    });
+  }
   // 狼在警上爆了，这一天到此为止：没有发言也没有投票。
   if (election.aborted) {
     return { state: election.state, speeches: election.speeches, exiledId: null, ballots: [] };
@@ -51,7 +76,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
   // 竞选选出的警长、警徽的去向都落在这一段里，往后每个提问都要拿这份答；不在这儿交，
   // 直到发言前都还是入场那份，警长那一问的答案在局面里看不见。
   observe?.(settled);
-  const blast = await runBlastWindow(settled, 'day', actions, observe);
+  const blast = await runBlastWindow(settled, 'day', actions, observe, onFlow);
   if (blast.blasted) {
     return { state: blast.state, speeches: election.speeches, exiledId: null, ballots: [] };
   }
@@ -72,9 +97,19 @@ export async function runDay(input: DayInput): Promise<DayResult> {
     minute,
   );
 
+  await onFlow?.(state, {
+    key: 'day-speech',
+    text: `开始白天发言，顺序：${speechOrder.map((seat) => `${seat} 号`).join('、')}。`,
+  });
   const speeches = await speakInOrder('day', speechOrder, state.players, actions);
 
-  const exile = await runExile(state, actions, speechOrder);
+  const exile = await runExile(state, actions, speechOrder, onBallot, onFlow);
+  await onFlow?.(exile.state, {
+    key: 'exile-result',
+    text: exile.exiledId
+      ? `${seatNames(state, [exile.exiledId])} 被放逐出局。`
+      : '本轮无人被放逐。',
+  });
 
   return {
     state: exile.state,

@@ -1,6 +1,7 @@
-import type { RandomSource } from '../../boards/deal';
+import { shuffled, type RandomSource } from '../../boards/deal';
 import { WOLF_DISCUSSION_ROUNDS, type ActionProvider } from '../actions';
 import { inWolfChannel } from '../roles';
+import { settleActions } from '../parallel';
 import { alivePlayers, type GameState } from '../state';
 
 /**
@@ -36,7 +37,7 @@ export async function decideWolfKill(
   }
 
   const candidates = alive.map((player) => player.id);
-  const proposals = await Promise.all(
+  const proposals = await settleActions(
     wolves.map(async (wolf) => {
       const target = await actions.wolfProposal(wolf.id, candidates);
       if (target !== null && !candidates.includes(target)) {
@@ -47,17 +48,6 @@ export async function decideWolfKill(
   );
 
   return mostProposed(proposals, random);
-}
-
-/** 抽一份发言顺序。抽法写死，同一格重进抽出来的是同一份，恢复才接得下去。 */
-function shuffled(ids: readonly string[], random: RandomSource): string[] {
-  const order = [...ids];
-  for (let index = order.length - 1; index > 0; index -= 1) {
-    const swap = Math.floor(random() * (index + 1));
-    [order[index], order[swap]] = [order[swap], order[index]];
-  }
-
-  return order;
 }
 
 /** 取得票最多的提法；并列时随机取一个，空刀也是被抽的候选之一。 */

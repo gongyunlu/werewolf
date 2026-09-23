@@ -4,9 +4,11 @@ import { createGameSetup } from '../boards/setup';
 import type { StageAnchor } from '../core/loop';
 import type { ModelCapability } from '../llm/model-capability';
 import type { ModelAccess, ModelPort } from '../llm/model-port';
+import type { SeatAccess } from '../agents/seat-context';
 import type { StoredAskedPrompt } from '../store/asked';
 import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
+import { wireOf } from '../queue/game-event-hub';
 import { stubSkills } from '../testing/fixtures';
 import type { RecordingModel } from '../testing/model';
 import { answeringPlayer, breakingPlayer } from '../testing/player';
@@ -28,7 +30,13 @@ const RANDOM = () => 0;
 /** 跑一局，把假玩家收到的那一串和结果一起交出来；resume 给了就从那一格接着跑。 */
 async function playGame(
   stores?: GameStores,
-  options: { model?: ModelPort; resume?: StageAnchor; boardId?: BoardId } = {},
+  options: {
+    model?: ModelPort;
+    resume?: StageAnchor;
+    boardId?: BoardId;
+    accessFor?: SeatAccess;
+    memoriesFor?: (seatNo: number) => readonly string[];
+  } = {},
 ) {
   const setup = createGameSetup({
     gameId: 'g1',
@@ -40,7 +48,12 @@ async function playGame(
   const result = await runModelGame({
     setup,
     playerIds: setup.seats.map((seat) => `p${seat.seatNo}`),
-    runtime: { port: model, access: ACCESS, skills: stubSkills() },
+    runtime: {
+      port: model,
+      accessFor: options.accessFor ?? (() => ACCESS),
+      memoriesFor: options.memoriesFor ?? (() => []),
+      skills: stubSkills(),
+    },
     promptSource: LOCAL_TURN_PROMPTS,
     minuteOf: () => 0,
     stores,
@@ -66,6 +79,33 @@ function countingStores(): { stores: GameStores; lookups: string[] } {
   return { stores, lookups };
 }
 
+/**
+ * 这一问是不是 3 号在答。
+ * 首问与重问的系统提示词里写着坐几号，质疑那一问写在题面开头那一行；
+ * 只认开头那一行：事实里也带着「N 号（身份）」，认整份题面会把别人的问认成他的。
+ */
+function askedSeat3(call: { system: string; prompt: string }): boolean {
+  return call.system.includes('坐 3 号') || /^\s*第 \d+ 天，3 号（/.test(call.prompt);
+}
+
+/**
+ * 替身照旧，只把每一次调用用的那份接入身份记下来。
+ * 快照上那个型号是收尾那一刻取的，跟真发出去那一问用的是不是同一份，得从这儿看。
+ */
+function recordingAccess(inner: ModelPort) {
+  const used: { model: string; system: string; prompt: string }[] = [];
+
+  return {
+    used,
+    port: {
+      generate: (request, access, options) => {
+        used.push({ model: access.model, system: request.system, prompt: request.prompt });
+        return inner.generate(request, access, options);
+      },
+    } satisfies ModelPort,
+  };
+}
+
 /** 存储照旧，只把落下来的提问攒起来。 */
 function recordingStores(): { stores: GameStores; rows: StoredAskedPrompt[] } {
   const stores = memoryStores();
@@ -80,6 +120,34 @@ function recordingStores(): { stores: GameStores; rows: StoredAskedPrompt[] } {
 }
 
 describe('整局接入', () => {
+  it('法官流程持久化回放，私密结果不公开，同批决策不互相泄露', async () => {
+    const stores = memoryStores();
+    const { result } = await playGame(stores, { boardId: '6p_white_wolf' });
+    const events = [...(await stores.events.list('g1'))];
+    const check = events.find((event) => event.eventKey.endsWith('/seer-result'))!;
+    const seer = result.state.players.find((player) => player.role === 'seer')!;
+    expect(check.audience).toEqual([seer.id]);
+    expect(check.text).toMatch(/查验结果：\d+ 号 是(?:好人|狼人)。/);
+    expect(wireOf(check).phase).toBe('night');
+    const dawn = events.find((event) => event.eventKey.endsWith('/dawn'))!;
+    expect(wireOf(dawn).phase).toBe('day');
+    expect(dawn.audience).toHaveLength(6);
+    expect(dawn.text).toMatch(/天亮了/);
+    expect(events.at(-1)?.text).toContain('阵营获胜');
+    for (const { snapshot } of result.outcomes.filter(
+      (outcome) => outcome.snapshot.context.day === 1,
+    )) {
+      const context = JSON.stringify(snapshot.context.visible);
+      if (snapshot.actionType === ACTION_TYPES.SHERIFF_CANDIDACY)
+        expect(context).not.toContain('上警名单');
+      if (snapshot.actionType === ACTION_TYPES.SHERIFF_WITHDRAW)
+        expect(context).not.toContain('退水名单');
+      expect(context).not.toContain('请闭眼');
+    }
+    await playGame(stores, { boardId: '6p_white_wolf' });
+    expect(await stores.events.list('g1')).toEqual(events);
+  });
+
   it('从第一夜一路跑到分出胜负', async () => {
     const { result } = await playGame();
 
@@ -128,11 +196,55 @@ describe('整局接入', () => {
     );
   });
 
+  it('谁在答就用谁那份接入：真问出去的那一问与快照都按座位取', async () => {
+    const own: ModelAccess = { ...ACCESS, model: '自带型号' };
+    const { port, used } = recordingAccess(answeringPlayer());
+    const { result } = await playGame(undefined, {
+      model: port,
+      accessFor: (seatNo) => (seatNo === 3 ? own : ACCESS),
+    });
+
+    const ours = used.filter(askedSeat3);
+    const others = used.filter((call) => !askedSeat3(call));
+    expect(ours.length).toBeGreaterThan(0);
+    expect(others.length).toBeGreaterThan(0);
+    // 真发出去那一问用的就是座位那一份，不只是收尾记的：两者对不上时快照上的型号是句空话。
+    expect(ours.map((call) => call.model)).toEqual(ours.map(() => own.model));
+    expect(others.map((call) => call.model)).toEqual(others.map(() => ACCESS.model));
+
+    // 快照上的型号也跟着座位走：一局里各人用的型号可以不是一个。
+    const snapshotsOf = (isP3: boolean) =>
+      result.outcomes.filter((outcome) => (outcome.snapshot.actorId === 'p3') === isP3);
+    expect(snapshotsOf(true).map((outcome) => outcome.snapshot.model)).toEqual(
+      snapshotsOf(true).map(() => own.model),
+    );
+    expect(snapshotsOf(false).map((outcome) => outcome.snapshot.model)).toEqual(
+      snapshotsOf(false).map(() => ACCESS.model),
+    );
+  });
+
+  it('人设与策略按座位拼进系统提示词，别人那份里没有', async () => {
+    const persona = '## 你的人设\n\n### 说话短\n一句话不超过十个字';
+    const { result } = await playGame(undefined, {
+      memoriesFor: (seatNo) => (seatNo === 3 ? [persona] : []),
+    });
+
+    const systemOf = (actorId: string) =>
+      result.outcomes
+        .filter((outcome) => outcome.snapshot.actorId === actorId)
+        .map((outcome) => outcome.snapshot.prompts.map((prompt) => prompt.text).join('\n'));
+
+    // 拼在系统提示词里跟着提问一起发出去，快照上记的就是真发出去的那一段。
+    expect(systemOf('p3').length).toBeGreaterThan(0);
+    expect(systemOf('p3').every((text) => text.includes(persona))).toBe(true);
+    expect(systemOf('p5').some((text) => text.includes(persona))).toBe(false);
+  });
+
   it('前面答过的过程一路带着走，后面的提问看得到', async () => {
     const { model } = await playGame();
 
     const last = model.calls.at(-1);
-    expect(last?.prompt).toContain(' 号上警。');
+    expect(last?.prompt).toContain('上警名单：');
     expect(last?.prompt).toContain(' 号发言：');
   });
 

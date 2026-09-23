@@ -8,6 +8,53 @@ function aliveIds(state: { players: readonly { id: string; isAlive: boolean }[] 
 }
 
 describe('自爆窗口', () => {
+  it('一只狼失败后等待其他自爆回答收尾再返回失败', async () => {
+    let release!: (value: boolean) => void;
+    const slow = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    const failed = jest.fn();
+    const state = withRoles(makeState(6), { p1: ROLES.WEREWOLF, p2: ROLES.WEREWOLF });
+    const result = runBlastWindow(
+      state,
+      'day',
+      stubActions({
+        wolfBlast: async (id) => {
+          if (id === 'p1') throw new Error('自爆回答失败');
+          return slow;
+        },
+      }),
+    ).catch(failed);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(failed).not.toHaveBeenCalled();
+    release(false);
+    await result;
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: '自爆回答失败' }));
+  });
+
+  it('白狼王带人前已经观察到自己出局', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.WHITE_WOLF,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.SEER,
+    });
+    let current = state;
+    await runBlastWindow(
+      state,
+      'day',
+      stubActions({
+        wolfBlast: async (id) => id === 'p1',
+        whiteWolfTake: async () => {
+          expect(playerOf(current, 'p1').isAlive).toBe(false);
+          return null;
+        },
+      }),
+      (next) => {
+        current = next;
+      },
+    );
+  });
+
   it('并行问狼队全员，只有一只答是就他爆', async () => {
     const state = withRoles(makeState(6), {
       p2: ROLES.WEREWOLF,

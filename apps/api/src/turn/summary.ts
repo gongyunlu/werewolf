@@ -94,7 +94,8 @@ export async function summarize(
     (note) =>
       ask(
         runtime.port,
-        runtime.access,
+        // 折摘要不是某个玩家在答，用整局的兜底那份接入身份。
+        runtime.accessFor(null),
         note === null ? turn : noted(turn, note),
         toolOf(schema, `把这一天的${input.channel}压成每人一条`),
       ),

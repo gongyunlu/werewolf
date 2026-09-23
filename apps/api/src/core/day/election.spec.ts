@@ -1,6 +1,7 @@
 import { ROLES } from '@werewolf/shared';
-import { ballotOf, stubActions, makeState, withRoles } from '../../testing/fixtures';
+import { ballotOf, stubActions, makeState, withRoles, playerOf } from '../../testing/fixtures';
 import { runSheriffElection } from './election';
+import type { Ballot } from '../vote';
 
 /** 22 分的个位是 2（双数），警上发言从 2 号位起逆时针。 */
 const MINUTE = 22;
@@ -14,6 +15,84 @@ function campaignOf(campaigners: readonly string[], withdrawers: readonly string
 }
 
 describe('警长竞选', () => {
+  it.each(['报名', '退水'] as const)('%s 同时开始，收齐后统一公布', async (stage) => {
+    const replies = new Map<string, (value: boolean) => void>();
+    const published: string[] = [];
+    const ask = (id: string) => new Promise<boolean>((resolve) => replies.set(id, resolve));
+    const running = runSheriffElection(
+      makeState(6),
+      stubActions({
+        runForSheriff: stage === '报名' ? ask : async () => true,
+        withdraw: stage === '退水' ? ask : async () => false,
+        speak: async () => '竞选发言',
+      }),
+      MINUTE,
+      undefined,
+      undefined,
+      async (_state, event) => {
+        published.push(event.key);
+      },
+    );
+    // 等待前置的播报和发言完成，未答复的提问不会自行结束。
+    for (let i = 0; i < 40; i += 1) await Promise.resolve();
+    expect([...replies.keys()]).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    replies.get('p6')!(false);
+    await Promise.resolve();
+    expect(published).not.toContain(stage === '报名' ? 'candidacy-result' : 'withdraw-result');
+    for (const [id, reply] of replies) if (id !== 'p6') reply(stage === '退水');
+    await running;
+    expect(published).toContain(stage === '报名' ? 'candidacy-result' : 'withdraw-result');
+  });
+
+  it('警上自爆透传局面更新，白狼王带人时看到自己已经出局', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.WHITE_WOLF,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.SEER,
+    });
+    let current = state;
+    const take = jest.fn(async () => {
+      expect(playerOf(current, 'p1').isAlive).toBe(false);
+      return null;
+    });
+    await runSheriffElection(
+      state,
+      stubActions({
+        ...campaignOf(['p1', 'p3']),
+        wolfBlast: async (id) => id === 'p1',
+        whiteWolfTake: take,
+      }),
+      MINUTE,
+      (next) => {
+        current = next;
+      },
+    );
+    expect(take).toHaveBeenCalledTimes(1);
+  });
+
+  it('两轮竞选票型都发布，PK 发言前能看到首轮票型', async () => {
+    const published: Ballot[] = [];
+    await runSheriffElection(
+      makeState(6),
+      stubActions({
+        ...campaignOf(['p1', 'p2']),
+        speak: async (turn) => {
+          if (turn === 'campaign_pk')
+            expect(published.map((ballot) => ballot.round)).toEqual(['campaign']);
+          return '竞选发言';
+        },
+        vote: async (turn, id) =>
+          turn === 'campaign' ? (id === 'p3' || id === 'p4' ? 'p1' : 'p2') : 'p1',
+      }),
+      MINUTE,
+      undefined,
+      async (ballot) => {
+        published.push(ballot);
+      },
+    );
+    expect(published.map((ballot) => ballot.round)).toEqual(['campaign', 'campaign_pk']);
+  });
+
   it('本局没有警长环节时不提问', async () => {
     const result = await runSheriffElection(makeState(6, false), stubActions(), MINUTE);
 

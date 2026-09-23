@@ -9,6 +9,14 @@ const envSchema = z.object({
   // 对局库。没有默认值：连哪个库是「这一局存哪儿」，不是「服务怎么起」，在这儿再写一份等于把选型藏回代码里。
   DATABASE_URL: z.string().min(1),
 
+  // 队列与事件推送。默认值对着 docker-compose 起在本机的那一个，端口取 6380 避开旧项目。
+  REDIS_URL: z.string().default('redis://127.0.0.1:6380'),
+
+  // 管理写接口的令牌。空着等于把写接口全关上——守卫一律拒，不是放行。
+  ADMIN_TOKEN: z.string().default(''),
+  // agent 自带密钥的加密主密钥，64 位十六进制。空着不影响读，只在存自带密钥时拦。
+  AGENT_SECRET_KEY: z.string().default(''),
+
   // 提示词平台。三个都空着就整局走本地模板，这是正常的跑法，不起服务也跑得动。
   LANGFUSE_HOST: z.string().default('http://localhost:3100'),
   LANGFUSE_PUBLIC_KEY: z.string().default(''),

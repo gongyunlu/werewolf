@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
+import { seatContextOf } from '../agents/seat-context';
 import { BOARD_IDS, type BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
 import { loadEnv } from '../config/env';
@@ -32,10 +33,18 @@ async function main(): Promise<void> {
 
     const setup = createGameSetup({ gameId, boardId: boardId as BoardId, random: Math.random });
     const { port, access } = modelRuntimeOf(env);
+    // 界面开的局带着阵容，接着跑就按那份阵容接；没档案的那一局整局走环境变量。
+    const seatContext = await seatContextOf({
+      env,
+      roster: (await stores.games.find(gameId))?.roster ?? [],
+      agents: stores.agents,
+      fallback: access,
+    });
+
     const result = await runStoredGame({
       setup,
       playerIds: setup.seats.map((seat) => `p${seat.seatNo}`),
-      runtime: { port, access, skills: gameSkills(boardId as BoardId) },
+      runtime: { port, ...seatContext, skills: gameSkills(boardId as BoardId) },
       promptSource: promptSourceOf(env),
       // 发言方向按真实分钟定：时钟在核心外面，核心只收结果。
       minuteOf: () => new Date().getMinutes(),

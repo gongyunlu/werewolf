@@ -1,6 +1,8 @@
 import { ROLES } from '@werewolf/shared';
 import type { RandomSource } from '../../boards/deal';
 import type { ActionProvider } from '../actions';
+import { seatNames, type FlowObserver } from '../flow';
+import { inWolfChannel } from '../roles';
 import type { NightDeath } from '../day/announce';
 import type { DealableRole } from '../roles';
 import { alivePlayers, patchPlayer, type GameState, type PlayerState } from '../state';
@@ -16,6 +18,7 @@ export interface NightInput {
   actions: ActionProvider;
   /** 狼队抽发言顺序与提刀并列时的随机源。 */
   random: RandomSource;
+  onFlow?: FlowObserver;
 }
 
 export interface NightResult {
@@ -37,18 +40,69 @@ export interface NightResult {
  * 各步的状态位一律读入夜时的值，不被这一夜自己的决定改掉。
  */
 export async function runNight(input: NightInput): Promise<NightResult> {
-  const { actions, random, state } = input;
+  const { actions, random, state, onFlow } = input;
+  const say = (key: string, text: string, audience?: readonly string[]) =>
+    onFlow?.(state, { key, text, audience });
+  const hasRole = (role: DealableRole) => state.players.some((player) => player.role === role);
 
+  await say('night-start', '天黑了，请所有玩家闭眼。');
+  await say('wolves-open', '狼人请睁眼，确认同伴并商议今晚的袭击目标。');
   const wolfTargetId = await decideWolfKill(state, actions, random);
+  await say(
+    'wolves-result',
+    wolfTargetId ? `狼队今晚选择袭击 ${seatNames(state, [wolfTargetId])}。` : '狼队今晚选择空刀。',
+    alivePlayers(state)
+      .filter((player) => inWolfChannel(player.role))
+      .map((player) => player.id),
+  );
+  await say('wolves-close', '狼人请闭眼。');
 
   const guard = aliveWithRole(state, ROLES.GUARD);
+  if (hasRole(ROLES.GUARD)) await say('guard-open', '守卫请睁眼，选择今晚要守护的玩家。');
   const guardTargetId = await decideGuard(guard, state, actions);
+  if (guard)
+    await say(
+      'guard-result',
+      guardTargetId
+        ? `你今晚守护了 ${seatNames(state, [guardTargetId])}。`
+        : '你今晚没有守护任何玩家。',
+      [guard.id],
+    );
+  if (hasRole(ROLES.GUARD)) await say('guard-close', '守卫请闭眼。');
 
   const witch = aliveWithRole(state, ROLES.WITCH);
+  if (hasRole(ROLES.WITCH)) await say('witch-open', '女巫请睁眼，决定是否使用解药或毒药。');
+  if (witch && !witch.hasAntidoteUsed)
+    await say(
+      'witch-target',
+      wolfTargetId
+        ? `今晚被袭击的是 ${seatNames(state, [wolfTargetId])}。`
+        : '今晚没有玩家被狼人袭击。',
+      [witch.id],
+    );
   const witchAction = await decideWitch(witch, state, wolfTargetId, actions);
+  if (witch)
+    await say(
+      'witch-result',
+      witchAction.antidoteTargetId
+        ? `你使用解药救了 ${seatNames(state, [witchAction.antidoteTargetId])}。`
+        : witchAction.poisonTargetId
+          ? `你对 ${seatNames(state, [witchAction.poisonTargetId])} 使用了毒药。`
+          : '你今晚没有使用药水。',
+      [witch.id],
+    );
+  if (hasRole(ROLES.WITCH)) await say('witch-close', '女巫请闭眼。');
 
   const seer = aliveWithRole(state, ROLES.SEER);
+  if (hasRole(ROLES.SEER)) await say('seer-open', '预言家请睁眼，选择你要查验的玩家。');
   const check = await decideSeerCheck(seer, state, actions);
+  if (seer && check)
+    await say(
+      'seer-result',
+      `查验结果：${seatNames(state, [check.targetId])} 是${check.result === 'werewolf' ? '狼人' : '好人'}。`,
+      [seer.id],
+    );
+  if (hasRole(ROLES.SEER)) await say('seer-close', '预言家请闭眼。');
 
   let next = state;
   if (guard !== null) {

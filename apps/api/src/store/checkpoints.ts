@@ -54,8 +54,8 @@ class PrismaCheckpointSaver extends BaseCheckpointSaver {
         })
       : await this.client.graphCheckpoint.findFirst({
           where: { gameId, checkpointNs },
-          // 取落库最晚那份：每落一份中间都隔着一次落库往返，撞不上同一个时刻。
-          orderBy: { createdAt: 'desc' },
+          // LangGraph 的检查点 ID 按时间递增，与翻页游标保持同一顺序。
+          orderBy: { checkpointId: 'desc' },
         });
 
     return row ? this.toTuple(row) : undefined;
@@ -66,33 +66,37 @@ class PrismaCheckpointSaver extends BaseCheckpointSaver {
     options?: CheckpointListOptions,
   ): AsyncGenerator<CheckpointTuple> {
     const { gameId, checkpointNs } = this.locate(config);
+    if (options?.limit === 0) return;
     const rows = await this.client.graphCheckpoint.findMany({
       where: {
         gameId,
         checkpointNs,
+        AND: Object.entries(options?.filter ?? {}).map(([key, value]) => ({
+          metadata: {
+            path: [key],
+            equals: value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue),
+          },
+        })),
         ...(options?.before?.configurable?.checkpoint_id
           ? { checkpointId: { lt: options.before.configurable.checkpoint_id as string } }
           : {}),
       },
-      // 与 getTuple 同一个口径：都是按落库先后，不问这个方法的调用方是谁。
-      orderBy: { createdAt: 'desc' },
+      orderBy: { checkpointId: 'desc' },
+      take: options?.limit,
     });
-
-    let remaining = options?.limit ?? Number.POSITIVE_INFINITY;
+    if (rows.length === 0) return;
+    const writes = await this.client.graphCheckpointWrite.findMany({
+      where: { gameId, checkpointNs, checkpointId: { in: rows.map((row) => row.checkpointId) } },
+      orderBy: [{ taskId: 'asc' }, { idx: 'asc' }],
+    });
+    const byCheckpoint = new Map<string, Prisma.GraphCheckpointWriteModel[]>();
+    for (const write of writes) {
+      const group = byCheckpoint.get(write.checkpointId) ?? [];
+      group.push(write);
+      byCheckpoint.set(write.checkpointId, group);
+    }
     for (const row of rows) {
-      const tuple = await this.toTuple(row);
-      if (
-        options?.filter &&
-        !Object.entries(options.filter).every(
-          ([key, value]) =>
-            (tuple.metadata as Record<string, unknown> | undefined)?.[key] === value,
-        )
-      ) {
-        continue;
-      }
-      if (remaining <= 0) return;
-      remaining -= 1;
-      yield tuple;
+      yield await this.toTuple(row, byCheckpoint.get(row.checkpointId) ?? []);
     }
   }
 
@@ -139,50 +143,52 @@ class PrismaCheckpointSaver extends BaseCheckpointSaver {
       })),
     );
 
-    for (const write of encoded) {
-      const key = {
-        gameId: located.gameId,
-        checkpointNs: located.checkpointNs,
-        checkpointId: located.checkpointId,
-        taskId,
-        idx: write.idx,
-      };
-      const data = {
-        channel: write.channel,
-        // 框架给每条静态边都写一个 null（「这条边上没写东西」），库里这一列非空，落成 JSON 的 null。
-        value: write.value === null ? Prisma.JsonNull : write.value,
-      };
-      await this.client.graphCheckpointWrite.upsert({
-        where: { gameId_checkpointNs_checkpointId_taskId_idx: key },
-        create: { ...key, ...data },
-        // 常规写入按位置幂等，先落那份留着；内部通道允许覆盖，与基类语义一致。
-        update: write.idx < 0 ? data : {},
-      });
-    }
+    await this.client.$transaction(async (client) => {
+      for (const write of encoded) {
+        const key = {
+          gameId: located.gameId,
+          checkpointNs: located.checkpointNs,
+          checkpointId: located.checkpointId,
+          taskId,
+          idx: write.idx,
+        };
+        const data = {
+          channel: write.channel,
+          // 框架给每条静态边都写一个 null（「这条边上没写东西」），库里这一列非空，落成 JSON 的 null。
+          value: write.value === null ? Prisma.JsonNull : write.value,
+        };
+        await client.graphCheckpointWrite.upsert({
+          where: { gameId_checkpointNs_checkpointId_taskId_idx: key },
+          create: { ...key, ...data },
+          // 常规写入按位置幂等，先落那份留着；内部通道允许覆盖，与基类语义一致。
+          update: write.idx < 0 ? data : {},
+        });
+      }
+    });
   }
 
   /** 线程键就是行动键，本身已经锁到某一局，不必再按对局筛一遍。 */
   async deleteThread(threadId: string): Promise<void> {
-    await this.client.graphCheckpointWrite.deleteMany({ where: { checkpointNs: threadId } });
-    await this.client.graphCheckpoint.deleteMany({ where: { checkpointNs: threadId } });
+    await this.client.$transaction(async (client) => {
+      await client.graphCheckpointWrite.deleteMany({ where: { checkpointNs: threadId } });
+      await client.graphCheckpoint.deleteMany({ where: { checkpointNs: threadId } });
+    });
   }
 
-  private async toTuple(row: {
-    gameId: string;
-    checkpointNs: string;
-    checkpointId: string;
-    parentCheckpointId: string | null;
-    checkpoint: Prisma.JsonValue;
-    metadata: Prisma.JsonValue | null;
-  }): Promise<CheckpointTuple> {
-    const writes = await this.client.graphCheckpointWrite.findMany({
-      where: {
-        gameId: row.gameId,
-        checkpointNs: row.checkpointNs,
-        checkpointId: row.checkpointId,
-      },
-      orderBy: [{ taskId: 'asc' }, { idx: 'asc' }],
-    });
+  private async toTuple(
+    row: Prisma.GraphCheckpointModel,
+    pending?: readonly Prisma.GraphCheckpointWriteModel[],
+  ): Promise<CheckpointTuple> {
+    const writes =
+      pending ??
+      (await this.client.graphCheckpointWrite.findMany({
+        where: {
+          gameId: row.gameId,
+          checkpointNs: row.checkpointNs,
+          checkpointId: row.checkpointId,
+        },
+        orderBy: [{ taskId: 'asc' }, { idx: 'asc' }],
+      }));
     const pendingWrites = await Promise.all(
       writes.map(
         async (write) =>

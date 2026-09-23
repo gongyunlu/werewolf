@@ -3,6 +3,7 @@ import { makeState, playerOf, stubActions, withRoles } from '../../testing/fixtu
 import { announceDay } from '../day/announce';
 import { patchPlayer, type GameState } from '../state';
 import { runNight } from './run-night';
+import type { FlowEvent } from '../flow';
 
 /** 六人局：p1 狼人、p2 守卫、p3 女巫、p4 预言家，p5、p6 平民。 */
 function board(): GameState {
@@ -20,6 +21,61 @@ function noLottery(): never {
 }
 
 describe('走完一夜', () => {
+  it('先睁眼再行动，结果只给对应角色，闭眼播报不透露角色是否存活', async () => {
+    const events: FlowEvent[] = [];
+    const actions = stubActions({
+      wolfProposal: async () => 'p5',
+      guardProtect: async () => 'p5',
+      witchDecision: async () => ({ kind: 'none' }),
+      seerCheck: async () => {
+        expect(events.at(-1)?.key).toBe('seer-open');
+        return 'p1';
+      },
+    });
+    await runNight({
+      state: board(),
+      actions,
+      random: noLottery,
+      onFlow: async (_state, event) => {
+        events.push(event);
+      },
+    });
+    expect(events.map((event) => event.key)).toEqual([
+      'night-start',
+      'wolves-open',
+      'wolves-result',
+      'wolves-close',
+      'guard-open',
+      'guard-result',
+      'guard-close',
+      'witch-open',
+      'witch-target',
+      'witch-result',
+      'witch-close',
+      'seer-open',
+      'seer-result',
+      'seer-close',
+    ]);
+    expect(events.find((event) => event.key === 'seer-result')).toMatchObject({
+      audience: ['p4'],
+      text: '查验结果：1 号 是狼人。',
+    });
+    expect(events.find((event) => event.key === 'witch-target')?.audience).toEqual(['p3']);
+    const deadSeer = patchPlayer(board(), 'p4', { isAlive: false });
+    events.length = 0;
+    await runNight({
+      state: deadSeer,
+      actions,
+      random: noLottery,
+      onFlow: async (_state, event) => {
+        events.push(event);
+      },
+    });
+    expect(events.some((event) => event.key === 'seer-open')).toBe(true);
+    expect(events.some((event) => event.key === 'seer-close')).toBe(true);
+    expect(events.some((event) => event.key === 'seer-result')).toBe(false);
+  });
+
   it('四步串成一条线：狼刀、守护、用药、查验', async () => {
     const state = board();
     const actions = stubActions({

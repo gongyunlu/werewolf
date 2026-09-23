@@ -28,7 +28,8 @@ function runtimeWith(answers: readonly (string | Error)[]) {
     model,
     runtime: {
       port: model,
-      access: ACCESS,
+      accessFor: () => ACCESS,
+      memoriesFor: () => [],
       promptSource: LOCAL_TURN_PROMPTS,
       skills: stubSkills(),
     } satisfies TurnRuntime,

@@ -1,7 +1,9 @@
 import type { ActionProvider } from '../actions';
+import { seatNames, type FlowObserver } from '../flow';
+import { settleActions } from '../parallel';
 import { campaignSpeechOrder, pkSpeechOrder } from '../speech-order';
 import type { GameState, PlayerState } from '../state';
-import { collectVotes, tallyVotes, type VoteRound } from '../vote';
+import { collectVotes, tallyVotes, type BallotObserver, type VoteRound } from '../vote';
 import { runBlastWindow } from './self-destruct';
 import { speakInOrder, type Speech } from './speech';
 
@@ -21,13 +23,16 @@ export interface SheriffElectionResult {
  * 报名与警上发言都跳过；续轮再被打断就是双爆，警徽直接流失。看挂起标记本身、不看天数：
  * 续轮落在第二天还是更晚都成立，只看天数会把续轮误当成已经选完了。
  *
- * 上警和退水都按座位号逐个问，顺序不影响结果，只为对局可重放；没人上警、警上全退水、
+ * 上警和退水同时表态，收齐后统一公布；没人上警、警上全退水、
  * 全员上警、警下全弃票这四种都没有警长；只剩一名参选者直接当选，不投票。
  */
 export async function runSheriffElection(
   state: GameState,
   actions: ActionProvider,
   minute: number,
+  observe?: (state: GameState) => void,
+  onBallot?: BallotObserver,
+  onFlow?: FlowObserver,
 ): Promise<SheriffElectionResult> {
   const suspended = state.sheriffElectionSuspended;
   if (!state.hasSheriff || (suspended === null && state.day !== 1)) {
@@ -36,6 +41,7 @@ export async function runSheriffElection(
 
   // 续轮走到这里竞选就重新开张了，挂起标记先清掉：下面哪条路都不该再挂一次。
   const base: GameState = suspended === null ? state : { ...state, sheriffElectionSuspended: null };
+  observe?.(base);
   const alive = base.players.filter((player) => player.isAlive);
   const speeches: Speech[] = [];
   const idle = (from: GameState): SheriffElectionResult => ({
@@ -56,10 +62,27 @@ export async function runSheriffElection(
     speeches,
   });
 
+  if (suspended === null) {
+    await onFlow?.(base, {
+      key: 'candidacy-start',
+      text: '开始警长竞选，请所有存活玩家同时决定是否上警。',
+    });
+  }
   const campaign: PlayerState[] =
     suspended === null
       ? await askCandidacy(alive, actions)
       : alive.filter((player) => suspended.includes(player.id));
+
+  await onFlow?.(base, {
+    key: 'candidacy-result',
+    kind: 'sheriff',
+    text: campaign.length
+      ? `上警名单：${seatNames(
+          base,
+          campaign.map((player) => player.id),
+        )}。`
+      : '无人上警，本局没有警长。',
+  });
 
   // 续轮没走过警上发言，PK 顺序只能从这批人按单顺双逆排出来的次序里取。
   const campaignOrder = campaignSpeechOrder(
@@ -68,7 +91,7 @@ export async function runSheriffElection(
   );
 
   if (suspended === null) {
-    const blast = await runBlastWindow(base, 'campaign', actions);
+    const blast = await runBlastWindow(base, 'campaign', actions, observe, onFlow);
     // 首爆挂起竞选：警徽先留着，第二天从退水表态接着走。
     if (blast.blasted)
       return suspend(
@@ -77,18 +100,31 @@ export async function runSheriffElection(
       );
     if (campaign.length === 0) return idle(base);
 
+    await onFlow?.(base, {
+      key: 'campaign-speech',
+      text: `请警上玩家依次发言，顺序：${campaignOrder.map((seat) => `${seat} 号`).join('、')}。`,
+    });
     speeches.push(...(await speakInOrder('campaign', campaignOrder, base.players, actions)));
   } else {
-    const blast = await runBlastWindow(base, 'campaign_resume', actions);
+    const blast = await runBlastWindow(base, 'campaign_resume', actions, observe, onFlow);
     // 二爆吞掉警徽：竞选到此作废，本局没有警长。
     if (blast.blasted) return suspend(blast.state, []);
   }
 
   // 全发完言再统一退水；退过水的人不能被选，也没有票。
-  const withdrawn = new Set<string>();
-  for (const player of campaign) {
-    if (await actions.withdraw(player.id)) withdrawn.add(player.id);
-  }
+  await onFlow?.(base, {
+    key: 'withdraw-start',
+    text: '警上发言结束，请警上玩家同时决定是否退水。',
+  });
+  const answers = await settleActions(campaign.map((player) => actions.withdraw(player.id)));
+  const withdrawn = new Set(
+    campaign.filter((_, index) => answers[index]).map((player) => player.id),
+  );
+  await onFlow?.(base, {
+    key: 'withdraw-result',
+    kind: 'sheriff',
+    text: withdrawn.size ? `退水名单：${seatNames(base, [...withdrawn])}。` : '无人退水。',
+  });
 
   const candidates = campaign.filter((player) => !withdrawn.has(player.id));
   if (candidates.length === 0) return idle(base);
@@ -104,10 +140,15 @@ export async function runSheriffElection(
     candidates: candidates.map((player) => player.id),
     weightedVoterId: null,
   };
+  await onFlow?.(base, {
+    key: 'campaign-vote',
+    text: `请警下玩家同时投票，警长候选人：${seatNames(base, round.candidates)}。`,
+  });
   const ballot = await collectVotes(round, (voterId) =>
     actions.vote('campaign', voterId, round.candidates),
   );
   const outcome = tallyVotes(round, ballot);
+  await onBallot?.({ round: 'campaign', casts: ballot, outcome });
 
   if (outcome.kind === 'elected') return elect(base, speeches, outcome.winnerId);
   if (outcome.kind === 'none') return idle(base);
@@ -116,13 +157,19 @@ export async function runSheriffElection(
   const tied = candidates.filter((player) => outcome.tiedIds.includes(player.id));
   const tiedSeatNos = new Set(tied.map((player) => player.seatNo));
   const pkOrder = pkSpeechOrder(campaignOrder, tiedSeatNos);
+  await onFlow?.(base, {
+    key: 'campaign-pk',
+    text: `警长竞选平票，请 ${seatNames(base, outcome.tiedIds)} 进行 PK 发言。`,
+  });
   speeches.push(...(await speakInOrder('campaign_pk', pkOrder, base.players, actions)));
 
   const pkRound: VoteRound = { ...round, candidates: tied.map((player) => player.id) };
+  await onFlow?.(base, { key: 'campaign-pk-vote', text: 'PK 发言结束，请警下玩家再次同时投票。' });
   const pkBallot = await collectVotes(pkRound, (voterId) =>
     actions.vote('campaign_pk', voterId, pkRound.candidates),
   );
   const pkOutcome = tallyVotes(pkRound, pkBallot);
+  await onBallot?.({ round: 'campaign_pk', casts: pkBallot, outcome: pkOutcome });
 
   if (pkOutcome.kind === 'elected') return elect(base, speeches, pkOutcome.winnerId);
 
@@ -130,17 +177,13 @@ export async function runSheriffElection(
   return idle(base);
 }
 
-/** 按座位号逐个问是否上警，顺序只为可重放，不影响结果。 */
+/** 并发收齐答案，按原座位顺序保留名单。 */
 async function askCandidacy(
   alive: readonly PlayerState[],
   actions: ActionProvider,
 ): Promise<PlayerState[]> {
-  const campaign: PlayerState[] = [];
-  for (const player of alive) {
-    if (await actions.runForSheriff(player.id)) campaign.push(player);
-  }
-
-  return campaign;
+  const answers = await settleActions(alive.map((player) => actions.runForSheriff(player.id)));
+  return alive.filter((_, index) => answers[index]);
 }
 
 function elect(state: GameState, speeches: Speech[], winnerId: string): SheriffElectionResult {

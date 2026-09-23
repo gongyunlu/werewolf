@@ -150,8 +150,8 @@ export async function renderGenerate(
 
 /**
  * 独立质疑。
- * 只给「被要求做什么」和「交上来的东西」，不给生成时那套系统提示词与思考过程——
- * 看不到过程才不会顺着过程替它找理由。
+ * 只给任务、草稿和板子规则，不给生成时的角色策略与思考过程。
+ * 复核需要知道本局规则，但不应重新制定玩家策略。
  * 可选项得给：「目标必须在候选里」正是它要判的形式之一，不给就没法判。
  * shapeJson 给的是工具那一份，与草稿同一层；给内层 schema 的话，裹着的那层壳会被判成形式错误。
  */
@@ -162,7 +162,7 @@ export async function renderCritique(
   shapeJson: Record<string, unknown> | null,
 ): Promise<RenderedTurn> {
   const [system, user] = await Promise.all([
-    renderPart(source, TURN_PROMPT_NAMES.critiqueSystem, {}),
+    renderPart(source, TURN_PROMPT_NAMES.critiqueSystem, {}, context.skill.slice(0, 1)),
     renderPart(source, TURN_PROMPT_NAMES.critiqueUser, {
       day: String(context.day),
       seatNo: String(context.actor.seatNo),
@@ -257,7 +257,19 @@ async function renderPart(
     template: name,
     version: template.version,
     source: template.source,
-    text: skill.length === 0 ? text : `${text}\n\n${skill.join('\n\n')}`,
+    text: blocks([
+      text,
+      ...skill,
+      name === TURN_PROMPT_NAMES.generateSystem || name === TURN_PROMPT_NAMES.reviseSystem
+        ? '只分析影响本次行动的关键信息，以简短判断为目标。不复述整份局面、规则或题面；没有新证据时不反复推翻同一判断，不穷举尚未发生的多轮分支。找到合法且符合当前策略的方案后直接提交。发言只保留新增观点、关键依据和本轮建议。'
+        : '',
+      name === TURN_PROMPT_NAMES.critiqueSystem
+        ? '这是一次局部核对，不是重新制定策略。只检查是否完成当前任务、是否违反给定规则，以及是否与确定的局面事实冲突。形式与合法候选已由程序校验，不重复推演。狼人伪装、诈身份和有意隐瞒属于游戏策略，不因不诚实判错；不以自己偏好的打法否定原方案。缺少证据不能判错。没有确定错误就立即通过并将 issues 留空；有错误时只列最多 3 条具体问题，每条一句话，不复述局面、不重写发言。'
+        : '',
+      name.endsWith('-system')
+        ? '请使用简体中文思考和回答，推理过程也使用简体中文。工具名、JSON 字段名和约定的枚举值保持原样。'
+        : '',
+    ]),
   };
 }
 

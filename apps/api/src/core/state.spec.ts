@@ -1,4 +1,3 @@
-import { PHASES } from '@werewolf/shared';
 import { type BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
 import { factionOf } from './roles';
@@ -64,7 +63,6 @@ describe('对局状态初始化', () => {
     const state = stateOf('12p_white_wolf');
 
     expect(state.day).toBe(1);
-    expect(state.phase).toBe(PHASES.NIGHT);
     expect(state.phaseInstanceId).toBe('node/0/init');
   });
 

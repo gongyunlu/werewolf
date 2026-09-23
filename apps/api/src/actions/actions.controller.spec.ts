@@ -1,11 +1,9 @@
 import { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
 import { ACTION_TYPES } from '@werewolf/shared';
 import request from 'supertest';
 import { actionKey, phaseInstanceId, type ActionScope } from '../core/identity';
-import { AppModule } from '../app.module';
+import { testAppModule } from '../testing/app';
 import { memoryStores } from '../store/memory';
-import { GAME_STORES } from '../store/stores.provider';
 import type { GameStores } from '../store/stores';
 
 /**
@@ -62,11 +60,7 @@ describe('行动记录只读接口', () => {
 
   beforeAll(async () => {
     stores = memoryStores();
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      // 应用装配带上了存储，真连库得有库在；这一条只验接口与投影，给它一份内存的。
-      .overrideProvider(GAME_STORES)
-      .useValue(stores)
-      .compile();
+    const moduleRef = await testAppModule(stores).compile();
 
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
@@ -147,5 +141,82 @@ describe('行动记录只读接口', () => {
       .expect(200);
 
     expect(body.actions).toEqual([]);
+  });
+
+  it('过程列表不包含长篇思考，展开后才返回，旧存档也可以回看', async () => {
+    const gameId = 'g-history';
+    await record(
+      stores,
+      gameId,
+      0,
+      snapshotOf({
+        day: 2,
+        seatNo: 3,
+        role: '预言家',
+        task: '投票',
+        decision: 5,
+        reasoning: '保留下来的推理',
+      }),
+    );
+    const key = actionKey(
+      { gameId, phaseInstanceId: phaseInstanceId(3, 'vote') },
+      ACTION_TYPES.VOTE,
+      'p3',
+      0,
+    );
+    await stores.events.append(gameId, {
+      seq: 1,
+      eventKey: key,
+      day: 2,
+      kind: 'ballot',
+      text: '投票结果',
+      audience: ['p3'],
+    });
+    const fullActions = jest.spyOn(stores.actions, 'list');
+    const fullEvents = jest.spyOn(stores.events, 'list');
+    const { body: summary } = await request(app.getHttpServer())
+      .get(`/api/games/${gameId}/actions/summaries`)
+      .expect(200);
+    expect(fullActions).not.toHaveBeenCalled();
+    expect(fullEvents).not.toHaveBeenCalled();
+    fullActions.mockRestore();
+    fullEvents.mockRestore();
+    expect(summary.actions[0]).toMatchObject({ hasReasoning: true, ledgerSeq: 0 });
+    expect(summary.actions[0]).toMatchObject({ phase: 'vote', eventSeq: 1 });
+    expect(summary.actions[0]).not.toHaveProperty('reasoning');
+    const { body: detail } = await request(app.getHttpServer())
+      .get(`/api/games/${gameId}/actions/detail`)
+      .query({ actionKey: summary.actions[0].actionKey })
+      .expect(200);
+    expect(detail).toEqual({ reasoning: '保留下来的推理', steps: [] });
+    await request(app.getHttpServer())
+      .get('/api/games/other/actions/detail')
+      .query({ actionKey: summary.actions[0].actionKey })
+      .expect(404);
+  });
+
+  it('未完成的行动也提供入口，刷新后仍能查到已保存的节点', async () => {
+    await record(stores, 'g-pending', 0);
+    const { body } = await request(app.getHttpServer())
+      .get('/api/games/g-pending/actions/summaries')
+      .expect(200);
+    expect(body.actions).toEqual([]);
+    expect(body.pending).toEqual([
+      {
+        actionKey: actionKey(
+          { gameId: 'g-pending', phaseInstanceId: phaseInstanceId(3, 'vote') },
+          ACTION_TYPES.VOTE,
+          'p3',
+          0,
+        ),
+        actorId: 'p3',
+        actionType: ACTION_TYPES.VOTE,
+      },
+    ]);
+    const { body: detail } = await request(app.getHttpServer())
+      .get('/api/games/g-pending/actions/detail')
+      .query({ actionKey: body.pending[0].actionKey })
+      .expect(200);
+    expect(detail).toEqual({ reasoning: null, steps: [] });
   });
 });

@@ -1,6 +1,6 @@
 import { MemorySaver } from '@langchain/langgraph';
 import type { Checkpoint, CheckpointMetadata, PendingWrite } from '@langchain/langgraph-checkpoint';
-import { ACTION_TYPES } from '@werewolf/shared';
+import { ACTION_TYPES, type PreviewChunk } from '@werewolf/shared';
 import { z } from 'zod';
 import { actionKey, phaseInstanceId, type ActionScope } from '../core/identity';
 import type { ModelCapability } from '../llm/model-capability';
@@ -10,10 +10,11 @@ import {
   type ModelPort,
   type ModelRequest,
   type ModelResponse,
+  type StreamDelta,
 } from '../llm/model-port';
 import { stubSkills } from '../testing/fixtures';
-import { scriptedModel, type ScriptedStep } from '../testing/model';
-import { runActionGraph } from './graph';
+import { responseOf, scriptedModel, type ScriptedStep } from '../testing/model';
+import { actionSteps, runActionGraph } from './graph';
 import { LOCAL_TURN_PROMPTS, TURN_PROMPT_NAMES } from './prompt';
 import {
   actionKeyOf,
@@ -71,15 +72,27 @@ function request(overrides: Partial<ActionRequest> = {}): ActionRequest {
   };
 }
 
-/** 端口加它对应的运行环境；接入身份与提示词来处各条用例都一样。 */
-function runtimeOf(port: ModelPort): TurnRuntime {
-  return { port, access: ACCESS, promptSource: LOCAL_TURN_PROMPTS, skills: stubSkills() };
+/** 端口加它对应的运行环境；接入身份与提示词来处各条用例都一样。seats 记着每一次取用问的是几号。 */
+function runtimeOf(port: ModelPort) {
+  const seats: (number | null)[] = [];
+  const runtime: TurnRuntime = {
+    port,
+    accessFor: (seatNo) => {
+      seats.push(seatNo);
+      return ACCESS;
+    },
+    memoriesFor: () => [],
+    promptSource: LOCAL_TURN_PROMPTS,
+    skills: stubSkills(),
+  };
+
+  return { runtime, seats };
 }
 
 /** 造一份脚本模型加它对应的运行环境；calls 用来断言问了几次、问了什么。 */
 async function withModel(answers: readonly ScriptedStep[]) {
   const model = scriptedModel(answers);
-  return { model, runtime: runtimeOf(model) };
+  return { model, ...runtimeOf(model) };
 }
 
 /**
@@ -98,6 +111,22 @@ function rawModel(raws: readonly string[]) {
       });
     },
   };
+  return { port, calls };
+}
+
+/** 边写边吐的替身：脚本里那一问先吐几片，再交答案；streamed 记着这一问走没走流。 */
+function flowingModel(steps: readonly { answer: string; deltas: readonly StreamDelta[] }[]) {
+  const calls: { request: ModelRequest; streamed: boolean }[] = [];
+  const port: ModelPort = {
+    generate(asked, _access, call) {
+      calls.push({ request: asked, streamed: call?.onDelta !== undefined });
+      const step = steps[calls.length - 1];
+      if (!step) throw new Error(`脚本模型只准备了 ${steps.length} 次回答`);
+      for (const delta of step.deltas) call?.onDelta?.(delta);
+      return Promise.resolve(responseOf(asked, step.answer));
+    },
+  };
+
   return { port, calls };
 }
 
@@ -149,7 +178,7 @@ describe('单玩家行动图', () => {
   });
 
   it('quality 档质疑不通过就改一版，采用的是改后那版', async () => {
-    const { model, runtime } = await withModel([DECIDED, REJECTED, REVISED]);
+    const { model, runtime, seats } = await withModel([DECIDED, REJECTED, REVISED]);
 
     const outcome = await runActionGraph(runtime, request({ preset: 'quality' }));
 
@@ -164,6 +193,8 @@ describe('单玩家行动图', () => {
       TURN_PROMPT_NAMES.reviseSystem,
       TURN_PROMPT_NAMES.reviseUser,
     ]);
+    // 首问、质疑、修订、收尾各取一次，取的都是这一次行动那个人那格：漏一处就落成兜底那份。
+    expect(seats).toEqual([3, 3, 3, 3]);
   });
 
   it('质疑只拿到任务和草稿，拿不到生成时那套系统提示词', async () => {
@@ -293,7 +324,7 @@ describe('单玩家行动图', () => {
   ])('交的属于「%s」这一类，重问的附言就照这一类说', async (diagnosis, bad) => {
     const { port, calls } = rawModel([bad, wrapped(DECIDED)]);
 
-    const outcome = await runActionGraph(runtimeOf(port), request());
+    const outcome = await runActionGraph(runtimeOf(port).runtime, request());
 
     expect(outcome.decision).toEqual({ targetId: 'p2', reason: '他发言太稳了' });
     // 只说「不合要求」，模型只能照着原样再掷一次；说清错在哪一类，它才知道往哪儿改。
@@ -324,7 +355,8 @@ describe('单玩家行动图', () => {
           return { content: '', toolCall: { name: 'submit', arguments: 'null' }, reasoning: null };
         },
       },
-      access: ACCESS,
+      accessFor: () => ACCESS,
+      memoriesFor: () => [],
       promptSource: LOCAL_TURN_PROMPTS,
       skills: stubSkills(),
     };
@@ -361,7 +393,7 @@ describe('单玩家行动图', () => {
     ).rejects.toThrow(bad);
     // 连 JSON 都不是的那一类同样要留原话；散文里没有别的字段可留。
     const notJson = rawModel(['我觉得应该投 2 号', '我觉得应该投 2 号', '我觉得应该投 2 号']);
-    await expect(runActionGraph(runtimeOf(notJson.port), request())).rejects.toThrow(
+    await expect(runActionGraph(runtimeOf(notJson.port).runtime, request())).rejects.toThrow(
       '交上来的是 我觉得应该投 2 号',
     );
   });
@@ -468,6 +500,127 @@ describe('单玩家行动图', () => {
   });
 });
 
+describe('往外推的预览', () => {
+  /** 跟 runtimeOf 一样，另给一个观战口子：推出来的每一片都收在 chunks 里。 */
+  function watched(port: ModelPort) {
+    const chunks: PreviewChunk[] = [];
+    const base = runtimeOf(port);
+    base.runtime.preview = (chunk) => {
+      if (chunk.channel !== 'node') chunks.push(chunk);
+    };
+
+    return { ...base, chunks };
+  }
+
+  it('生成那一趟边写边推，身份与步骤都补齐', async () => {
+    const { port, calls } = flowingModel([
+      {
+        answer: DECIDED,
+        deltas: [
+          { channel: 'reasoning', text: '先看' },
+          { channel: 'reasoning', text: '先看 1 号。' },
+        ],
+      },
+    ]);
+    const { runtime, chunks } = watched(port);
+
+    await runActionGraph(runtime, request());
+
+    expect(calls[0]!.streamed).toBe(true);
+    expect(chunks).toEqual([
+      {
+        actionKey: actionKeyOf(request()),
+        day: 2,
+        seatNo: 3,
+        actionType: ACTION_TYPES.VOTE,
+        step: 'generate',
+        callId: expect.any(String),
+        channel: 'reasoning',
+        text: '先看',
+      },
+      {
+        actionKey: actionKeyOf(request()),
+        day: 2,
+        seatNo: 3,
+        actionType: ACTION_TYPES.VOTE,
+        step: 'generate',
+        callId: chunks[0]!.callId,
+        channel: 'reasoning',
+        text: '先看 1 号。',
+      },
+    ]);
+  });
+
+  it('不带工具的那一问，思考与正文两段都推出去', async () => {
+    const { port } = flowingModel([
+      {
+        answer: '我坐 3 号，先听前面的。',
+        deltas: [
+          { channel: 'reasoning', text: '3 号跳了预言家，' },
+          { channel: 'content', text: '我坐 3 号，' },
+          { channel: 'content', text: '我坐 3 号，先听前面的。' },
+        ],
+      },
+    ]);
+    const { runtime, chunks } = watched(port);
+
+    await runActionGraph(runtime, request({ actionType: ACTION_TYPES.SPEECH, schema: undefined }));
+
+    expect(chunks.map((one) => one.channel)).toEqual(['reasoning', 'content', 'content']);
+    expect(chunks[2]!.text).toBe('我坐 3 号，先听前面的。');
+  });
+
+  it('走工具的那一问，只有思考那一路，正文那一头一片都没有', async () => {
+    const { port } = flowingModel([
+      { answer: DECIDED, deltas: [{ channel: 'reasoning', text: '他发言太稳。' }] },
+    ]);
+    const { runtime, chunks } = watched(port);
+
+    await runActionGraph(runtime, request());
+
+    expect(chunks.map((one) => one.channel)).toEqual(['reasoning']);
+  });
+
+  it('答歪了重问是新的一趟：callId 换了，观战那头不会把两趟的字接在一起', async () => {
+    const bad = JSON.stringify({ targetId: 7, reason: 'x' });
+    const { port } = flowingModel([
+      { answer: bad, deltas: [{ channel: 'reasoning', text: '先投 7 号' }] },
+      { answer: DECIDED, deltas: [{ channel: 'reasoning', text: '候选里没有 7 号' }] },
+    ]);
+    const { runtime, chunks } = watched(port);
+
+    await runActionGraph(runtime, request());
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0]!.callId).not.toBe(chunks[1]!.callId);
+    // 步骤没变，还是生成那一趟：只是换了个话头重问。
+    expect(chunks.map((one) => one.step)).toEqual(['generate', 'generate']);
+  });
+
+  it('quality 档质疑与修订各带各的步骤', async () => {
+    const { port } = flowingModel([
+      { answer: DECIDED, deltas: [{ channel: 'reasoning', text: '生成' }] },
+      { answer: REJECTED, deltas: [{ channel: 'reasoning', text: '质疑' }] },
+      { answer: REVISED, deltas: [{ channel: 'reasoning', text: '修订' }] },
+    ]);
+    const { runtime, chunks } = watched(port);
+
+    await runActionGraph(runtime, request({ preset: 'quality' }));
+
+    expect(chunks.map((one) => one.step)).toEqual(['generate', 'critique', 'revise']);
+  });
+
+  it('没给观战口子就不走流：端口收到的 onDelta 是空的', async () => {
+    const { port, calls } = flowingModel([{ answer: DECIDED, deltas: [] }]);
+
+    await runActionGraph(runtimeOf(port).runtime, request());
+
+    // 没人看的局不该为推流多花一分钱：一次收完那条路本来就更省。
+    expect(calls[0]!.request.tool?.name).toBe('submit');
+    expect(calls[0]!.streamed).toBe(false);
+  });
+});
+
 describe('执行进度落盘与接着跑', () => {
   it('每次落盘都带着行动键那条线程：库那边的进度按它认这一局', async () => {
     const saver = new RecordingSaver();
@@ -544,5 +697,133 @@ describe('执行进度落盘与接着跑', () => {
 
     expect(model.calls).toHaveLength(1);
     expect(outcome.decision).toEqual({ targetId: 'p2', reason: '他发言太稳了' });
+  });
+});
+
+describe('行动过程回看', () => {
+  it.each(['generate', 'critique', 'revise'])(
+    '%s 失败后恢复成功，历史展示成功结果、思考与耗时',
+    async (failedNode) => {
+      const saver = new MemorySaver();
+      const answers = [DECIDED, REJECTED, REVISED];
+      const names = ['generate', 'critique', 'revise'];
+      const failedIndex = names.indexOf(failedNode);
+      const input = request({ preset: 'quality' });
+      const first = await withModel([...answers.slice(0, failedIndex), new Error('暂时失败')]);
+      await expect(runActionGraph(first.runtime, input, { saver })).rejects.toThrow('暂时失败');
+      expect((await actionSteps(saver, actionKeyOf(input))).at(-1)).toMatchObject({
+        name: failedNode,
+        status: 'failed',
+      });
+      let index = failedIndex;
+      const again = runtimeOf({
+        generate: async (asked) => ({
+          ...responseOf(asked, answers[index++]!, '恢复后的思考'),
+          thinkingMs: 1234,
+        }),
+      });
+      await runActionGraph(again.runtime, input, { saver, resume: true });
+      const steps = await actionSteps(saver, actionKeyOf(input));
+      expect(steps.map((step) => [step.name, step.status])).toEqual(
+        [...names, 'finalize'].map((name) => [name, 'completed']),
+      );
+      expect(steps.find((step) => step.name === failedNode)).toMatchObject({
+        content:
+          failedNode === 'critique'
+            ? expect.stringContaining('需要修订')
+            : expect.stringContaining(failedNode === 'generate' ? 'p2' : 'p1'),
+        reasoning: '恢复后的思考',
+        thinkingMs: 1234,
+      });
+    },
+  );
+
+  it('思考耗时累加生成、复核、修订，恢复后仍保留每个节点与总耗时', async () => {
+    const saver = new MemorySaver();
+    const answers = [DECIDED, REJECTED, REVISED];
+    const timings = [1200, 2300, 3400];
+    let index = 0;
+    const built = runtimeOf({
+      generate: async (asked) => {
+        const current = index++;
+        return {
+          ...responseOf(asked, answers[current]!, '有依据的思考'),
+          thinkingMs: timings[current],
+        };
+      },
+    });
+    const input = request({ preset: 'quality' });
+    const first = await runActionGraph(built.runtime, input, { saver });
+    expect(first.snapshot.thinkingMs).toBe(6900);
+    expect(
+      (await actionSteps(saver, actionKeyOf(input)))
+        .filter((step) => step.name !== 'finalize')
+        .map((step) => step.thinkingMs),
+    ).toEqual(timings);
+    const again = await withModel([]);
+    expect(await runActionGraph(again.runtime, input, { saver, resume: true })).toEqual(first);
+    expect(again.model.calls).toHaveLength(0);
+  });
+
+  it('原生节点事件与检查点保留生成、复核和修订各自的结果', async () => {
+    const saver = new MemorySaver();
+    const built = await withModel([DECIDED, REJECTED, REVISED]);
+    const chunks: PreviewChunk[] = [];
+    built.runtime.preview = (chunk) => chunks.push(chunk);
+    const input = request({ preset: 'quality' });
+    await runActionGraph(built.runtime, input, { saver });
+    expect(
+      chunks.filter((chunk) => chunk.channel === 'node').map((chunk) => [chunk.step, chunk.status]),
+    ).toEqual([
+      ['generate', 'running'],
+      ['generate', 'completed'],
+      ['critique', 'running'],
+      ['critique', 'completed'],
+      ['revise', 'running'],
+      ['revise', 'completed'],
+      ['finalize', 'running'],
+      ['finalize', 'completed'],
+    ]);
+    const steps = await actionSteps(saver, actionKeyOf(input));
+    expect(steps.map((step) => [step.name, step.status])).toEqual([
+      ['generate', 'completed'],
+      ['critique', 'completed'],
+      ['revise', 'completed'],
+      ['finalize', 'completed'],
+    ]);
+    expect(steps[0]?.content).toContain('p2');
+    expect(steps[1]?.content).toContain('需要修订');
+    expect(steps[2]?.content).toContain('p1');
+  });
+
+  it('复核思考保存在节点检查点，不覆盖最终决策的思考', async () => {
+    const saver = new MemorySaver();
+    let call = 0;
+    const answers = [DECIDED, ACCEPTED];
+    const reasons = ['生成的思考', '复核的思考'];
+    const built = runtimeOf({
+      generate: async (asked) => {
+        const index = call++;
+        return responseOf(asked, answers[index]!, reasons[index]);
+      },
+    });
+    const input = request({ preset: 'quality' });
+    const result = await runActionGraph(built.runtime, input, { saver });
+    expect(result.snapshot.reasoning).toBe('生成的思考');
+    const steps = await actionSteps(saver, actionKeyOf(input));
+    expect(steps.find((step) => step.name === 'critique')?.reasoning).toBe('复核的思考');
+  });
+
+  it('失败节点发出失败状态，读取历史也能看到失败，不能假装已完成', async () => {
+    const saver = new MemorySaver();
+    const built = await withModel([new Error('模型请求失败')]);
+    const chunks: PreviewChunk[] = [];
+    built.runtime.preview = (chunk) => chunks.push(chunk);
+    const input = request();
+    await expect(runActionGraph(built.runtime, input, { saver })).rejects.toThrow('模型请求失败');
+    expect(chunks.at(-1)).toMatchObject({ step: 'generate', status: 'failed' });
+    expect(await actionSteps(saver, actionKeyOf(input))).toEqual([
+      expect.objectContaining({ name: 'generate', status: 'failed' }),
+    ]);
   });
 });

@@ -1,3 +1,4 @@
+import { GAME_STATUSES } from '@werewolf/shared';
 import type { GameStores } from '../store/stores';
 import { runModelGame, type ModelGameInput, type ModelGameResult } from './run-model-game';
 
@@ -29,19 +30,30 @@ export async function runStoredGame(input: StoredGameInput): Promise<ModelGameRe
   if (stored?.winner) throw new Error(`这一局已经分出胜负：${stored.winner}`);
 
   if (!stored) {
-    await stores.games.open({ gameId, boardId: input.setup.boardId });
+    // 跑到这儿才立档的是命令行那条路：界面上排的那份阵容不经过这儿，档案里是空的。
+    await stores.games.open({ gameId, boardId: input.setup.boardId, roster: [] });
   } else if (stored.boardId !== input.setup.boardId) {
     // 接着跑的板子只能是开局那块：局面从存档里来，技能正文却是按这次传进来的板子现取的。
     throw new Error(`这一局是用 ${stored.boardId} 开的，接不上 ${input.setup.boardId}`);
   }
 
-  const settled = await runModelGame({
-    ...rest,
-    // 从最后一份锚点接着跑：锚点落在提问之前，落在哪一格就重进哪一格，答过的按记录复用。
-    resume: stored ? ((await stores.steps.last(gameId)) ?? undefined) : undefined,
-    stores,
-  });
+  // 走到这儿就是真开始跑了。进度从「排队中」挪到「运行中」——列表上还挂着排队中的局，
+  // 看的人会以为它没轮上，其实它正在烧钱。
+  await stores.games.setStatus(gameId, GAME_STATUSES.RUNNING);
 
-  await stores.games.finish(gameId, settled.winner);
-  return settled;
+  try {
+    const settled = await runModelGame({
+      ...rest,
+      // 从最后一份锚点接着跑：锚点落在提问之前，落在哪一格就重进哪一格，答过的按记录复用。
+      resume: stored ? ((await stores.steps.last(gameId)) ?? undefined) : undefined,
+      stores,
+    });
+    await stores.games.finish(gameId, settled.winner, settled.state);
+    return settled;
+  } catch (error) {
+    // 一局跑十几个来回，中途断在哪儿都有可能。不标记的话它会一直挂在「运行中」，
+    // 而那个进程早就没了。
+    await stores.games.setStatus(gameId, GAME_STATUSES.FAILED);
+    throw error;
+  }
 }

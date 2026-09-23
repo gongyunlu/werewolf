@@ -1,5 +1,6 @@
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 import type { ActionStore } from './actions';
+import type { AgentStore } from './agents';
 import type { AskedPromptStore } from './asked';
 import type { EventStore } from './events';
 import type { GameStore } from './games';
@@ -9,6 +10,8 @@ import type { StepStore } from './steps';
 export interface GameStores {
   /** 这一局的档案：从哪块板子开的、有没有分出胜负。 */
   games: GameStore;
+  /** 参赛者的接入配置。开局按阵容取型号与端点，密钥现读。 */
+  agents: AgentStore;
   events: EventStore;
   actions: ActionStore;
   steps: StepStore;

@@ -108,6 +108,24 @@ describe('计票', () => {
 });
 
 describe('收齐一轮投票', () => {
+  it('一人失败后仍等其他行动收尾，避免失败返回后继续写入', async () => {
+    let release!: (value: string) => void;
+    const slow = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const settled = jest.fn();
+    const result = collectVotes(roundOf(), async (id) => {
+      if (id === 'p1') throw new Error('行动失败');
+      return id === 'p2' ? slow : 'p1';
+    }).catch(settled);
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).not.toHaveBeenCalled();
+    release('p1');
+    await result;
+    expect(settled).toHaveBeenCalledWith(expect.objectContaining({ message: '行动失败' }));
+  });
+
   it('每名投票者问一次，落点按投票者对齐', async () => {
     const asked: string[] = [];
     const casts = await collectVotes(roundOf(), async (voterId) => {

@@ -58,6 +58,29 @@ function talkingPack(proposals: Partial<ActionProvider>) {
 }
 
 describe('狼队提刀', () => {
+  it('一只狼失败后等待其他提案收尾再返回失败', async () => {
+    let release!: (value: string) => void;
+    const slow = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const failed = jest.fn();
+    const result = decideWolfKill(
+      wolfBoard(),
+      killActions({
+        wolfProposal: async (id) => {
+          if (id === 'p1') throw new Error('提刀失败');
+          return id === 'p2' ? slow : 'p4';
+        },
+      }),
+      () => 0,
+    ).catch(failed);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(failed).not.toHaveBeenCalled();
+    release('p4');
+    await result;
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: '提刀失败' }));
+  });
+
   it('取提得最多的那个', async () => {
     const actions = killActions({
       wolfProposal: async (wolfId) => (wolfId === 'p1' ? 'p4' : 'p5'),
