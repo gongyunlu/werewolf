@@ -28,6 +28,14 @@ describe('模型能力', () => {
   });
 
   describe('按端点加型号取能力', () => {
+    it('保留端点声明的工具选择方式', () => {
+      expect(
+        resolveModelCapability(MODEL, ENDPOINT, declarations(declared({ toolChoice: 'auto' }))),
+      ).toEqual({
+        reasoningOff: null,
+        toolChoice: 'auto',
+      });
+    });
     it('声明过的按声明取，关思维链的片段原样带出来', () => {
       const text = declarations(declared({ reasoningOff: { thinking: { type: 'disabled' } } }));
 

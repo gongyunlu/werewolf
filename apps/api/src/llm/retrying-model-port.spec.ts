@@ -1,8 +1,10 @@
+import timers from 'node:timers/promises';
 import {
   ModelCallError,
   type ModelAccess,
   type ModelCallOptions,
   type ModelPort,
+  type StreamDelta,
 } from './model-port';
 import { retryingModelPort, type RetryOptions } from './retrying-model-port';
 
@@ -57,22 +59,18 @@ async function thrownBy(pending: Promise<unknown>) {
 /** 一次网络抖动。要的是分类，不是这一份具体的错。 */
 const flaky = () => new ModelCallError('transient', '抖了一下');
 
-/**
- * 从发出请求到第一次重试，隔了多少毫秒。
- * 一毫秒一毫秒地推假时钟，推到替身被问第二次为止；所以调用前得先开假时钟。
- */
+/** 核对交给原生定时器的等待时长。 */
 async function retryAfterOf(failure: Error, options: RetryOptions): Promise<number> {
+  const delay = jest.spyOn(timers, 'setTimeout').mockResolvedValue(undefined);
   const { port, asked } = scriptedPort([failure, '好']);
-  const done = retryingModelPort(port, options).generate(REQUEST, ACCESS);
-
-  let elapsed = 0;
-  while (asked.length < 2) {
-    await jest.advanceTimersByTimeAsync(1);
-    elapsed += 1;
-    if (elapsed > 1000) throw new Error('推了 1000ms 还没重发');
+  try {
+    await retryingModelPort(port, options).generate(REQUEST, ACCESS);
+    expect(asked).toHaveLength(2);
+    expect(delay).toHaveBeenCalledTimes(1);
+    return delay.mock.calls[0][0]!;
+  } finally {
+    delay.mockRestore();
   }
-  await done;
-  return elapsed;
 }
 
 describe('模型端口重试', () => {
@@ -111,9 +109,6 @@ describe('模型端口重试', () => {
   });
 
   describe('重试间隔', () => {
-    beforeEach(() => jest.useFakeTimers());
-    afterEach(() => jest.useRealTimers());
-
     it('退避带抖动，同一批请求不会等一样长再一起重发', async () => {
       const options = { attempts: 2, backoffMs: 20 };
 
@@ -177,7 +172,7 @@ describe('模型端口重试', () => {
   });
 
   // invalid_output 也在这张表里：这一层在解析之下，它本来就走不到这儿，重问归上面那一层（graph.ts）。
-  it.each<[string]>([['invalid_output'], ['fatal'], ['deadline'], ['circuit_open']])(
+  it.each<[string]>([['invalid_output'], ['fatal'], ['deadline']])(
     '%s 不重试，当场抛',
     async (code) => {
       const cause = new ModelCallError(code as ModelCallError['code'], '不值得再试');
@@ -202,10 +197,10 @@ describe('模型端口重试', () => {
   });
 
   it('流式回调原样转给下层', async () => {
-    const seen: string[] = [];
+    const seen: StreamDelta[] = [];
     const port: ModelPort = {
       generate(_request, _access, call) {
-        call?.onDelta?.('我坐');
+        call?.onDelta?.({ channel: 'content', text: '我坐' });
         return Promise.resolve({ content: '我坐', toolCall: null, reasoning: null });
       },
     };
@@ -214,7 +209,7 @@ describe('模型端口重试', () => {
       onDelta: (delta) => seen.push(delta),
     });
 
-    expect(seen).toEqual(['我坐']);
+    expect(seen).toEqual([{ channel: 'content', text: '我坐' }]);
     expect(answer).toEqual({ content: '我坐', toolCall: null, reasoning: null });
   });
 

@@ -6,6 +6,8 @@ import { z } from 'zod';
  * 具体哪个模型是哪一档由接入时声明，不在这份类型里枚举。
  */
 export interface ModelCapability {
+  /** 默认 required；不支持强制工具的端点显式声明 auto，结果仍由行动层校验。 */
+  toolChoice?: 'required' | 'auto';
   /**
    * 关掉供应商自己思维链的请求体片段，直接并进请求。
    * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关。
@@ -25,6 +27,7 @@ const CAPABILITY_DECLARATIONS = z.array(
     baseUrl: z.url(),
     model: z.string().min(1),
     reasoningOff: z.record(z.string(), z.unknown()).nullable(),
+    toolChoice: z.enum(['required', 'auto']).optional(),
   }),
 );
 
@@ -52,5 +55,8 @@ export function resolveModelCapability(
   const declared = matched[0];
   if (!declared) throw new Error(`未声明该端点与模型的能力：${endpoint} / ${model}`);
 
-  return { reasoningOff: declared.reasoningOff };
+  return {
+    reasoningOff: declared.reasoningOff,
+    ...(declared.toolChoice ? { toolChoice: declared.toolChoice } : {}),
+  };
 }

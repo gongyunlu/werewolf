@@ -5,18 +5,13 @@ import type { ModelAccess, ModelPort } from './model-port';
 import { retryingModelPort } from './retrying-model-port';
 import type { PromptSource } from './prompt-template';
 import { langfusePromptSource } from './langfuse-prompt-source';
+import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 
-/**
- * 按环境变量拼出提示词源。
- * 凭据没配齐就给一份取不到的源：取用点那一步会落到本地模板上，
- * 这是不起平台的正常跑法，不该拦着不让开局。
- */
+/** 未配置 Langfuse 时直接使用本地提示词。 */
 export function promptSourceOf(env: AppEnv): PromptSource {
   const { LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY } = env;
   if (!LANGFUSE_PUBLIC_KEY || !LANGFUSE_SECRET_KEY) {
-    return {
-      load: () => Promise.reject(new Error('没配 LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY')),
-    };
+    return LOCAL_TURN_PROMPTS;
   }
 
   return langfusePromptSource({

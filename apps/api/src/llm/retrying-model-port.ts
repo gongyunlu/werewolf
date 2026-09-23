@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   ModelCallError,
   type ModelAccess,
@@ -9,7 +10,7 @@ import {
 export interface RetryOptions {
   /** 一共试几次，含第一次。 */
   attempts?: number;
-  /** 第一次重试前等多少毫秒，往后按第几次成倍加。 */
+  /** 第一次重试前等多少毫秒，之后随重试次数增加。 */
   backoffMs?: number;
   /** 抖动用的随机源，取值 [0, 1)。用例里换成定值，好断言等多久。 */
   random?: () => number;
@@ -19,7 +20,7 @@ const DEFAULT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS = 500;
 
 /**
- * 第几次重试等多久：按次数成倍加，再在一半到全额之间随机取。
+ * 第几次重试等多久：随次数增加，再在一半到全额之间随机取。
  *
  * 随机是必须的，不是锦上添花：一轮投票、狼队商议都是并行问一整批人，
  * 撞上限流的是同一刻发出去的一批请求。退避要是定值，这批人会等一样长再一起重发，
@@ -39,20 +40,15 @@ function backoffOf(attempt: number, backoffMs: number, random: () => number): nu
  * 喊停之后接着等、接着重发，既白等一场又白花一次调用。
  * 已经在等的时候喊停也当场结束，不必等满整个退避——它最长能到十几秒。
  */
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(stopped(signal));
-  if (ms <= 0) return Promise.resolve();
-  return new Promise((done, fail) => {
-    const timer = setTimeout(done, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        fail(stopped(signal));
-      },
-      { once: true },
-    );
-  });
+async function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw stopped(signal);
+  if (ms <= 0) return;
+  try {
+    await delay(ms, undefined, { signal });
+  } catch (error) {
+    if (signal?.aborted) throw stopped(signal);
+    throw error;
+  }
 }
 
 /** 这次调用被调用方中止。 */

@@ -1,5 +1,10 @@
 import { openaiModelPort, type SendRequest } from './openai-model-port';
-import { ModelCallError, type ModelAccess, type ModelCallOptions } from './model-port';
+import {
+  ModelCallError,
+  type ModelAccess,
+  type ModelCallOptions,
+  type StreamDelta,
+} from './model-port';
 
 const BASE_URL = 'https://model.example.test/v1';
 
@@ -41,6 +46,11 @@ function toolAnswer(name: string, args: string): string {
 }
 
 const TOOL = { name: 'submit', description: '交这次的答案', parameters: { type: 'object' } };
+
+/** 推出来的每一段正文。只看正文那一头的用例看它，思考那一路不算在里头。 */
+function textsOf(deltas: readonly StreamDelta[]): string[] {
+  return deltas.filter((one) => one.channel === 'content').map((one) => one.text);
+}
 
 /** 一次收发都没发出去的记录；断言 URL、头、请求体时看它。 */
 interface Sent {
@@ -84,20 +94,45 @@ function cutOffSend(status = 200): SendRequest {
 }
 
 /** 流里的一段，包成 OpenAI 那种形状。 */
-function chunkOf(text: string): string {
+function chunkOf(delta: Record<string, unknown>, finishReason: string | null = null): string {
   const chunk = {
     id: 'x',
     object: 'chat.completion.chunk',
     created: 0,
     model: '用例模型',
-    choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
   return `data: ${JSON.stringify(chunk)}\n\n`;
 }
 
-/** 造一段正常的流式答复，每段正文一片。 */
-function sseSend(...deltas: string[]): SendRequest {
-  const body = deltas.map(chunkOf).join('') + 'data: [DONE]\n\n';
+/** 正文那一片。 */
+function said(text: string): string {
+  return chunkOf({ content: text });
+}
+
+/** 思考那一片：跟正文是两条通道，走不走工具都可能带着它。 */
+function thought(text: string): string {
+  return chunkOf({ reasoning_content: text });
+}
+
+/** 工具参数那一片：头一片带着工具名，之后每片只续参数。 */
+function calling(args: string, name?: string): string {
+  return chunkOf({
+    tool_calls: [
+      { index: 0, function: name === undefined ? { arguments: args } : { name, arguments: args } },
+    ],
+  });
+}
+
+/** 一段流式的正文：给什么片就推什么片，收尾带上 [DONE]。 */
+function sseBody(...pieces: string[]): string {
+  const reason = pieces.some((piece) => piece.includes('tool_calls')) ? 'tool_calls' : 'stop';
+  return pieces.join('') + chunkOf({}, reason) + 'data: [DONE]\n\n';
+}
+
+/** 造一段正常的流式答复。 */
+function sseSend(...pieces: string[]): SendRequest {
+  const body = sseBody(...pieces);
   return async () =>
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
@@ -108,7 +143,7 @@ function sseSend(...deltas: string[]): SendRequest {
  * 等读的人要下一片时才断。
  */
 function sseThenDie(text: string): SendRequest {
-  const chunk = new TextEncoder().encode(chunkOf(text));
+  const chunk = new TextEncoder().encode(said(text));
   let delivered = false;
   return async () =>
     new Response(
@@ -150,7 +185,7 @@ function sseDieBeforeContent(): SendRequest {
 
 /** 造一段头已经到了、正文再也不会结束的流：吐了一片就停在那儿，收不到 [DONE]。 */
 function sseNeverEnds(text: string): SendRequest {
-  const chunk = new TextEncoder().encode(chunkOf(text));
+  const chunk = new TextEncoder().encode(said(text));
   return async () =>
     new Response(
       new ReadableStream({
@@ -167,7 +202,7 @@ function sseNeverEnds(text: string): SendRequest {
  * 真网络里读到一半被中止走的就是这条：读的人拿到的是中止本身，不是「流正常结束」。
  */
 function sseDiesOnAbort(text: string): SendRequest {
-  const chunk = new TextEncoder().encode(chunkOf(text));
+  const chunk = new TextEncoder().encode(said(text));
   return async (_url, init) =>
     new Response(
       new ReadableStream({
@@ -203,6 +238,23 @@ async function failureOf(port: ReturnType<typeof openaiModelPort>, call?: ModelC
 }
 
 describe('OpenAI 兼容模型端口', () => {
+  it.each(['length', 'content_filter'])('非流式也拒绝被 %s 截断的正文', async (reason) => {
+    const { send } = fakeSend(
+      200,
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: '还没说完' },
+            finish_reason: reason,
+          },
+        ],
+      }),
+    );
+    await expect(openaiModelPort({ fetch: send }).generate(REQUEST, ACCESS)).rejects.toMatchObject({
+      code: 'invalid_output',
+    });
+  });
+
   describe('正常收发', () => {
     it('取第一条 choice 的正文交出去', async () => {
       const { send } = fakeSend(200, answer('我坐 3 号，先听前面的。'));
@@ -247,7 +299,7 @@ describe('OpenAI 兼容模型端口', () => {
       });
     });
 
-    it('给了工具就带上 tools 与点名那一个的 tool_choice', async () => {
+    it('只提供一个工具并用 required 提交，兼容开启思考的 Kimi', async () => {
       const { send, sent } = fakeSend(200, toolAnswer('submit', '{"targetId":"p2"}'));
 
       await openaiModelPort({ fetch: send }).generate({ ...REQUEST, tool: TOOL }, ACCESS);
@@ -263,9 +315,29 @@ describe('OpenAI 兼容模型端口', () => {
             },
           },
         ],
-        // 点名那一个：只给 tools 的话模型仍可能不调它，改成写一段正文。
-        tool_choice: { type: 'function', function: { name: 'submit' } },
+        tool_choice: 'required',
       });
+    });
+
+    it.each([false, true])('不接受强制工具的端点按声明使用 auto，流式=%s', async (streaming) => {
+      const { send, sent } = fakeSend(
+        200,
+        streaming
+          ? sseBody(calling('{"value":true}', 'submit'))
+          : toolAnswer('submit', '{"value":true}'),
+        streaming ? { 'content-type': 'text/event-stream' } : {},
+      );
+      const capability = { reasoningOff: null, toolChoice: 'auto' as const };
+
+      const result = await openaiModelPort({ fetch: send }).generate(
+        { ...REQUEST, tool: TOOL },
+        { ...ACCESS, capability },
+        streaming ? { onDelta: () => undefined } : {},
+      );
+
+      expect(bodyOf(sent)).toMatchObject({ tool_choice: 'auto' });
+      expect(bodyOf(sent)).not.toHaveProperty('thinking');
+      expect(result.toolCall).toEqual({ name: 'submit', arguments: '{"value":true}' });
     });
 
     it('走工具时答案从 tool_calls 取，正文空着也不算这次没拿到', async () => {
@@ -364,13 +436,31 @@ describe('OpenAI 兼容模型端口', () => {
   });
 
   describe('流式', () => {
+    it.each(['', 'data: [DONE]\n\n'])('缺少结束原因时不把半句正文当作成功：%s', async (ending) => {
+      const { send } = fakeSend(200, said('还没说完') + ending, {
+        'content-type': 'text/event-stream',
+      });
+      await expect(
+        openaiModelPort({ fetch: send }).generate(REQUEST, ACCESS, { onDelta: () => {} }),
+      ).rejects.toMatchObject({ code: 'transient', partialOutput: true });
+    });
+
+    it.each(['length', 'content_filter'])('拒绝被 %s 截断的输出', async (reason) => {
+      const { send } = fakeSend(200, said('半句话') + chunkOf({}, reason) + 'data: [DONE]\n\n', {
+        'content-type': 'text/event-stream',
+      });
+      await expect(
+        openaiModelPort({ fetch: send }).generate(REQUEST, ACCESS, { onDelta: () => {} }),
+      ).rejects.toMatchObject({ code: 'invalid_output' });
+    });
+
     /**
      * 跑一次流式，把抛出来的分类取回来；没抛就是用例自己写错了。
      * 收到每一段先记进 deltas，再交给用例自己的回调——要趁着吐字的那一下喊停的用例靠它。
      */
     async function streamFailureOf(
       port: ReturnType<typeof openaiModelPort>,
-      deltas: string[],
+      deltas: StreamDelta[],
       call: ModelCallOptions = {},
     ) {
       const { onDelta } = call;
@@ -389,27 +479,144 @@ describe('OpenAI 兼容模型端口', () => {
     }
 
     it('收到一段交出去一段，返回值是拼起来的全文', async () => {
-      const port = openaiModelPort({ fetch: sseSend('我坐', ' 3 号，', '先听前面的。') });
-      const deltas: string[] = [];
+      const port = openaiModelPort({
+        fetch: sseSend(said('我坐'), said(' 3 号，'), said('先听前面的。')),
+      });
+      const deltas: StreamDelta[] = [];
 
       const full = await port.generate(REQUEST, ACCESS, {
         onDelta: (delta) => deltas.push(delta),
       });
 
-      expect(deltas).toEqual(['我坐', ' 3 号，', '先听前面的。']);
+      // 交出去的是到目前写成的全文而不是增量：丢一段、乱序一段都不影响那头照着替换。
+      expect(deltas).toEqual([
+        { channel: 'content', text: '我坐' },
+        { channel: 'content', text: '我坐 3 号，' },
+        { channel: 'content', text: '我坐 3 号，先听前面的。' },
+      ]);
       expect(full).toEqual({ content: '我坐 3 号，先听前面的。', toolCall: null, reasoning: null });
     });
 
-    it('流式与工具一起给当场抛，一个请求都不发', async () => {
-      const { send, sent } = fakeSend(200, answer('好'));
+    it('思考与正文各走各的通道，互不搅在一起', async () => {
+      const port = openaiModelPort({
+        fetch: sseSend(thought('3 号'), thought('有点急。'), said('我坐 3 号。')),
+      });
+      const deltas: StreamDelta[] = [];
 
-      const error = await openaiModelPort({ fetch: send })
-        .generate({ ...REQUEST, tool: TOOL }, ACCESS, { onDelta: () => {} })
-        .catch((thrown: unknown) => thrown);
+      await port.generate(REQUEST, ACCESS, { onDelta: (delta) => deltas.push(delta) });
 
-      // 走工具时没有正文可推，这么给是调用方那头的口子接错了，重试也不会有别的结果。
-      expect((error as ModelCallError).code).toBe('fatal');
-      expect(sent).toHaveLength(0);
+      expect(deltas).toEqual([
+        { channel: 'reasoning', text: '3 号', thinkingMs: expect.any(Number) },
+        { channel: 'reasoning', text: '3 号有点急。', thinkingMs: expect.any(Number) },
+        { channel: 'content', text: '我坐 3 号。', thinkingMs: expect.any(Number) },
+      ]);
+    });
+
+    it.each([false, true])('推理计时在正文或工具参数开始时停止，工具=%s', async (tool) => {
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(1000);
+      const port = openaiModelPort({
+        fetch: sseSend(
+          thought('思考'),
+          tool ? calling('{"value":', 'submit') : said('答案'),
+          tool ? calling('true}') : said('正文继续'),
+        ),
+      });
+      try {
+        const full = await port.generate(tool ? { ...REQUEST, tool: TOOL } : REQUEST, ACCESS, {
+          onDelta: (delta) => {
+            clock.mockReturnValue(delta.channel === 'reasoning' ? 4000 : 9000);
+          },
+        });
+        expect(full.thinkingMs).toBe(3000);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it('走工具也照样能流：正文那一头一片都没有，也不报「正文是空的」', async () => {
+      const { send, sent } = fakeSend(200, sseBody(calling('{}', 'submit')), {
+        'content-type': 'text/event-stream',
+      });
+      const deltas: StreamDelta[] = [];
+
+      const full = await openaiModelPort({ fetch: send }).generate(
+        { ...REQUEST, tool: TOOL },
+        ACCESS,
+        { onDelta: (delta) => deltas.push(delta) },
+      );
+
+      // 流式与工具不是互斥的两条路：这一问照样走流，只是正文那一头本来就是空的。
+      expect(bodyOf(sent)).toHaveProperty('stream', true);
+      expect(deltas).toEqual([]);
+      // 正文空着本来就该算数，拦下来只会白重试三次还是同一个结果。
+      expect(full).toEqual({
+        content: '',
+        toolCall: { name: 'submit', arguments: '{}' },
+        reasoning: null,
+      });
+    });
+
+    it('带工具的流里，思考在工具参数之前到，推得出去', async () => {
+      const port = openaiModelPort({
+        fetch: sseSend(thought('先查 3 号。'), calling('{"seatNo"', 'submit'), calling(':3}')),
+      });
+      const deltas: StreamDelta[] = [];
+
+      const full = await port.generate({ ...REQUEST, tool: TOOL }, ACCESS, {
+        onDelta: (delta) => deltas.push(delta),
+      });
+
+      // 工具参数拼到收尾才交出去，中途不往外推：半截 JSON 没有可读的东西。
+      expect(deltas).toEqual([
+        { channel: 'reasoning', text: '先查 3 号。', thinkingMs: expect.any(Number) },
+      ]);
+      expect(full).toEqual({
+        content: '',
+        toolCall: { name: 'submit', arguments: '{"seatNo":3}' },
+        reasoning: '先查 3 号。',
+        thinkingMs: expect.any(Number),
+      });
+    });
+
+    it('带工具的流里只有工具参数，不报「正文是空的」', async () => {
+      const port = openaiModelPort({ fetch: sseSend(calling('{}', 'submit')) });
+
+      const full = await port.generate({ ...REQUEST, tool: TOOL }, ACCESS, { onDelta: () => {} });
+
+      // 正文空着本来就该算数：答案在参数那一头，拦下来只会白重试三次还是同一个结果。
+      expect(full).toEqual({
+        content: '',
+        toolCall: { name: 'submit', arguments: '{}' },
+        reasoning: null,
+      });
+    });
+
+    it('带工具的流里工具参数一片都没来，归 transient', async () => {
+      const port = openaiModelPort({ fetch: sseSend(thought('想好了。')) });
+
+      const error = await streamFailureOf(port, [], {});
+      expect(error.code).toBe('transient');
+    });
+
+    it('拼出来的工具参数与一次收完那条路径对同一份报文一致', async () => {
+      const args = '{"seatNo":3,"reason":"先听前面的"}';
+      const port = openaiModelPort({
+        fetch: sseSend(
+          calling('{"seatNo"', 'submit'),
+          calling(':3,"reason":"先听'),
+          calling('前面的"}'),
+        ),
+      });
+
+      const streamed = await port.generate({ ...REQUEST, tool: TOOL }, ACCESS, {
+        onDelta: () => {},
+      });
+      const whole = await openaiModelPort({
+        fetch: fakeSend(200, toolAnswer('submit', args)).send,
+      }).generate({ ...REQUEST, tool: TOOL }, ACCESS);
+
+      expect(streamed).toEqual(whole);
+      expect(streamed.toolCall).toEqual({ name: 'submit', arguments: args });
     });
 
     it('不传回调就不下发 stream，走的还是一次收完', async () => {
@@ -422,11 +629,11 @@ describe('OpenAI 兼容模型端口', () => {
 
     it('吐到一半断了，错上标着已经吐过字', async () => {
       const port = openaiModelPort({ fetch: sseThenDie('半句') });
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
 
       const error = await streamFailureOf(port, deltas);
 
-      expect(deltas).toEqual(['半句']);
+      expect(textsOf(deltas)).toEqual(['半句']);
       expect(error.code).toBe('transient');
       // 这半句调用方已经拿到手了，重发就是把两段话接在一起。
       expect(error.partialOutput).toBe(true);
@@ -434,7 +641,7 @@ describe('OpenAI 兼容模型端口', () => {
 
     it('成了流又一个字没吐就断，归 transient', async () => {
       const port = openaiModelPort({ fetch: sseDieBeforeContent() });
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
 
       const error = await streamFailureOf(port, deltas);
 
@@ -451,12 +658,12 @@ describe('OpenAI 兼容模型端口', () => {
     });
 
     it('流里只有空白分片，也算吐过字了，重发会接在它后面', async () => {
-      const port = openaiModelPort({ fetch: sseSend('\n', '  ') });
-      const deltas: string[] = [];
+      const port = openaiModelPort({ fetch: sseSend(said('\n'), said('  ')) });
+      const deltas: StreamDelta[] = [];
 
       const error = await streamFailureOf(port, deltas);
 
-      expect(deltas).toEqual(['\n', '  ']);
+      expect(textsOf(deltas)).toEqual(['\n', '\n  ']);
       expect(error.code).toBe('transient');
       // 一个字有用的都没有，但调用方手里确实已经拿到一段了。
       expect(error.partialOutput).toBe(true);
@@ -464,19 +671,19 @@ describe('OpenAI 兼容模型端口', () => {
 
     it('分片里没有 choices 键也接着往下读', async () => {
       // 有些网关会推一段只有 usage 的分片，SDK 原样交出来，choices 是 undefined。
-      const body =
-        `data: ${JSON.stringify({ usage: { prompt_tokens: 3 } })}\n\n` +
-        chunkOf('我坐') +
-        'data: [DONE]\n\n';
+      const body = sseBody(
+        `data: ${JSON.stringify({ usage: { prompt_tokens: 3 } })}\n\n`,
+        said('我坐'),
+      );
       const send: SendRequest = async () =>
         new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
       const full = await openaiModelPort({ fetch: send }).generate(REQUEST, ACCESS, {
         onDelta: (delta) => deltas.push(delta),
       });
 
-      expect(deltas).toEqual(['我坐']);
+      expect(textsOf(deltas)).toEqual(['我坐']);
       expect(full).toEqual({ content: '我坐', toolCall: null, reasoning: null });
     });
 
@@ -490,7 +697,7 @@ describe('OpenAI 兼容模型端口', () => {
 
     it('正文拖着不结束，到截止时间当场中止', async () => {
       const port = openaiModelPort({ fetch: sseNeverEnds('我坐'), timeoutMs: 20 });
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
 
       const error = await streamFailureOf(port, deltas);
 
@@ -499,13 +706,13 @@ describe('OpenAI 兼容模型端口', () => {
       // 中止时 SDK 是把迭代就地收尾，不抛错：这条不拦就会当成「答到一半就结束了」的正常答复。
       expect(error.message).toContain('超时');
       // 已经交出去的那半句调用方拿到手了，重发得另做打算。
-      expect(deltas).toEqual(['我坐']);
+      expect(textsOf(deltas)).toEqual(['我坐']);
       expect(error.partialOutput).toBe(true);
     });
 
     it('流到一半调用方喊停，归 deadline 而不是「读到一半断了」', async () => {
       const stopping = new AbortController();
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
 
       const error = await streamFailureOf(
         openaiModelPort({ fetch: sseNeverEnds('我坐') }),
@@ -515,12 +722,12 @@ describe('OpenAI 兼容模型端口', () => {
 
       // 被喊停的流和半路断掉的流长得一样，判据只能取信号：分不清就会被当成「这次没读完」，重发一遍。
       expect(error.code).toBe('deadline');
-      expect(deltas).toEqual(['我坐']);
+      expect(textsOf(deltas)).toEqual(['我坐']);
     });
 
     it('中止是以读报错的形式冒出来的，也归 deadline', async () => {
       const stopping = new AbortController();
-      const deltas: string[] = [];
+      const deltas: StreamDelta[] = [];
 
       const pending = streamFailureOf(openaiModelPort({ fetch: sseDiesOnAbort('我坐') }), deltas, {
         signal: stopping.signal,
@@ -533,7 +740,7 @@ describe('OpenAI 兼容模型端口', () => {
       expect(error.code).toBe('deadline');
       expect(error.message).toContain('被中止');
       expect(error.partialOutput).toBe(true);
-      expect(deltas).toEqual(['我坐']);
+      expect(textsOf(deltas)).toEqual(['我坐']);
     });
   });
 

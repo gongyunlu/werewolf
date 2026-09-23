@@ -3,12 +3,12 @@ import type { ModelCapability } from './model-capability';
 /**
  * 模型调用的失败分类，决定调用方该不该重试。
  * transient 网络或限流、可以再来；invalid_output 输出不合结构、重采一次有机会；
- * circuit_open 本地熔断、等一会儿；fatal 重试也没用；deadline 阶段超期；
+ * fatal 重试也没用；deadline 阶段超期；
  * budget_exhausted 尝试次数用尽。
  * 具体哪些错误码归哪一类要等真实端点校准，这份类型先只定取值。
  */
 export type ModelFailureCode =
-  'transient' | 'invalid_output' | 'circuit_open' | 'fatal' | 'deadline' | 'budget_exhausted';
+  'transient' | 'invalid_output' | 'fatal' | 'deadline' | 'budget_exhausted';
 
 /** 失败时除错因之外还要往下传的东西。 */
 export interface ModelCallErrorOptions extends ErrorOptions {
@@ -87,6 +87,8 @@ export interface ModelRequest {
 }
 
 export interface ModelResponse {
+  /** 首个推理片段到开始输出答案的时长；非流式调用无法测量。 */
+  thinkingMs?: number;
   /** 模型原话。走工具时是空串——答案在 toolCall 那一头。 */
   content: string;
   /** 走工具交上来的那份参数，原样一串 JSON 文本；没走工具就是 null。 */
@@ -98,13 +100,24 @@ export interface ModelResponse {
   reasoning: string | null;
 }
 
+/** 流式吐出来的一段。两段正文各有各的通道，走工具时只有思考那一头有东西。 */
+export interface StreamDelta {
+  thinkingMs?: number;
+  /** 思考是模型自己那段推理，正文是它交出来的话；两者各走各的，不交错。 */
+  channel: 'reasoning' | 'content';
+  text: string;
+}
+
 /** 一次调用的可选口子。一次调用一个，不进端口的构造参数。 */
 export interface ModelCallOptions {
   /**
    * 给了就走流式：收到一段交出去一段，返回值仍是拼起来的全文；不给就一次收完。
    * 合成一个方法是为了让调用方不用分辨手里这个端口是哪一种。
+   *
+   * 两个通道都从这儿走，工具参数不从这儿走——那串 JSON 推到一半没有可读的东西。
+   * 所以走工具的那几问只会收到 reasoning；端点关着思考时一段都收不到。
    */
-  onDelta?: (delta: string) => void;
+  onDelta?: (delta: StreamDelta) => void;
   /** 调用方中止这次调用。已经吐出去的字收不回来，会带着 partialOutput 抛。 */
   signal?: AbortSignal;
   /** 这一次的上限毫秒数，不给就用端口自己的。 */

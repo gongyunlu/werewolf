@@ -1,4 +1,5 @@
 import { loadEnv } from '../config/env';
+import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { modelRuntimeOf, promptSourceOf } from './from-env';
 
 const ENDPOINT = 'https://model.example.test/v1';
@@ -49,16 +50,16 @@ describe('环境变量契约', () => {
 
 describe('按环境变量接线', () => {
   describe('提示词源', () => {
-    it('凭据空着也给一份源，取的时候才报没配', async () => {
+    it('凭据空着直接使用本地提示词', async () => {
       const source = promptSourceOf(BARE);
 
-      await expect(source.load('发牌')).rejects.toThrow('没配 LANGFUSE_PUBLIC_KEY');
+      expect(source).toBe(LOCAL_TURN_PROMPTS);
     });
 
     it('只配了一个 key 也按没配处理，不去拿半个身份试', async () => {
       const source = promptSourceOf(envOf({ LANGFUSE_PUBLIC_KEY: 'pk-用例' }));
 
-      await expect(source.load('发牌')).rejects.toThrow('没配 LANGFUSE_PUBLIC_KEY');
+      expect(source).toBe(LOCAL_TURN_PROMPTS);
     });
   });
 
