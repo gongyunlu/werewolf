@@ -11,12 +11,67 @@ datasource db {
   provider = "postgresql"
 }
 
-// 一局对局的档案：哪块板子、分出了什么胜负。
+// 一个参赛者的持久身份：叫什么、用哪个模型、从哪接入。坐哪一格由开局那份阵容定，不在这儿。
+model Agent {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique @db.VarChar(64)
+
+  // 默认型号。开局时把这一刻的值冻进阵容，改这里不影响已经在跑的对局。
+  modelName String  @map("model_name") @db.VarChar(64)
+  // 接入端点。空着表示用环境变量那一套默认接入。
+  baseUrl   String? @map("base_url") @db.VarChar(512)
+  // 自带密钥的密文，只写不读，任何读接口都不返回它。
+  apiKeyCiphertext String? @map("api_key_ciphertext") @db.Text
+  // 密钥末四位，只为了在界面上认出配的是哪一把。
+  apiKeyHint       String? @map("api_key_hint") @db.VarChar(4)
+
+  // 分类标记，按它筛人用。
+  tag String? @db.VarChar(64)
+  // 停用即软删：停用的不再能开局，历史对局里那份阵容快照照旧算数。
+  isActive Boolean @default(true) @map("is_active")
+  notes    String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  memories AgentMemory[]
+
+  @@map("agents")
+}
+
+// 一个 agent 的人设与策略。整批替换，不单条增删；(agent, type, sort) 就是这条的身份。
+model AgentMemory {
+  agentId String @map("agent_id") @db.Uuid
+  // persona 或 strategy，取值见 shared 的 AGENT_MEMORY_TYPES。
+  type    String @db.VarChar(16)
+  // 注入顺序，也是它在面板里的位置。
+  sort    Int    @db.SmallInt
+
+  title String @db.VarChar(64)
+  body  String @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, type, sort])
+  @@map("agent_memories")
+}
+
+// 一局对局的档案：哪块板子、排到哪儿了、分出了什么胜负。
 model Game {
   id      String  @id @db.VarChar(64)
   boardId String  @map("board_id") @db.VarChar(64)
+  // 开局那一刻的阵容：哪一格坐着谁、用哪个型号、从哪接入。冻在这儿，中途改 agent 不影响这一局。
+  // 密钥不进这里：它按 agent 现读，换钥匙当场生效，端点对不上才拦。
+  roster  Json?   @db.JsonB
   // 分出胜负时写这儿。有值就说明这局已经结束，不用再从阶段记录往下跑。
   winner  String? @db.VarChar(16)
+  // 终局局面与胜方一起写入，阶段锚点仍只用于恢复。
+  finalState Json? @map("final_state") @db.JsonB
+  // 队列上的位置：queued / running / finished / failed，取值见 shared 的 GAME_STATUSES。
+  // 只在队列跑的局会有 failed；CLI 直接跑完的那些建档就是 finished。
+  status  String  @default("queued") @db.VarChar(16)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
