@@ -1,4 +1,5 @@
 import type { SpeechSide } from './speech-order';
+import type { BlastWindow } from './day/self-destruct';
 
 /** 发言轮次：campaign 警上，campaign_pk 警上平票 PK，day 白天常规，exile_pk 放逐平票 PK。 */
 export type SpeechTurn = 'campaign' | 'campaign_pk' | 'day' | 'exile_pk';
@@ -82,10 +83,10 @@ export interface ActionProvider {
   /** 狼王出局带人；candidates 是全体存活玩家。返回 null 为不带人。 */
   wolfKingShot(wolfKingId: string, candidates: readonly string[]): Promise<string | null>;
   /**
-   * 白天自爆窗口里问一只狼要不要爆；返回 true 即自爆出局。
-   * resuming 为 true 表示这是警长竞选的续轮（第一天已经爆过一次，警徽还挂着）。
+   * 并发询问狼队，返回首个有效回答要自爆的玩家；全部不自爆时返回 null。
+   * 已裁决的窗口在恢复时复用原结果，其他请求尽量取消并收尾。
    */
-  wolfBlast(wolfId: string, resuming: boolean): Promise<boolean>;
+  chooseBlaster(wolfIds: readonly string[], window: BlastWindow): Promise<string | null>;
   /**
    * 白狼王自爆带人；candidates 是存活玩家去掉他自己，返回 null 为不带人。
    * 他已是最后一狼时不该被问到，那样的一问没有答案可言。

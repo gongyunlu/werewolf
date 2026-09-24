@@ -479,6 +479,7 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
       }
       metrics.durationMs = performance.now() - started;
       metrics.thinkingMs = response.thinkingMs ?? null;
+      call.onResponse?.(response);
       await complete?.finish({ ...metrics, status: 'succeeded', failureCode: null });
       return response;
     },

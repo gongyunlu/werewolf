@@ -12,7 +12,8 @@ import { EVENT_KINDS, type EventKind } from '../store/events';
 import type { GameStores } from '../store/stores';
 import { playerOf, seatIndexOf, turnContextOf } from './context';
 import { decisionShape, type DecisionShapeName, type DecisionShapes } from './decisions';
-import { runActionGraph, type TurnOutcome } from './graph';
+import { runActionGraph, type ActionControl, type TurnOutcome } from './graph';
+import { chooseBlaster } from './blast';
 import { ledger, type Ledger } from './ledger';
 import { presetOf } from './presets';
 import { actionOrdinals, type ActionRequest, type TurnRuntime } from './request';
@@ -58,6 +59,8 @@ interface AskInput<K extends DecisionShapeName> {
   extra?: readonly string[];
   /** 答完之后往台账里记什么；这一次不留痕就返回 null。 */
   fact?: (value: DecisionShapes[K]) => FactRecord | null;
+  actionOrdinal?: number;
+  control?: ActionControl;
 }
 
 /** 一条要进台账的事实：属于哪一类、正文，以及它记下那一刻谁看得到。 */
@@ -290,7 +293,12 @@ export function modelActions(
     key: string,
     remembered: StoredAction | null,
     ledgerSeq: number,
+    control?: ActionControl,
   ): Promise<TurnOutcome> {
+    const generated = control?.generated;
+    if (generated?.completion && generated.values.sourceCallId) {
+      await stores.asked.finishCall(generated.values.sourceCallId, generated.completion);
+    }
     if (remembered) {
       // 落进去的就是这次行动交出去的原物，认领回它的类型而已。
       if (remembered.status === 'done') {
@@ -312,6 +320,7 @@ export function modelActions(
     const outcome = await runActionGraph(logged(key), request, {
       saver: stores.checkpoints,
       resume: remembered?.status === 'running',
+      control,
     });
     await stores.actions.finish(key, outcome);
     return outcome;
@@ -335,7 +344,7 @@ export function modelActions(
       antidoteAllowed: input.antidoteAllowed,
     });
     const scope = { gameId: state.gameId, phaseInstanceId: state.phaseInstanceId };
-    const actionOrdinal = ordinal(scope, input.actionType, input.actorId);
+    const actionOrdinal = input.actionOrdinal ?? ordinal(scope, input.actionType, input.actorId);
     // 先算出行动键，按它把记录里那一行取回来：题面要的是「问出去那一刻」的台账，不是此刻这份。
     const key = actionKey(scope, input.actionType, input.actorId, actionOrdinal);
     const remembered = await stores.actions.find(key);
@@ -359,7 +368,7 @@ export function modelActions(
       schema: shape.schema,
     };
 
-    const outcome = await once(request, key, remembered, facts.lastSeq());
+    const outcome = await once(request, key, remembered, facts.lastSeq(), input.control);
     taken.push(outcome);
 
     // 形状已经由 schema 卡过，认领只是把 unknown 收回形状名对应的那个类型。
@@ -578,17 +587,46 @@ export function modelActions(
       });
     },
 
-    // 自爆也不进台账，理由同投票：一轮窗口并发问完所有狼，答「爆」的不止一只，真爆的只有座位最靠前那只。
-    // 谁真出局了看局面里的出局名单，那份是权威的。
-    async wolfBlast(wolfId, resuming) {
-      return ask({
-        actionType: ACTION_TYPES.WOLF_EXPLODE,
-        actorId: wolfId,
-        task: resuming
-          ? '决定是否自爆。自爆会出局并使警徽流失；完成尚未处理的死讯和技能结算后入夜。'
-          : '决定是否自爆。自爆会出局并跳过当天剩余的发言和放逐；完成尚未处理的死讯和技能结算后入夜。',
-        shape: 'yesOrNo',
-      });
+    async chooseBlaster(wolfIds, window) {
+      const state = stateNow();
+      const scope = { gameId: state.gameId, phaseInstanceId: state.phaseInstanceId };
+      // 恢复跳过窗口也要消耗序号，后面的 PK 才不会读到前一轮行动。
+      const ordinals = new Map(
+        wolfIds.map((id) => [id, ordinal(scope, ACTION_TYPES.WOLF_EXPLODE, id)]),
+      );
+      const resuming = window === 'campaign_resume' || window === 'campaign_resume_pk';
+      const result = await chooseBlaster(
+        stores.checkpoints,
+        JSON.stringify([state.gameId, state.phaseInstanceId, 'blast', window]),
+        wolfIds,
+        (wolfId, control) =>
+          ask({
+            actionType: ACTION_TYPES.WOLF_EXPLODE,
+            actorId: wolfId,
+            actionOrdinal: ordinals.get(wolfId),
+            control,
+            task: resuming
+              ? '决定是否自爆。自爆会出局并使警徽流失；完成尚未处理的死讯和技能结算后入夜。'
+              : '决定是否自爆。自爆会出局并跳过当天剩余的发言和放逐；完成尚未处理的死讯和技能结算后入夜。',
+            shape: 'yesOrNo',
+          }),
+      );
+      const replayed = await replayingKeys();
+      const keys = new Set(
+        wolfIds.flatMap((id) => {
+          const key = actionKey(scope, ACTION_TYPES.WOLF_EXPLODE, id, ordinals.get(id)!);
+          return replayed.delete(key) ? [key] : [];
+        }),
+      );
+      if (keys.size > 0) {
+        const saved = await stores.actions.list(state.gameId);
+        taken.push(
+          ...saved
+            .filter((action) => keys.has(action.actionKey) && action.status === 'done')
+            .map((action) => action.outcome as TurnOutcome),
+        );
+      }
+      return result;
     },
 
     async whiteWolfTake(whiteWolfId, candidates) {

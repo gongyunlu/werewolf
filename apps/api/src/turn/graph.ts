@@ -11,9 +11,9 @@ import { randomUUID } from 'node:crypto';
 import type { ActionStep } from '@werewolf/shared';
 import { z } from 'zod';
 import type { ModelAccess, ModelPort, ModelTool, StreamDelta } from '../llm/model-port';
-import { InvalidOutputError } from '../llm/model-port';
+import { InvalidOutputError, ModelCallError } from '../llm/model-port';
 import type { ModelResponse } from '../llm/model-port';
-import type { CallIdentity } from '../llm/observation';
+import type { CallCompletion, CallIdentity } from '../llm/observation';
 import { toolOf } from './decisions';
 import { ACTION_PRESETS } from './presets';
 import {
@@ -64,10 +64,29 @@ const TurnState = new StateSchema({
 
 type TurnStateValue = typeof TurnState.State;
 
+/** 生成节点已经校验的答复，可随窗口裁决保存，用于完成被中断的赢家行动。 */
+export type GeneratedTurn = Pick<
+  TurnStateValue,
+  | 'sourceCallId'
+  | 'draft'
+  | 'decision'
+  | 'prompts'
+  | 'retries'
+  | 'reasoning'
+  | 'thinkingMs'
+  | 'totalThinkingMs'
+>;
+
+export interface AcceptedGeneration {
+  values: GeneratedTurn;
+  completion?: CallCompletion;
+}
+
 // 模型接入与校验器只存在于本次调用，不写入检查点。
 const TurnContext = z.object({
   runtime: z.custom<TurnRuntime>(),
   request: z.custom<ActionRequest>(),
+  control: z.custom<ActionControl>().optional(),
 });
 type TurnConfig = LangGraphRunnableConfig<z.infer<typeof TurnContext>>;
 
@@ -139,13 +158,20 @@ export async function ask(
   tool?: ModelTool,
   stream?: (chunk: StreamChunk) => void,
   identity?: Omit<CallIdentity, 'callId'>,
+  signal?: AbortSignal,
+  onResponse?: (answer: Answer) => void,
 ): Promise<Answer> {
+  if (signal?.aborted) throw new ModelCallError('deadline', '这次调用已被中止');
   const callId = randomUUID();
   const response = await port.generate(
     { system: turn.system.text, prompt: turn.user.text, tool },
     access,
     // 走工具的那几问只会收到思考：正文那一头本来就是空的。
     {
+      signal,
+      ...(onResponse
+        ? { onResponse: (received: ModelResponse) => onResponse(answerOf(received, callId, tool)) }
+        : {}),
       identity: {
         executionId: randomUUID(),
         step: 'summary',
@@ -156,7 +182,10 @@ export async function ask(
       ...(stream ? { onDelta: (delta: StreamDelta) => stream({ callId, ...delta }) } : {}),
     },
   );
-  // 走工具时答案在参数那一头、正文是空的；没给工具时才是正文。
+  return answerOf(response, callId, tool);
+}
+
+function answerOf(response: ModelResponse, callId: string, tool?: ModelTool): Answer {
   return {
     callId,
     completeObservation: response.completeObservation,
@@ -262,6 +291,13 @@ export async function askParsed<T>(
   askOnce: (note: string | null, formatAttempt: number) => Promise<Answer>,
   parse: (content: string) => T,
   noteOf: (raw: string, diagnosis: string) => string,
+  onParsed?: (
+    value: T,
+    answer: Answer,
+    retries: number,
+    thinkingMs?: number,
+    completion?: CallCompletion,
+  ) => void,
 ): Promise<{
   callId?: string;
   content: string;
@@ -299,7 +335,17 @@ export async function askParsed<T>(
       continue;
     }
     // 存储失败不属于格式错误，不能因此再问一次模型。
-    await answer.completeObservation?.('accepted');
+    // 赢家证据带上原调用收尾值，写库失败后也能复用原耗时补写。
+    if (onParsed) {
+      let notified = false;
+      await answer.completeObservation?.('accepted', (completion) => {
+        notified = true;
+        onParsed(parsed, answer, attempt, thinkingMs, completion);
+      });
+      if (!notified) onParsed(parsed, answer, attempt, thinkingMs);
+    } else {
+      await answer.completeObservation?.('accepted');
+    }
     return {
       ...(answer.callId ? { callId: answer.callId } : {}),
       content: answer.content,
@@ -382,7 +428,8 @@ async function generateNode(
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
   const identity = executionIdentity('generate', config);
-  const { runtime, request } = config.context!;
+  const { runtime, request, control } = config.context!;
+  if (control?.generated) return control.generated.values;
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
   const turn = await renderGenerate(
@@ -392,26 +439,63 @@ async function generateNode(
   );
   const tool = toolFor(request);
   const stream = previewFor(request, 'generate', preview);
-  const { content, reasoning, parsed, retries, thinkingMs, callId } = await askParsed(
-    (note, formatAttempt) =>
-      ask(port, access, note === null ? turn : noted(turn, note), tool, stream, {
-        ...identity,
-        formatAttempt,
-      }),
-    (draft) => parseDecision(request, draft),
-    (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
-  );
-
-  return {
-    sourceCallId: callId ?? null,
-    draft: content,
+  const generated = (
+    parsed: unknown,
+    answer: Pick<Answer, 'callId' | 'content' | 'reasoning'>,
+    retries: number,
+    thinkingMs?: number,
+  ): GeneratedTurn => ({
+    sourceCallId: answer.callId ?? null,
+    draft: answer.content,
     decision: parsed,
     prompts: used(turn),
     retries,
-    reasoning,
+    reasoning: answer.reasoning,
     thinkingMs: thinkingMs ?? null,
     totalThinkingMs: thinkingMs ?? null,
-  };
+  });
+  const received = control
+    ? (answer: Answer) => {
+        if (answer.noToolCall) return;
+        let value: unknown;
+        try {
+          value = parseDecision(request, answer.content);
+        } catch (error) {
+          if (error instanceof InvalidOutputError) return;
+          throw error;
+        }
+        control.onAnswer(value);
+      }
+    : undefined;
+  const result = await askParsed(
+    (note, formatAttempt) =>
+      ask(
+        port,
+        access,
+        note === null ? turn : noted(turn, note),
+        tool,
+        stream,
+        {
+          ...identity,
+          formatAttempt,
+        },
+        control?.signal,
+        received,
+      ),
+    (draft) => parseDecision(request, draft),
+    (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
+    control
+      ? (value, answer, retryCount, elapsedThinking, completion) => {
+          control.onAnswer(value);
+          control.onGenerated({
+            values: generated(value, answer, retryCount, elapsedThinking),
+            completion,
+          });
+        }
+      : undefined,
+  );
+
+  return generated(result.parsed, result, result.retries, result.thinkingMs);
 }
 
 /**
@@ -622,6 +706,15 @@ export interface ActionGraphOptions {
   saver?: BaseCheckpointSaver;
   /** 上一跑断在半路、这一次接着跑完。 */
   resume?: boolean;
+  control?: ActionControl;
+}
+
+/** 单次行动的取消与正式答案回调，只在内存中传递。 */
+export interface ActionControl {
+  signal: AbortSignal;
+  onAnswer: (value: unknown) => void;
+  onGenerated: (value: AcceptedGeneration) => void;
+  generated?: AcceptedGeneration;
 }
 
 /**
@@ -647,7 +740,7 @@ export async function runActionGraph(
   const { saver, resume } = options;
   const graph = actionGraphOf(saver);
   const config = {
-    context: { runtime, request },
+    context: { runtime, request, control: options.control },
     configurable: {
       // 线程键取行动键：落库那份进度按它归档，一局里每一问各是各的。
       thread_id: actionKeyOf(request),

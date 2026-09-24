@@ -238,8 +238,8 @@ class PrismaCheckpointSaver extends BaseCheckpointSaver {
   }
 
   /**
-   * 线程键就是行动键，第一段是这一局的 id：行动图那边按行动键开线程，这里按它归档。
-   * 解不出第一段说明这条线程不是行动图开的，拿它当进度会落到别的局上。
+   * 行动图和窗口裁决图的线程键都以对局 id 开头，这里据此归档。
+   * 解不出第一段就无法确定这份进度属于哪局。
    */
   private gameIdOf(threadId: string): string {
     // 裸的对局 id 是传得错的那种：解不出 JSON 就跟解出的形状不对一样，都归到同一句话上。

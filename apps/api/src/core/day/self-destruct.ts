@@ -2,7 +2,6 @@ import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import type { ActionProvider } from '../actions';
 import { seatNames, type FlowObserver } from '../flow';
 import { inWolfChannel } from '../roles';
-import { settleActions } from '../parallel';
 import { decideWhiteWolfTake } from '../skills/white-wolf';
 import { alivePlayers, type GameState } from '../state';
 import { checkWin } from '../win';
@@ -22,8 +21,7 @@ export interface BlastResult {
 /**
  * 自爆窗口：并行问狼队频道里的存活成员要不要爆，每只狼都看不到同伴的答案。
  *
- * 多只都想爆时由座位序定谁爆——规则里没有「两只一起爆」，第一只喊出来白天就结束了，
- * 谁先返回只看延迟，不能拿它定结果。收齐一轮，任一失败即整轮失败。
+ * 首个有效回答要自爆的玩家生效，与座位无关；取消其余请求后仍等待执行和记账收尾。
  *
  * 警上自爆后，外层仍会公布尚未出局者的夜间死讯并结算死亡技能。
  * 白狼王自爆时额外带走一人；他爆完狼队就全灭的话当场就分出胜负了，轮不到带人那一步。
@@ -51,12 +49,11 @@ export async function runBlastWindow(
     text: '进入自爆窗口，狼人同时决定是否自爆。',
   });
 
-  const answers = await settleActions(
-    pack.map((wolf) =>
-      actions.wolfBlast(wolf.id, window === 'campaign_resume' || window === 'campaign_resume_pk'),
-    ),
+  const blasterId = await actions.chooseBlaster(
+    pack.map((wolf) => wolf.id),
+    window,
   );
-  const blaster = pack.find((_, index) => answers[index]);
+  const blaster = pack.find((wolf) => wolf.id === blasterId);
   if (!blaster) {
     await onFlow?.(state, { key: `${window}-blast-result`, text: '无人自爆，继续当前流程。' });
     return { state, blasted: false };

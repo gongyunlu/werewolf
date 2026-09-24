@@ -120,8 +120,8 @@ describe('模型行动提供者', () => {
     it('自爆问的是同一个形状，续轮换个说法', async () => {
       const { model, actions } = await withActions(sixPlayerState(), ['false', 'false']);
 
-      await actions.wolfBlast('p1', false);
-      await actions.wolfBlast('p1', true);
+      await actions.chooseBlaster(['p1'], 'campaign');
+      await actions.chooseBlaster(['p1'], 'campaign_resume');
 
       // 题面问的是「爆不爆」，不是「现在是什么窗口」：跟别的两态行动一样，先问再让他自己定。
       expect(decided(model)[0].prompt).toContain(
@@ -354,14 +354,9 @@ describe('模型行动提供者', () => {
       });
       const { actions, chunks } = await watching(wolves, ['false', 'false', 'false']);
 
-      // 自爆、提刀、投票这三处都是 core 那边 Promise.all 一起发出来的。
-      const asked = await Promise.all([
-        actions.wolfBlast('p1', false),
-        actions.wolfBlast('p2', false),
-        actions.wolfBlast('p3', false),
-      ]);
+      const asked = await actions.chooseBlaster(['p1', 'p2', 'p3'], 'day');
 
-      expect(asked).toEqual([false, false, false]);
+      expect(asked).toBeNull();
       expect(new Set(chunks.map((chunk) => chunk.seatNo))).toEqual(new Set([1, 2, 3]));
       expect(new Set(chunks.map((chunk) => chunk.actionKey)).size).toBe(3);
       expect(
@@ -536,7 +531,7 @@ describe('模型行动提供者', () => {
       ]);
 
       await actions.vote('exile', 'p1', ['p4', 'p5']);
-      await actions.wolfBlast('p1', false);
+      await actions.chooseBlaster(['p1'], 'day');
       await actions.speak('day', 'p3', []);
 
       expect(decided(model)[2].prompt).not.toContain('【第 1 天】');

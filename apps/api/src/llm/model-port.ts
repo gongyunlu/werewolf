@@ -1,5 +1,5 @@
 import type { ModelCapability } from './model-capability';
-import type { AttemptCompletion, CallIdentity } from './observation';
+import type { AttemptCompletion, CallCompletion, CallIdentity } from './observation';
 
 /**
  * 模型调用的失败分类，决定调用方该不该重试。
@@ -89,7 +89,10 @@ export interface ModelRequest {
 
 export interface ModelResponse {
   /** 解析结束后补写逻辑调用结果；只存在于内存，不写入图状态。 */
-  completeObservation?: (status: 'accepted' | 'invalid_output' | 'failed') => Promise<void>;
+  completeObservation?: (
+    status: 'accepted' | 'invalid_output' | 'failed',
+    beforeWrite?: (result: CallCompletion) => void,
+  ) => Promise<void>;
   /** 首个推理片段到开始输出答案的时长；非流式调用无法测量。 */
   thinkingMs?: number;
   /** 模型原话。走工具时是空串——答案在 toolCall 那一头。 */
@@ -113,6 +116,8 @@ export interface StreamDelta {
 
 /** 一次调用的可选口子。一次调用一个，不进端口的构造参数。 */
 export interface ModelCallOptions {
+  /** 完整答复收到后同步通知；请求开销仍在随后独立落库。 */
+  onResponse?: (response: ModelResponse) => void;
   identity?: CallIdentity;
   /** 适配器进入和离开一次 SDK 请求时调用，写库在 SDK 错误转换之外。 */
   startAttempt?: () => Promise<{

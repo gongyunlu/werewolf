@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { endpointOf } from './model-capability';
 import { ModelCallError } from './model-port';
-import type { CallIdentity, CallRecording } from './observation';
+import type { CallCompletion, CallIdentity, CallRecording } from './observation';
 import { callSpan, finishCall, finishRequest, requestSpan, traceIds } from './telemetry';
 import type {
   ModelAccess,
@@ -79,8 +79,10 @@ export function recordingModelPort(
       const finish = async (
         status: 'accepted' | 'invalid_output' | 'failed' | 'cancelled',
         failureCode: string | null,
+        beforeWrite?: (result: CallCompletion) => void,
       ) => {
         const result = { status, failureCode, durationMs: performance.now() - started };
+        beforeWrite?.(result);
         finishCall(span, result);
         await persist(() => recording.finish(result));
       };
@@ -109,10 +111,11 @@ export function recordingModelPort(
         });
         return {
           ...response,
-          completeObservation: (status) =>
+          completeObservation: (status, beforeWrite) =>
             finish(
               status,
               status === 'accepted' ? null : status === 'failed' ? 'internal' : status,
+              beforeWrite,
             ),
         };
       } catch (error) {

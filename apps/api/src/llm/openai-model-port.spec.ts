@@ -18,6 +18,38 @@ const ACCESS: ModelAccess = {
 
 const REQUEST = { system: '你是谁', prompt: '要你做什么' };
 
+it('完整答复在请求开销写入之前同步通知，写入完成前仍不结束调用', async () => {
+  const port = openaiModelPort({ fetch: fakeSend(200, answer('已收到')).send });
+  const order: string[] = [];
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let writing!: () => void;
+  const started = new Promise<void>((resolve) => {
+    writing = resolve;
+  });
+  const running = port.generate(REQUEST, ACCESS, {
+    onResponse: (response) => {
+      order.push(response.content);
+    },
+    startAttempt: async () => ({
+      dispatched() {},
+      async finish() {
+        order.push('开始记账');
+        writing();
+        await blocked;
+        order.push('记账完成');
+      },
+    }),
+  });
+  await started;
+  expect(order).toEqual(['已收到', '开始记账']);
+  release();
+  await running;
+  expect(order).toEqual(['已收到', '开始记账', '记账完成']);
+});
+
 /** 答复正文包成 OpenAI 那种形状。 */
 function answer(content: string): string {
   return JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] });

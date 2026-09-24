@@ -1,5 +1,5 @@
 import type { AskedPrompt } from '../llm/recording-model-port';
-import type { CallRecording } from '../llm/observation';
+import type { CallCompletion, CallRecording } from '../llm/observation';
 
 /** 落下来的一份提问：问出去的题面，以及它属于哪一次行动。 */
 export interface StoredAskedPrompt extends AskedPrompt {
@@ -14,4 +14,6 @@ export interface AskedPromptStore {
    * 每次逻辑调用一行，返回该行的观测写入口；旧题面仍可单独追加。
    */
   append(gameId: string, asked: StoredAskedPrompt): Promise<CallRecording | void>;
+  /** 用已持久化的收尾值补完原调用；已收尾的不改，不新增调用。 */
+  finishCall(callId: string, result: CallCompletion): Promise<void>;
 }

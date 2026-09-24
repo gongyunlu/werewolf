@@ -71,7 +71,7 @@ describe('自爆窗口', () => {
 
     const result = await runBlastWindow(state, 'day', actions);
 
-    // 并行就是全问一遍，没有「答是就中断」这回事。
+    // 同一窗口同时发问；模拟答案都已返回，所以三名玩家都有执行记录。
     expect(asked).toEqual(['p2', 'p4', 'p5']);
     expect(result.blasted).toBe(true);
     expect(playerOf(result.state, 'p4')).toMatchObject({
@@ -81,26 +81,30 @@ describe('自爆窗口', () => {
     });
   });
 
-  it('多只都想爆时由座位序定，不看谁先返回', async () => {
+  it('多只都想爆时首个返回的生效，与座位无关', async () => {
     const state = withRoles(makeState(6), {
       p2: ROLES.WEREWOLF,
       p4: ROLES.WEREWOLF,
       p5: ROLES.WOLF_KING,
     });
     const pack = ['p2', 'p4', 'p5'];
-    // 座位越靠后答得越快：拿先返回的那个当赢家就会挑中 p5。
+    const answers = new Map<string, (value: boolean) => void>();
     const actions = stubActions({
-      wolfBlast: async (wolfId) =>
-        new Promise((resolve) =>
-          setTimeout(() => resolve(true), (pack.length - pack.indexOf(wolfId)) * 30),
-        ),
+      wolfBlast: async (wolfId) => new Promise((resolve) => answers.set(wolfId, resolve)),
     });
 
-    const result = await runBlastWindow(state, 'day', actions);
+    const running = runBlastWindow(state, 'day', actions);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect([...answers.keys()]).toEqual(pack);
+    answers.get('p5')!(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    answers.get('p4')!(true);
+    answers.get('p2')!(true);
+    const result = await running;
 
-    expect(playerOf(result.state, 'p2').isAlive).toBe(false);
+    expect(playerOf(result.state, 'p2').isAlive).toBe(true);
     expect(playerOf(result.state, 'p4').isAlive).toBe(true);
-    expect(playerOf(result.state, 'p5').isAlive).toBe(true);
+    expect(playerOf(result.state, 'p5').isAlive).toBe(false);
   });
 
   it('没人自爆就原样交回', async () => {

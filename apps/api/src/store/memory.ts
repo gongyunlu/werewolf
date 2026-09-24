@@ -210,6 +210,11 @@ export function memoryActions(): ActionStore {
 
 export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
   return {
+    async finishCall(callId, result) {
+      const row = rows.find((item) => item.callId === callId);
+      if (!row) throw new Error('调用记录不存在');
+      if (row.status === 'started') finishCallRow(row, result);
+    },
     async append(gameId, asked) {
       if (asked.observation && rows.some((row) => row.callId === asked.observation?.callId)) {
         throw new Error('调用编号重复');

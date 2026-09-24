@@ -408,6 +408,12 @@ export function prismaSteps(client: PrismaClient): StepStore {
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
   return {
+    async finishCall(callId, result) {
+      await client.askedPrompt.updateMany({
+        where: { callId, status: 'started' },
+        data: { ...result, finishedAt: new Date() },
+      });
+    },
     async append(gameId, asked) {
       const row = await client.askedPrompt.create({
         data: {

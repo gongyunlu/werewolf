@@ -311,7 +311,7 @@ function plan(): Partial<ActionProvider> {
     witchDecision: async () => ({ kind: 'none' }),
     // 猎人挨了夜里的刀，天亮不开枪：这一格要真问一句，接着跑才接得住这一格。
     hunterShot: async () => null,
-    wolfBlast: async () => false,
+    chooseBlaster: async () => null,
     speak: async (turn, playerId) => `${turn}:${playerId}`,
     // 女巫 p3 还在就都投她；她出局了就顺着候选投第一个不是自己的人。
     vote: async (_turn, playerId, candidates) =>

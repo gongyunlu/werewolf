@@ -72,7 +72,11 @@ export function ballotOf(answers: Record<string, string | null>) {
 }
 
 /** 可局部覆盖的行动提供者，模拟玩家的决定；没覆盖的方法一律抛错，免得用例没走到预期分支也通过。 */
-export function stubActions(overrides: Partial<ActionProvider> = {}): ActionProvider {
+export function stubActions(
+  overrides: Partial<ActionProvider> & {
+    wolfBlast?: (wolfId: string, resuming: boolean) => Promise<boolean>;
+  } = {},
+): ActionProvider {
   return {
     runForSheriff: async () => notConfigured('runForSheriff'),
     withdraw: async () => notConfigured('withdraw'),
@@ -87,7 +91,20 @@ export function stubActions(overrides: Partial<ActionProvider> = {}): ActionProv
     witchDecision: async () => notConfigured('witchDecision'),
     hunterShot: async () => notConfigured('hunterShot'),
     wolfKingShot: async () => notConfigured('wolfKingShot'),
-    wolfBlast: async () => notConfigured('wolfBlast'),
+    async chooseBlaster(wolfIds, window) {
+      let winner: string | null = null;
+      const results = await Promise.allSettled(
+        wolfIds.map(async (id) => {
+          const answer = await (overrides.wolfBlast?.(
+            id,
+            window === 'campaign_resume' || window === 'campaign_resume_pk',
+          ) ?? notConfigured('wolfBlast'));
+          if (answer && winner === null) winner = id;
+        }),
+      );
+      for (const result of results) if (result.status === 'rejected') throw result.reason;
+      return winner;
+    },
     whiteWolfTake: async () => notConfigured('whiteWolfTake'),
     ...overrides,
   };
