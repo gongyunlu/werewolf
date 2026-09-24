@@ -6,6 +6,7 @@ import { GamesModule } from './games/games.module';
 import { HealthModule } from './health/health.module';
 import { QueueModule } from './queue/queue.module';
 import { TelemetryModule } from './llm/telemetry.module';
+import { ReviewModule } from './review/review.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { TelemetryModule } from './llm/telemetry.module';
     GamesModule,
     AgentsModule,
     QueueModule,
+    ReviewModule,
   ],
 })
 export class AppModule {}

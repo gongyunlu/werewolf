@@ -6,6 +6,8 @@ import { StoresModule } from '../store/stores.module';
 import { GameEventHub, REDIS_PUB, REDIS_SUB } from './game-event-hub';
 import { GAME_QUEUE } from './game-queue';
 import { GameWorker } from './game-worker';
+import { REVIEW_QUEUE } from '../review/review-queue';
+import { ReviewWorker } from '../review/review-worker';
 
 /**
  * 跑局那一层：入队、出队、把跑出来的事实推给正在看的人。
@@ -19,6 +21,7 @@ import { GameWorker } from './game-worker';
       useFactory: () => ({ connection: { url: loadEnv().REDIS_URL } }),
     }),
     BullModule.registerQueue({ name: GAME_QUEUE }),
+    BullModule.registerQueue({ name: REVIEW_QUEUE }),
   ],
   providers: [
     // 队列自己开自己的连接，这两条只给事件中转用：一条发、一条收。
@@ -26,6 +29,7 @@ import { GameWorker } from './game-worker';
     { provide: REDIS_SUB, useFactory: (): Redis => new Redis(loadEnv().REDIS_URL) },
     GameEventHub,
     GameWorker,
+    ReviewWorker,
   ],
   exports: [BullModule, GameEventHub],
 })

@@ -117,8 +117,12 @@ export function gameStatistics(
     game: data.game,
     total: costOf(data.calls),
     publicOverhead: costOf(data.calls.filter((row) => row.summaryKey !== null)),
+    reviewOverhead: costOf(data.calls.filter((row) => row.step?.startsWith('review_'))),
     unattributed: costOf(
-      data.calls.filter((row) => row.actionKey === null && row.summaryKey === null),
+      data.calls.filter(
+        (row) =>
+          row.actionKey === null && row.summaryKey === null && !row.step?.startsWith('review_'),
+      ),
     ),
     players: grouped(
       data.calls.filter((row) => row.actionKey !== null),
