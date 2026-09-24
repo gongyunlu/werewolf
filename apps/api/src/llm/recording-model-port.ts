@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto';
+import { endpointOf } from './model-capability';
+import { ModelCallError } from './model-port';
+import type { CallIdentity, CallRecording } from './observation';
+import { callSpan, finishCall, finishRequest, requestSpan, traceIds } from './telemetry';
 import type {
   ModelAccess,
   ModelCallOptions,
@@ -6,8 +11,17 @@ import type {
   ModelTool,
 } from './model-port';
 
+async function persist<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write();
+  } catch (error) {
+    throw new Error('模型观测写入失败', { cause: error });
+  }
+}
+
 /** 一次提问：题面送出去那一刻的样子。答复是另一回事，崩掉的那一问根本没有答复。 */
 export interface AskedPrompt {
+  observation?: CallIdentity & { endpointKey: string; traceId?: string; spanId?: string };
   /** 用的哪个型号：同一局换过型号的话，题面一样也不是同一问。 */
   model: string;
   system: string;
@@ -30,18 +44,82 @@ export interface AskedPrompt {
  */
 export function recordingModelPort(
   port: ModelPort,
-  record: (asked: AskedPrompt) => Promise<void>,
+  record: (asked: AskedPrompt) => Promise<CallRecording | void>,
+  scope?: { gameId: string; actionKey: string | null; summaryKey?: string },
 ): ModelPort {
   return {
     async generate(request: ModelRequest, access: ModelAccess, call: ModelCallOptions = {}) {
-      await record({
+      const started = performance.now();
+      const span =
+        scope && call.identity ? callSpan(scope.gameId, { ...scope, ...call.identity }) : undefined;
+      const recording = await record({
         model: access.model,
         system: request.system,
         prompt: request.prompt,
         tool: request.tool,
+        ...(call.identity
+          ? {
+              observation: {
+                ...call.identity,
+                endpointKey: createHash('sha256').update(endpointOf(access.baseUrl)).digest('hex'),
+                ...traceIds(span),
+              },
+            }
+          : {}),
+      }).catch((error: unknown) => {
+        finishCall(span, {
+          status: 'failed',
+          failureCode: 'storage',
+          durationMs: performance.now() - started,
+        });
+        throw error;
       });
-
-      return port.generate(request, access, call);
+      if (!recording) return port.generate(request, access, call);
+      let attemptNo = 0;
+      const finish = async (
+        status: 'accepted' | 'invalid_output' | 'failed' | 'cancelled',
+        failureCode: string | null,
+      ) => {
+        const result = { status, failureCode, durationMs: performance.now() - started };
+        finishCall(span, result);
+        await persist(() => recording.finish(result));
+      };
+      try {
+        const response = await port.generate(request, access, {
+          ...call,
+          startAttempt: async () => {
+            const number = ++attemptNo;
+            await persist(() => recording.startAttempt(number));
+            let generation: ReturnType<typeof requestSpan>;
+            return {
+              dispatched() {
+                generation = requestSpan(span, access.model, number, {
+                  ...scope,
+                  ...call.identity,
+                });
+              },
+              async finish(result) {
+                finishRequest(generation, result);
+                await persist(() =>
+                  recording.finishAttempt(number, { ...result, ...traceIds(generation) }),
+                );
+              },
+            };
+          },
+        });
+        return {
+          ...response,
+          completeObservation: (status) =>
+            finish(
+              status,
+              status === 'accepted' ? null : status === 'failed' ? 'internal' : status,
+            ),
+        };
+      } catch (error) {
+        const code = error instanceof ModelCallError ? error.code : 'internal';
+        await finish(code === 'deadline' ? 'cancelled' : 'failed', code);
+        throw error;
+      }
     },
   };
 }

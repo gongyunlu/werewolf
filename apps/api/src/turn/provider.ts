@@ -169,11 +169,18 @@ export function modelActions(
    * @param key 这一问属于哪次行动；折摘要那一问不在行动里，给 null
    * @returns 换了端口的运行环境，其余几项原样
    */
-  function logged(key: string | null): TurnRuntime {
+  function logged(key: string | null, summaryKey?: string): TurnRuntime {
     return {
       ...runtime,
-      port: recordingModelPort(runtime.port, (asked) =>
-        stores.asked.append(stateNow().gameId, { ...asked, actionKey: key }),
+      port: recordingModelPort(
+        runtime.port,
+        (asked) =>
+          stores.asked.append(stateNow().gameId, {
+            ...asked,
+            actionKey: key,
+            ...(summaryKey ? { summaryKey } : {}),
+          }),
+        { gameId: stateNow().gameId, actionKey: key, summaryKey },
       ),
     };
   }
@@ -219,7 +226,7 @@ export function modelActions(
       const channel = SUMMARY_CHANNELS[task.kind];
       if (!channel) throw new Error(`不是摘要的类别：${task.kind}`);
 
-      const items = await summarize(logged(null), {
+      const items = await summarize(logged(null, task.key), {
         day: task.day,
         channel: channel.title,
         speeches: task.speeches.map((said) => ({
@@ -578,8 +585,8 @@ export function modelActions(
         actionType: ACTION_TYPES.WOLF_EXPLODE,
         actorId: wolfId,
         task: resuming
-          ? '决定是否自爆。自爆会出局并废掉今天的竞选。'
-          : '决定是否自爆。自爆会出局，这一天剩下的环节全部跳过。',
+          ? '决定是否自爆。自爆会出局并使警徽流失；完成尚未处理的死讯和技能结算后入夜。'
+          : '决定是否自爆。自爆会出局并跳过当天剩余的发言和放逐；完成尚未处理的死讯和技能结算后入夜。',
         shape: 'yesOrNo',
       });
     },

@@ -9,7 +9,8 @@ import {
   type StoredAction,
 } from './actions';
 import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
-import type { AskedPromptStore, StoredAskedPrompt } from './asked';
+import type { AskedPromptStore } from './asked';
+import { newCallRow, newAttemptRow, finishCallRow, type CallRow } from './observations';
 import type { EventStore, StoredEvent } from './events';
 import type { GameStore, StoredGame } from './games';
 import type { StepStore } from './steps';
@@ -20,13 +21,35 @@ import type { GameStores } from './stores';
  * 落库那份的意义只在「断了再起」，一局跑完就结束的跑法不需要它。
  */
 export function memoryStores(): GameStores {
+  const games = memoryGames();
+  const actions = memoryActions();
+  const calls: CallRow[] = [];
   return {
-    games: memoryGames(),
+    games,
     agents: memoryAgents(),
     events: memoryEvents(),
-    actions: memoryActions(),
+    actions,
     steps: memorySteps(),
-    asked: memoryAsked(),
+    asked: memoryAsked(calls),
+    observations: {
+      async read(gameId) {
+        const game = await games.find(gameId);
+        if (!game) return null;
+        return structuredClone({
+          game: { gameId, status: game.status, winner: game.winner },
+          calls: calls.filter((row) => row.gameId === gameId),
+          actions: (await actions.list(gameId)).map((row) => ({
+            actionKey: row.actionKey,
+            actorId: row.actorId,
+            actionType: row.actionType,
+            status: row.status,
+            sourceCallId:
+              (row.outcome as { snapshot?: { sourceCallId?: string } } | null)?.snapshot
+                ?.sourceCallId ?? null,
+          })),
+        });
+      },
+    },
     checkpoints: new MemorySaver(),
   };
 }
@@ -185,15 +208,37 @@ export function memoryActions(): ActionStore {
   };
 }
 
-export function memoryAsked(): AskedPromptStore {
-  const byGame = new Map<string, StoredAskedPrompt[]>();
-
+export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
   return {
     async append(gameId, asked) {
-      const rows = byGame.get(gameId) ?? [];
-      // 同一问重问几遍就是几行：这里一次都不去重，跟库里那张表一个意思。
-      rows.push(asked);
-      byGame.set(gameId, rows);
+      if (asked.observation && rows.some((row) => row.callId === asked.observation?.callId)) {
+        throw new Error('调用编号重复');
+      }
+      const row = newCallRow(
+        rows.length + 1,
+        gameId,
+        asked.model,
+        asked.actionKey,
+        asked.summaryKey,
+        asked.observation,
+      );
+      rows.push(row);
+      if (!asked.observation) return;
+      return {
+        async finish(result) {
+          finishCallRow(row, result);
+        },
+        async startAttempt(attemptNo) {
+          if (row.attempts.some((item) => item.attemptNo === attemptNo))
+            throw new Error('请求尝试编号重复');
+          row.attempts.push(newAttemptRow(attemptNo));
+        },
+        async finishAttempt(attemptNo, result) {
+          const attempt = row.attempts.find((item) => item.attemptNo === attemptNo);
+          if (!attempt) throw new Error('请求尝试不存在');
+          Object.assign(attempt, result, { finishedAt: new Date() });
+        },
+      };
     },
   };
 }

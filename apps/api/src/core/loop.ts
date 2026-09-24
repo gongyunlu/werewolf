@@ -1,7 +1,8 @@
 import { DEATH_CAUSES, type Faction } from '@werewolf/shared';
 import type { ActionProvider } from './actions';
-import { seatNames, type FlowObserver } from './flow';
-import { announceDay, type NightDeath } from './day/announce';
+import type { FlowObserver } from './flow';
+import type { NightDeath } from './day/announce';
+import { runDawn } from './day/dawn';
 import { settleBadgeAfterDeaths } from './day/badge';
 import type { BallotObserver } from './vote';
 import { runDay } from './day/run-day';
@@ -12,8 +13,8 @@ import { stageRandom } from './random';
 import type { GameState } from './state';
 import { checkWin } from './win';
 
-/** 一天的四格，按这个顺序走。节点名同时是锚点认这一格的凭据，见 nodeNameOf。 */
-const STAGES = ['night', 'deathSkills', 'day', 'exileSkills'] as const;
+/** 天亮阶段保存尚未公布的夜间结果，供竞选和恢复使用。 */
+const STAGES = ['night', 'dawn', 'deathSkills', 'day', 'exileSkills'] as const;
 type StageName = (typeof STAGES)[number];
 
 /**
@@ -82,7 +83,7 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
   let state = resume?.state ?? input.state;
   // 这一轮从第几格起跑：恢复落在哪一格就从哪一格起，之后每轮都整轮走。
   let from = resume === null ? 0 : STAGES.indexOf(nodeNameOf(resume.phaseInstanceId) as StageName);
-  if (from < 0) throw new Error(`锚点不在这一天的四格上：${resume?.phaseInstanceId}`);
+  if (from < 0) throw new Error(`锚点不在这一天的流程中：${resume?.phaseInstanceId}`);
   // 认格按行里那份，做键按局面里那份，两份对不上就不是这一格的进度，接下去全错位。
   if (resume !== null && resume.state.phaseInstanceId !== resume.phaseInstanceId) {
     throw new Error(`锚点里那份局面不在这一格上：${resume.phaseInstanceId}`);
@@ -113,6 +114,7 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
   while (true) {
     /** 这一轮的死者：跑过夜就是夜里结算出来的，恢复落在天亮那一格时取自锚点。 */
     let deaths: readonly NightDeath[] = [];
+    let aborted = false;
     /** 这一轮被放逐的人，同上。 */
     let executed: readonly NightDeath[] = [];
 
@@ -125,29 +127,41 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
         onFlow,
       });
 
-      const dawn = announceDay(night.state, night.deaths);
-      await onFlow?.(dawn.state, {
-        key: 'dawn',
-        phase: 'day',
-        text: night.deaths.length
-          ? `天亮了，昨晚 ${seatNames(
-              dawn.state,
-              night.deaths.map((death) => death.playerId),
-            )} 倒牌。`
-          : '天亮了，昨晚是平安夜。',
-      });
-      const winner = checkWin(dawn.state);
-      if (winner !== null) return { state: dawn.state, winner };
-
-      state = dawn.state;
+      state = night.state;
       deaths = night.deaths;
     }
 
     if (from <= 1) {
-      const dead = from > 0 ? anchoredDeaths(resume, 'deathSkills') : deaths;
+      const dawnInput =
+        from === 1
+          ? anchoredInput<{ deaths: readonly NightDeath[]; minute: number }>(resume, 'dawn')
+          : { deaths, minute: minuteOf(state.day) };
+      const dawn = await runDawn({
+        state: await enter('dawn', state, dawnInput),
+        ...dawnInput,
+        actions,
+        observe,
+        onBallot,
+        onFlow,
+      });
+      const winner = checkWin(dawn.state);
+      if (winner !== null) return { state: dawn.state, winner };
+      state = dawn.state;
+      deaths = dawn.deaths;
+      aborted = dawn.aborted;
+    }
+
+    if (from <= 2) {
+      const skillInput =
+        from === 2
+          ? anchoredInput<{ deaths: readonly NightDeath[]; aborted?: boolean }>(
+              resume,
+              'deathSkills',
+            )
+          : { deaths, aborted };
       const woken = await triggerDeathSkills(
-        await enter('deathSkills', state, { deaths: dead }),
-        dead,
+        await enter('deathSkills', state, skillInput),
+        skillInput.deaths,
         actions,
         observe,
         onFlow,
@@ -155,12 +169,15 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
       const winner = checkWin(woken);
       if (winner !== null) return { state: woken, winner };
 
-      state = woken;
+      state = await settleBadgeAfterDeaths(woken, actions);
+      observe?.(state);
+      aborted = skillInput.aborted === true;
     }
 
-    if (from <= 2) {
+    if (from <= 3 && !aborted) {
       // 分钟数现算；恢复落在这一格时取锚点里那份——时钟在核心外面，重问一次可能问出别的数。
-      const minute = from > 1 ? anchoredMinute(resume) : minuteOf(state.day);
+      const minute =
+        from === 3 ? anchoredInput<{ minute: number }>(resume, 'day').minute : minuteOf(state.day);
       const day = await runDay({
         state: await enter('day', state, { minute }),
         actions,
@@ -178,8 +195,10 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
         day.exiledId === null ? [] : [{ playerId: day.exiledId, cause: DEATH_CAUSES.EXECUTION }];
     }
 
-    // 四格到此为止，这一格跑不跑只由有没有死者定。
-    const exileDeaths = from > 2 ? anchoredDeaths(resume, 'exileSkills') : executed;
+    const exileDeaths =
+      from === 4
+        ? anchoredInput<{ deaths: readonly NightDeath[] }>(resume, 'exileSkills').deaths
+        : executed;
     // 没人被放逐就不进这一格：原样多推一个实例，后面每一问的键都跟着挪一位。
     if (exileDeaths.length > 0) {
       const woken = await triggerDeathSkills(
@@ -208,21 +227,12 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
   }
 }
 
-/** 锚点那一格存下的死者。恢复接在别的格上就是调用方接错了，当场抛。 */
-function anchoredDeaths(anchor: StageAnchor | null, name: StageName): readonly NightDeath[] {
+/** 按节点取回锚点输入，不能拿别的阶段的数据恢复。 */
+function anchoredInput<T>(anchor: StageAnchor | null, name: StageName): T {
   if (anchor === null || nodeNameOf(anchor.phaseInstanceId) !== name) {
-    throw new Error(`锚点不在 ${name} 这一格上，取不到它的死者`);
+    throw new Error(`锚点不在 ${name} 这一格上，取不到它的输入`);
   }
 
   // 存进去的就是这一格的输入，形状由节点名定，读回来认领成它而已。
-  return (anchor.input as { deaths: readonly NightDeath[] }).deaths;
-}
-
-/** 锚点那一格存下的分钟数，同上。 */
-function anchoredMinute(anchor: StageAnchor | null): number {
-  if (anchor === null || nodeNameOf(anchor.phaseInstanceId) !== 'day') {
-    throw new Error('锚点不在白天这一格上，取不到它的分钟数');
-  }
-
-  return (anchor.input as { minute: number }).minute;
+  return anchor.input as T;
 }

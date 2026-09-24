@@ -136,7 +136,7 @@ describe('警长竞选', () => {
     const result = await runSheriffElection(makeState(6), actions, MINUTE);
 
     expect(result.state.sheriffId).toBe('p1');
-    expect(result.speeches.map((speech) => speech.playerId)).toEqual(['p1']);
+    expect(result.speeches).toEqual([]);
   });
 
   it('警上全部退水就没有警长', async () => {
@@ -269,6 +269,98 @@ function resumedState() {
 }
 
 describe('警长竞选 · 被狼人自爆打断', () => {
+  it('首轮 PK 开始前只问一次自爆，续轮保留候选资格和原警下投票人', async () => {
+    const state = withRoles(makeState(8), {
+      p4: ROLES.SEER,
+      p7: ROLES.WEREWOLF,
+      p8: ROLES.WEREWOLF,
+    });
+    const windows: string[] = [];
+    let inPk = false;
+    const first = await runSheriffElection(
+      state,
+      stubActions({
+        ...campaignOf(['p1', 'p2', 'p3', 'p4'], ['p3']),
+        wolfBlast: async (id) => {
+          windows.push(id);
+          return inPk && id === 'p7';
+        },
+        speak: async (turn) => {
+          expect(turn).toBe('campaign');
+          return '竞选发言';
+        },
+        vote: ballotOf({ p5: 'p1', p6: 'p2', p7: 'p1', p8: 'p2' }),
+      }),
+      MINUTE,
+      undefined,
+      async () => {
+        inPk = true;
+      },
+    );
+    expect(windows).toEqual(['p7', 'p8', 'p7', 'p8']);
+    expect(first.aborted).toBe(true);
+    expect(first.state.sheriffElectionSuspended).toEqual(['p1', 'p2', 'p3', 'p4']);
+    expect(first.state.sheriffElectionCandidateIds).toEqual(['p1', 'p2']);
+
+    const voters: string[] = [];
+    const withdrew: string[] = [];
+    const second = await runSheriffElection(
+      { ...first.state, day: 2 },
+      stubActions({
+        wolfBlast: async (_id, resuming) => {
+          expect(resuming).toBe(true);
+          return false;
+        },
+        withdraw: async (id) => {
+          withdrew.push(id);
+          return false;
+        },
+        vote: async (_turn, id) => {
+          voters.push(id);
+          return 'p1';
+        },
+      }),
+      MINUTE,
+    );
+    expect(withdrew).toEqual(['p1', 'p2']);
+    expect(voters).toEqual(['p5', 'p6', 'p8']);
+    expect(second.state.sheriffId).toBe('p1');
+  });
+
+  it('续轮 PK 前二爆吞徽，不再发言、投票或挂起', async () => {
+    const state = withRoles(
+      { ...resumedState(), sheriffElectionCandidateIds: ['p1', 'p2'] },
+      {
+        p3: ROLES.SEER,
+        p5: ROLES.WEREWOLF,
+      },
+    );
+    let inPk = false;
+    const flags: boolean[] = [];
+    const result = await runSheriffElection(
+      state,
+      stubActions({
+        withdraw: async () => false,
+        wolfBlast: async (id, resuming) => {
+          flags.push(resuming);
+          return inPk && id === 'p4';
+        },
+        vote: ballotOf({ p3: 'p1', p4: 'p2', p5: 'p1', p6: 'p2' }),
+      }),
+      MINUTE,
+      undefined,
+      async () => {
+        inPk = true;
+      },
+    );
+    expect(flags).toEqual([true, true, true, true]);
+    expect(result.aborted).toBe(true);
+    expect(result.speeches).toEqual([]);
+    expect(result.state.sheriffElectionSuspended).toBeNull();
+    expect(result.state.sheriffElectionCandidateIds).toBeNull();
+    expect(result.state.sheriffElectionSettled).toBe(true);
+  });
+
   it('首轮被打断：上警名单挂起，警徽先留着', async () => {
     const state = withRoles(makeState(6), { p3: ROLES.WEREWOLF });
     const resumingFlags: boolean[] = [];
@@ -349,7 +441,7 @@ describe('警长竞选 · 被狼人自爆打断', () => {
 
     const result = await runSheriffElection(withDead, actions, MINUTE);
 
-    expect(asked).toEqual(['p1']);
+    expect(asked).toEqual([]);
     expect(result.state.sheriffId).toBe('p1');
   });
 });

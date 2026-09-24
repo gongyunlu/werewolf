@@ -6,6 +6,8 @@ import { z } from 'zod';
  * 具体哪个模型是哪一档由接入时声明，不在这份类型里枚举。
  */
 export interface ModelCapability {
+  /** 端点支持流末尾单独返回用量时开启，未声明则不发送 stream_options。 */
+  streamUsage?: boolean;
   /** 默认 required；不支持强制工具的端点显式声明 auto，结果仍由行动层校验。 */
   toolChoice?: 'required' | 'auto';
   /**
@@ -28,6 +30,7 @@ const CAPABILITY_DECLARATIONS = z.array(
     model: z.string().min(1),
     reasoningOff: z.record(z.string(), z.unknown()).nullable(),
     toolChoice: z.enum(['required', 'auto']).optional(),
+    streamUsage: z.boolean().optional(),
   }),
 );
 
@@ -58,5 +61,6 @@ export function resolveModelCapability(
   return {
     reasoningOff: declared.reasoningOff,
     ...(declared.toolChoice ? { toolChoice: declared.toolChoice } : {}),
+    ...(declared.streamUsage !== undefined ? { streamUsage: declared.streamUsage } : {}),
   };
 }

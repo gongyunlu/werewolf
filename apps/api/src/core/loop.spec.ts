@@ -21,15 +21,90 @@ function wolfTargetsByNight(targets: readonly string[]) {
 }
 
 describe('推到终局', () => {
-  it('最后一狼夜里被毒死，天亮公布完就结束，白天不用走', async () => {
+  it.each([true, false])('首夜中刀的 4 号在公布死讯前参与竞选，上警：%s', async (candidacy) => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.WHITE_WOLF,
+      p3: ROLES.GUARD,
+      p4: ROLES.SEER,
+      p5: ROLES.WEREWOLF,
+    });
+    let current = state;
+    const registered: string[] = [];
+    const spoken: string[] = [];
+    const campaignVoters: string[] = [];
+    const flows: string[] = [];
+    const badge = jest.fn(async () => ({ kind: 'transfer' as const, toId: 'p3' }));
+    const actions = stubActions({
+      wolfSpeech: async () => '刀 4 号。',
+      wolfProposal: wolfTargetsByNight(['p4', 'p2']),
+      guardProtect: async () => null,
+      seerCheck: async () => 'p3',
+      runForSheriff: async (id) => {
+        registered.push(id);
+        expect(playerOf(current, 'p4').isAlive).toBe(true);
+        return id === 'p5' || id === (candidacy ? 'p4' : 'p2');
+      },
+      withdraw: async () => false,
+      wolfBlast: async () => false,
+      speak: async (turn, id) => {
+        spoken.push(`${turn}:${id}`);
+        if (turn === 'campaign') expect(playerOf(current, 'p4').isAlive).toBe(true);
+        if (turn === 'day') expect(playerOf(current, 'p4').isAlive).toBe(false);
+        return `${turn}:${id}`;
+      },
+      vote: async (turn, id, candidates) => {
+        if (turn === 'campaign') {
+          campaignVoters.push(id);
+          expect(playerOf(current, 'p4').isAlive).toBe(true);
+          return candidacy ? 'p4' : 'p2';
+        }
+        expect(id).not.toBe('p4');
+        expect(candidates).not.toContain('p4');
+        return 'p6';
+      },
+      decideBadge: badge,
+      chooseSpeechSide: async () => 'right',
+    });
+
+    const result = await runGame({
+      state,
+      actions,
+      minuteOf: () => 22,
+      observe: (next) => {
+        current = next;
+      },
+      onFlow: async (_next, event) => {
+        flows.push(event.key);
+      },
+    });
+
+    expect(registered).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    expect(flows.indexOf('election-result')).toBeLessThan(flows.indexOf('dawn'));
+    expect(spoken).not.toContain('day:p4');
+    if (candidacy) {
+      expect(spoken).toContain('campaign:p4');
+      expect(badge).toHaveBeenCalledWith('p4', ['p1', 'p2', 'p3', 'p5', 'p6']);
+    } else {
+      expect(campaignVoters).toContain('p4');
+    }
+    expect(playerOf(result.state, 'p4')).toMatchObject({
+      isAlive: false,
+      deathDay: 1,
+      deathCause: DEATH_CAUSES.NIGHT_KILL,
+    });
+    expect(result.winner).toBe(FACTIONS.WEREWOLF);
+  });
+
+  it('最后一狼夜里被毒死，仍先完成报名，公布死讯后终局', async () => {
     const state = withRoles(makeState(6), {
       p1: ROLES.WEREWOLF,
       p2: ROLES.SEER,
       p3: ROLES.WITCH,
       p4: ROLES.GUARD,
     });
-    // 没配 runForSheriff：白天真走起来就会失败。
+    const register = jest.fn(async () => false);
     const actions = stubActions({
+      runForSheriff: register,
       wolfProposal: async () => 'p5',
       guardProtect: async () => null,
       seerCheck: async () => 'p1',
@@ -42,6 +117,7 @@ describe('推到终局', () => {
     expect(playerOf(result.state, 'p1').isAlive).toBe(false);
     expect(result.state.day).toBe(1);
     expect(result.state.sheriffId).toBeNull();
+    expect(register.mock.calls).toHaveLength(6);
   });
 
   it('放逐狼王后他带走最后一个平民，狼人屠民获胜', async () => {
@@ -200,8 +276,8 @@ describe('推到终局', () => {
       deathDay: 2,
       deathCause: DEATH_CAUSES.NIGHT_KILL,
     });
-    // 两次入夜、一次死讯结算、一次白天：序号跨天一路往上涨，不按天重置。
-    expect(result.state.phaseInstanceId).toBe('node/4/night');
+    // 天亮单独留锚点，第二夜的结果在第二次天亮公布后终局。
+    expect(result.state.phaseInstanceId).toBe('node/6/dawn');
   });
 });
 
@@ -336,7 +412,7 @@ describe('断点续跑', () => {
     return { result, log, anchors };
   }
 
-  it.each(['night', 'deathSkills', 'day', 'exileSkills'])(
+  it.each(['night', 'dawn', 'deathSkills', 'day', 'exileSkills'])(
     '从第一轮的 %s 那一格接着跑：前面那几格不重放，终局与整跑一样',
     async (stage) => {
       const full = await play();
@@ -353,13 +429,13 @@ describe('断点续跑', () => {
     },
   );
 
-  it('锚点不在这一天的四格上：当场抛，不闷头从头跑一局', async () => {
+  it('锚点不在这一天的流程中：当场抛，不闷头从头跑一局', async () => {
     const full = await play();
 
     // 锚点是从库里取回来的，来路不明的行得挡在这一步，别拿它当进度使。
     const stale = { ...full.anchors[0], phaseInstanceId: phaseInstanceId(9, 'night_resolve') };
 
-    await expect(play({ resume: stale })).rejects.toThrow('锚点不在这一天的四格上');
+    await expect(play({ resume: stale })).rejects.toThrow('锚点不在这一天的流程中');
   });
 
   it('锚点里那份局面不在这一格上：当场抛，不拿错位的进度接着跑', async () => {
@@ -422,5 +498,91 @@ describe('断点续跑', () => {
 
     expect(result.winner).toBe(FACTIONS.GOOD);
     expect(result.state.day).toBe(2);
+  });
+});
+
+describe('双爆后的夜间结算与恢复', () => {
+  async function play(resume?: StageAnchor) {
+    const state = withRoles(makeState(12), {
+      p1: ROLES.WEREWOLF,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.WEREWOLF,
+      p4: ROLES.HUNTER,
+      p5: ROLES.SEER,
+      p6: ROLES.GUARD,
+      p7: ROLES.WITCH,
+    });
+    let current = state;
+    const log: string[] = [];
+    const anchors: StageAnchor[] = [];
+    const actions = loggingActions(
+      stubActions({
+        wolfSpeech: async () => '按约定刀人。',
+        wolfProposal: async () => (current.day === 1 ? 'p4' : current.day === 2 ? 'p5' : 'p9'),
+        guardProtect: async () => null,
+        seerCheck: async (_id, candidates) => candidates[0],
+        witchDecision: async () =>
+          current.day === 3 ? { kind: 'poison', targetId: 'p3' } : { kind: 'none' },
+        runForSheriff: async (id) => id === 'p5' || id === 'p6',
+        wolfBlast: async (id, resuming) =>
+          current.day === 1 ? id === 'p1' : resuming && id === 'p2',
+        hunterShot: async () => {
+          expect(playerOf(current, 'p1').deathCause).toBe(DEATH_CAUSES.SELF_DESTRUCT);
+          expect(playerOf(current, 'p4').deathCause).toBe(DEATH_CAUSES.NIGHT_KILL);
+          return 'p8';
+        },
+      }),
+      log,
+    );
+    const result = await runGame({
+      state,
+      actions,
+      resume,
+      minuteOf: () => 22,
+      observe: (next) => {
+        current = next;
+      },
+      onStage: async (anchor) => {
+        anchors.push(anchor);
+        log.push(`#${anchor.phaseInstanceId}`);
+      },
+      onFlow: async (next, event) => {
+        log.push(`${next.day}:${event.key}:${event.text}`);
+      },
+    });
+    return { result, anchors, log };
+  }
+
+  it('首爆仍结算昨夜猎人，次日先二爆再公布死讯，第三天不再竞选', async () => {
+    const { result, log } = await play();
+    expect(result.winner).toBe(FACTIONS.GOOD);
+    expect(result.state.day).toBe(3);
+    expect(result.state.sheriffElectionSuspended).toBeNull();
+    expect(result.state.sheriffElectionSettled).toBe(true);
+    expect(result.state.sheriffId).toBeNull();
+    expect(playerOf(result.state, 'p8').deathCause).toBe(DEATH_CAUSES.HUNTER_SHOT);
+    const at = (prefix: string) => log.findIndex((line) => line.startsWith(prefix));
+    expect(at('1:campaign-blast-result:')).toBeLessThan(at('1:dawn:'));
+    expect(at('1:dawn:')).toBeLessThan(at('1:death-skill-p4:'));
+    expect(at('1:death-skill-p4:')).toBeLessThan(at('2:daybreak:'));
+    expect(at('2:campaign_resume-blast-result:')).toBeLessThan(at('2:dawn:'));
+    expect(log.filter((line) => line.startsWith('runForSheriff '))).toHaveLength(12);
+    expect(log.some((line) => line.includes('day-speech'))).toBe(false);
+    expect(log.filter((line) => line.startsWith('2:dawn:'))).toEqual(['2:dawn:昨晚 5 号 倒牌。']);
+  });
+
+  it.each([
+    [1, 'dawn'],
+    [1, 'deathSkills'],
+    [2, 'dawn'],
+    [2, 'deathSkills'],
+  ] as const)('从第 %s 天的 %s 恢复，不丢失夜间结果或自爆打断状态', async (day, stage) => {
+    const full = await play();
+    const anchor = full.anchors.find(
+      (item) => item.state.day === day && nodeNameOf(item.phaseInstanceId) === stage,
+    )!;
+    const resumed = await play(anchor);
+    expect(resumed.log).toEqual(tailFrom(full.log, anchor));
+    expect(resumed.result).toEqual(full.result);
   });
 });

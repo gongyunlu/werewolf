@@ -5,13 +5,14 @@ import { campaignSpeechOrder, pkSpeechOrder } from '../speech-order';
 import type { GameState, PlayerState } from '../state';
 import { collectVotes, tallyVotes, type BallotObserver, type VoteRound } from '../vote';
 import { runBlastWindow } from './self-destruct';
+import type { NightDeath } from './announce';
 import { speakInOrder, type Speech } from './speech';
 
 /** 竞选结果；speeches 含警上发言与 PK 两轮。 */
 export interface SheriffElectionResult {
   /** 选出警长之后的状态；警徽流失、竞选被打断时 sheriffId 仍是 null。 */
   state: GameState;
-  /** 竞选被狼人自爆打断，当天剩下的全跳过。 */
+  /** 竞选被自爆打断，外层结算夜间死讯和死亡技能后入夜。 */
   aborted: boolean;
   speeches: Speech[];
 }
@@ -33,14 +34,26 @@ export async function runSheriffElection(
   observe?: (state: GameState) => void,
   onBallot?: BallotObserver,
   onFlow?: FlowObserver,
+  nightDeaths: readonly NightDeath[] = [],
 ): Promise<SheriffElectionResult> {
   const suspended = state.sheriffElectionSuspended;
-  if (!state.hasSheriff || (suspended === null && state.day !== 1)) {
+  if (
+    !state.hasSheriff ||
+    state.sheriffElectionSettled ||
+    (suspended === null && state.day !== 1)
+  ) {
     return { state, aborted: false, speeches: [] };
   }
 
   // 续轮走到这里竞选就重新开张了，挂起标记先清掉：下面哪条路都不该再挂一次。
-  const base: GameState = suspended === null ? state : { ...state, sheriffElectionSuspended: null };
+  const base: GameState =
+    suspended === null
+      ? state
+      : {
+          ...state,
+          sheriffElectionSuspended: null,
+          sheriffElectionCandidateIds: null,
+        };
   observe?.(base);
   const alive = base.players.filter((player) => player.isAlive);
   const speeches: Speech[] = [];
@@ -49,13 +62,13 @@ export async function runSheriffElection(
     aborted: false,
     speeches,
   });
-  /** 竞选被自爆打断。ids 是挂起下来待续的上警名单，为续轮或无人上警时留空。 */
+  /** 首爆保留原上警名单及当前候选资格；二爆清空竞选。 */
   const suspend = (from: GameState, ids: readonly string[]): SheriffElectionResult => ({
     state: {
       ...from,
-      sheriffElectionSuspended: ids.length > 0 ? ids : null,
-      // 名单为空有两条路：续轮再爆（警徽作废），以及无人上警时首爆（本来就没人可续）。
-      // 两种都不该再有警长，跟走完了一样算落定。
+      sheriffElectionSuspended: ids.length > 0 ? campaign.map((player) => player.id) : null,
+      sheriffElectionCandidateIds: ids.length > 0 ? ids : null,
+      // 二爆作废，首爆仍挂起待续。
       sheriffElectionSettled: ids.length === 0,
     },
     aborted: true,
@@ -72,41 +85,55 @@ export async function runSheriffElection(
     suspended === null
       ? await askCandidacy(alive, actions)
       : alive.filter((player) => suspended.includes(player.id));
+  const remaining =
+    suspended === null
+      ? campaign
+      : campaign.filter((player) =>
+          (state.sheriffElectionCandidateIds ?? suspended).includes(player.id),
+        );
 
   await onFlow?.(base, {
     key: 'candidacy-result',
     kind: 'sheriff',
-    text: campaign.length
-      ? `上警名单：${seatNames(
+    text: remaining.length
+      ? `${suspended === null ? '上警名单' : '剩余候选人'}：${seatNames(
           base,
-          campaign.map((player) => player.id),
+          remaining.map((player) => player.id),
         )}。`
       : '无人上警，本局没有警长。',
   });
 
   // 续轮没走过警上发言，PK 顺序只能从这批人按单顺双逆排出来的次序里取。
   const campaignOrder = campaignSpeechOrder(
-    campaign.map((player) => player.seatNo),
+    remaining.map((player) => player.seatNo),
     minute,
   );
 
+  if (remaining.length === 0) return idle(base);
+  if (remaining.length === 1) return elect(base, speeches, remaining[0].id);
+
   if (suspended === null) {
-    const blast = await runBlastWindow(base, 'campaign', actions, observe, onFlow);
+    const blast = await runBlastWindow(base, 'campaign', actions, observe, onFlow, nightDeaths);
     // 首爆挂起竞选：警徽先留着，第二天从退水表态接着走。
     if (blast.blasted)
       return suspend(
         blast.state,
         campaign.map((player) => player.id),
       );
-    if (campaign.length === 0) return idle(base);
-
     await onFlow?.(base, {
       key: 'campaign-speech',
       text: `请警上玩家依次发言，顺序：${campaignOrder.map((seat) => `${seat} 号`).join('、')}。`,
     });
     speeches.push(...(await speakInOrder('campaign', campaignOrder, base.players, actions)));
   } else {
-    const blast = await runBlastWindow(base, 'campaign_resume', actions, observe, onFlow);
+    const blast = await runBlastWindow(
+      base,
+      'campaign_resume',
+      actions,
+      observe,
+      onFlow,
+      nightDeaths,
+    );
     // 二爆吞掉警徽：竞选到此作废，本局没有警长。
     if (blast.blasted) return suspend(blast.state, []);
   }
@@ -114,11 +141,14 @@ export async function runSheriffElection(
   // 全发完言再统一退水；退过水的人不能被选，也没有票。
   await onFlow?.(base, {
     key: 'withdraw-start',
-    text: '警上发言结束，请警上玩家同时决定是否退水。',
+    text:
+      suspended === null
+        ? '警上发言结束，请警上玩家同时决定是否退水。'
+        : '继续警长竞选，请剩余候选人同时决定是否退水。',
   });
-  const answers = await settleActions(campaign.map((player) => actions.withdraw(player.id)));
+  const answers = await settleActions(remaining.map((player) => actions.withdraw(player.id)));
   const withdrawn = new Set(
-    campaign.filter((_, index) => answers[index]).map((player) => player.id),
+    remaining.filter((_, index) => answers[index]).map((player) => player.id),
   );
   await onFlow?.(base, {
     key: 'withdraw-result',
@@ -126,7 +156,7 @@ export async function runSheriffElection(
     text: withdrawn.size ? `退水名单：${seatNames(base, [...withdrawn])}。` : '无人退水。',
   });
 
-  const candidates = campaign.filter((player) => !withdrawn.has(player.id));
+  const candidates = remaining.filter((player) => !withdrawn.has(player.id));
   if (candidates.length === 0) return idle(base);
   if (candidates.length === 1) return elect(base, speeches, candidates[0].id);
 
@@ -157,6 +187,15 @@ export async function runSheriffElection(
   const tied = candidates.filter((player) => outcome.tiedIds.includes(player.id));
   const tiedSeatNos = new Set(tied.map((player) => player.seatNo));
   const pkOrder = pkSpeechOrder(campaignOrder, tiedSeatNos);
+  const blast = await runBlastWindow(
+    base,
+    suspended === null ? 'campaign_pk' : 'campaign_resume_pk',
+    actions,
+    observe,
+    onFlow,
+    nightDeaths,
+  );
+  if (blast.blasted) return suspend(blast.state, suspended === null ? outcome.tiedIds : []);
   await onFlow?.(base, {
     key: 'campaign-pk',
     text: `警长竞选平票，请 ${seatNames(base, outcome.tiedIds)} 进行 PK 发言。`,

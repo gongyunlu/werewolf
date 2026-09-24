@@ -3,6 +3,7 @@ import type { ActionProvider } from '../actions';
 import { seatNames, type FlowObserver } from '../flow';
 import { pkSpeechOrder } from '../speech-order';
 import type { GameState } from '../state';
+import { runBlastWindow } from './self-destruct';
 import {
   collectVotes,
   tallyVotes,
@@ -17,6 +18,8 @@ import { speakInOrder, type Speech } from './speech';
 export interface ExileResult {
   state: GameState;
   exiledId: string | null;
+  /** 放逐 PK 被自爆打断，不再投票或发布放逐结果。 */
+  aborted: boolean;
   speeches: Speech[];
   /** 这一天投过的每一轮，按先后。收齐才算得出来，只有 Core 拿得到。 */
   ballots: readonly Ballot[];
@@ -34,6 +37,7 @@ export async function runExile(
   speechOrder: readonly number[],
   onBallot?: BallotObserver,
   onFlow?: FlowObserver,
+  observe?: (state: GameState) => void,
 ): Promise<ExileResult> {
   const alive = state.players.filter((player) => player.isAlive);
   const speeches: Speech[] = [];
@@ -52,11 +56,15 @@ export async function runExile(
   await onBallot?.(first);
 
   if (outcome.kind === 'elected') return execute(state, outcome.winnerId, speeches, [first]);
-  if (outcome.kind === 'none') return { state, exiledId: null, speeches, ballots: [first] };
+  if (outcome.kind === 'none')
+    return { state, exiledId: null, aborted: false, speeches, ballots: [first] };
 
   const tied = alive.filter((player) => outcome.tiedIds.includes(player.id));
   const tiedSeatNos = new Set(tied.map((player) => player.seatNo));
   const pkOrder = pkSpeechOrder(speechOrder, tiedSeatNos);
+  const blast = await runBlastWindow(state, 'exile_pk', actions, observe, onFlow);
+  if (blast.blasted)
+    return { state: blast.state, exiledId: null, aborted: true, speeches, ballots: [first] };
   await onFlow?.(state, {
     key: 'exile-pk',
     text: `放逐投票平票，请 ${seatNames(state, outcome.tiedIds)} 进行 PK 发言。`,
@@ -82,7 +90,7 @@ export async function runExile(
 
   // 再平票或又全员弃票：本轮无人出局。
   if (pkOutcome.kind !== 'elected') {
-    return { state, exiledId: null, speeches, ballots: [first, second] };
+    return { state, exiledId: null, aborted: false, speeches, ballots: [first, second] };
   }
 
   return execute(state, pkOutcome.winnerId, speeches, [first, second]);
@@ -102,5 +110,5 @@ function execute(
     { playerId: exiledId, cause: DEATH_CAUSES.EXECUTION },
   ]).state;
 
-  return { state: exiled, exiledId, speeches, ballots };
+  return { state: exiled, exiledId, aborted: false, speeches, ballots };
 }

@@ -14,7 +14,7 @@ const OWN_MODEL = '自带型号';
 
 /** 必填那几项照 .env.example 抄一份；能力按三个「端点 + 型号」都声明上，用例只动要验的那一项。 */
 const BASE = {
-  DATABASE_URL: 'postgresql://werewolf:werewolf@127.0.0.1:5434/werewolf',
+  DATABASE_URL: 'postgresql://werewolf:werewolf@127.0.0.1:5432/werewolf',
   MODEL_API_KEY: 'sk-兜底',
   MODEL_BASE_URL: ENDPOINT,
   MODEL_DEFAULT_MODEL: MODEL,

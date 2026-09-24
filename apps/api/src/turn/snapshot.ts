@@ -13,6 +13,8 @@ export type Critique = z.infer<typeof CRITIQUE_SCHEMA>;
  * 端点与密钥不在这里——它们属于接入身份，不属于决定；轮换一次密钥不该让旧记录失真。
  */
 export interface DecisionSnapshot {
+  /** 最终采用的生成或修订调用；旧记录未知，不根据时间顺序猜。 */
+  sourceCallId?: string | null;
   actionKey: string;
   actionType: ActionType;
   actorId: string;

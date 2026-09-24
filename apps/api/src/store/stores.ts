@@ -5,6 +5,7 @@ import type { AskedPromptStore } from './asked';
 import type { EventStore } from './events';
 import type { GameStore } from './games';
 import type { StepStore } from './steps';
+import type { ObservationStore } from './observations';
 
 /** 一局要用到的那几份存储，成对交给行动提供者。 */
 export interface GameStores {
@@ -17,6 +18,7 @@ export interface GameStores {
   steps: StepStore;
   /** 每次真发出去的提问，发之前先落一份。 */
   asked: AskedPromptStore;
+  observations: ObservationStore;
   /** 行动图走到一半的执行进度，答完那一问就没人再看它。 */
   checkpoints: BaseCheckpointSaver;
 }

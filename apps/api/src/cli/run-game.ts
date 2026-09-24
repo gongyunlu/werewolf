@@ -6,6 +6,7 @@ import { createGameSetup } from '../boards/setup';
 import { loadEnv } from '../config/env';
 import { loadEnvFiles } from '../config/env-files';
 import { modelRuntimeOf, promptSourceOf } from '../llm/from-env';
+import { startTelemetry, stopTelemetry } from '../llm/telemetry';
 import { gameSkills } from '../skills/game-skills';
 import { openPrismaClient, prismaStores } from '../store/prisma';
 import { runStoredGame } from '../turn/run-stored-game';
@@ -22,6 +23,7 @@ async function main(): Promise<void> {
   if (!BOARD_IDS.includes(boardId as BoardId)) throw new Error(`没有这块板子：${boardId}`);
 
   const client = openPrismaClient(env.DATABASE_URL);
+  startTelemetry(env);
   try {
     const stores = prismaStores(client);
     // 台账照原样落库，另外打一份到终端：一局要跑十几分钟，得看得见它走到哪儿了。
@@ -53,7 +55,7 @@ async function main(): Promise<void> {
 
     Logger.log(`胜方：${result.winner}；共问 ${result.outcomes.length} 次`, gameId);
   } finally {
-    await client.$disconnect();
+    await Promise.all([client.$disconnect(), stopTelemetry()]);
   }
 }
 

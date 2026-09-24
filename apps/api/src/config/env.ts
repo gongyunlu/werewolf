@@ -4,13 +4,13 @@ import { z } from 'zod';
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   // 后端服务监听端口
-  API_PORT: z.coerce.number().int().min(1).max(65535).default(3201),
+  API_PORT: z.coerce.number().int().min(1).max(65535).default(3001),
 
   // 对局库。没有默认值：连哪个库是「这一局存哪儿」，不是「服务怎么起」，在这儿再写一份等于把选型藏回代码里。
   DATABASE_URL: z.string().min(1),
 
-  // 队列与事件推送。默认值对着 docker-compose 起在本机的那一个，端口取 6380 避开旧项目。
-  REDIS_URL: z.string().default('redis://127.0.0.1:6380'),
+  // 队列与事件推送。默认值对着 docker-compose 起在本机的那一个，端口为 6379。
+  REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
 
   // 管理写接口的令牌。空着等于把写接口全关上——守卫一律拒，不是放行。
   ADMIN_TOKEN: z.string().default(''),

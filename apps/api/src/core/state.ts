@@ -50,6 +50,8 @@ export interface GameState {
    * 续轮再爆就吞掉警徽并清回 null。null 表示竞选没挂起，与「选完了」不分家。
    */
   sheriffElectionSuspended: readonly string[] | null;
+  /** 挂起时仍有资格参选的人；与原上警名单分开，退水和 PK 淘汰不会恢复投票权。 */
+  sheriffElectionCandidateIds: readonly string[] | null;
   /**
    * 竞选有没有落定：选出、流失、自爆作废都算落定，挂起待续的不算。
    * 落定之后 sheriffId 还可以变回 null（撕徽），所以这两个字段管的是两件事。
@@ -72,6 +74,7 @@ export function createGameState(setup: GameSetup, playerIds: readonly string[]):
     hasSheriff: setup.hasSheriff,
     sheriffId: null,
     sheriffElectionSuspended: null,
+    sheriffElectionCandidateIds: null,
     sheriffElectionSettled: false,
     players: setup.seats.map((seat, index) => ({
       id: playerIds[index],

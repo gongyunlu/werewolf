@@ -13,4 +13,5 @@ allowBuilds:
   # bullmq 的传递依赖，只是个可选的加速件，不带它照样跑。
   msgpackr-extract: false
   prisma: true
+  protobufjs: true
   unrs-resolver: true

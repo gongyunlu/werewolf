@@ -12,6 +12,8 @@ import type { ActionStep } from '@werewolf/shared';
 import { z } from 'zod';
 import type { ModelAccess, ModelPort, ModelTool, StreamDelta } from '../llm/model-port';
 import { InvalidOutputError } from '../llm/model-port';
+import type { ModelResponse } from '../llm/model-port';
+import type { CallIdentity } from '../llm/observation';
 import { toolOf } from './decisions';
 import { ACTION_PRESETS } from './presets';
 import {
@@ -34,6 +36,7 @@ export interface TurnOutcome {
 }
 
 const TurnState = new StateSchema({
+  sourceCallId: z.string().nullable().default(null),
   draft: z.string().default(''),
   decision: z.custom<unknown>().default(() => null),
   // 通道名叫 verdict 而不是 critique：通道名不能和节点名撞车，那边已经占了 critique。
@@ -107,6 +110,8 @@ function previewFor(
 
 /** 一问的答复。答案与推理是分开的两段，各有各的空法：答案可能在工具那一头，推理可能端点没给。 */
 export interface Answer {
+  callId?: string;
+  completeObservation?: ModelResponse['completeObservation'];
   thinkingMs?: number;
   content: string;
   reasoning: string | null;
@@ -133,16 +138,28 @@ export async function ask(
   turn: RenderedTurn,
   tool?: ModelTool,
   stream?: (chunk: StreamChunk) => void,
+  identity?: Omit<CallIdentity, 'callId'>,
 ): Promise<Answer> {
   const callId = randomUUID();
   const response = await port.generate(
     { system: turn.system.text, prompt: turn.user.text, tool },
     access,
     // 走工具的那几问只会收到思考：正文那一头本来就是空的。
-    stream ? { onDelta: (delta) => stream({ callId, ...delta }) } : undefined,
+    {
+      identity: {
+        executionId: randomUUID(),
+        step: 'summary',
+        formatAttempt: 1,
+        ...identity,
+        callId,
+      },
+      ...(stream ? { onDelta: (delta: StreamDelta) => stream({ callId, ...delta }) } : {}),
+    },
   );
   // 走工具时答案在参数那一头、正文是空的；没给工具时才是正文。
   return {
+    callId,
+    completeObservation: response.completeObservation,
     content: response.toolCall?.arguments ?? response.content,
     reasoning: response.reasoning,
     ...(response.thinkingMs !== undefined ? { thinkingMs: response.thinkingMs } : {}),
@@ -242,10 +259,11 @@ const INVALID_OUTPUT_RETRIES = 2;
  * @returns 原文、它的推理、解析后的结果，以及为这次解析重问了几回
  */
 export async function askParsed<T>(
-  askOnce: (note: string | null) => Promise<Answer>,
+  askOnce: (note: string | null, formatAttempt: number) => Promise<Answer>,
   parse: (content: string) => T,
   noteOf: (raw: string, diagnosis: string) => string,
 ): Promise<{
+  callId?: string;
   content: string;
   reasoning: string | null;
   parsed: T;
@@ -256,8 +274,9 @@ export async function askParsed<T>(
   let thinkingMs: number | undefined;
 
   for (let attempt = 0; ; attempt += 1) {
-    const answer = await askOnce(note);
+    const answer = await askOnce(note, attempt + 1);
     if (answer.thinkingMs !== undefined) thinkingMs = (thinkingMs ?? 0) + answer.thinkingMs;
+    let parsed: T;
     try {
       // 给了工具却没走工具：它一个值都没交。落到下面按 JSON 解析去，报出来的是「不是合法
       // JSON」——那句话把它写的一段解释当成了没写好的 JSON，指错了地方，它照着重交还是交不上。
@@ -268,19 +287,27 @@ export async function askParsed<T>(
         );
       }
       // 重问过的话，交出的是最后那一版——被作废那几版的推理没有留的价值。
-      return {
-        content: answer.content,
-        reasoning: answer.reasoning,
-        parsed: parse(answer.content),
-        retries: attempt,
-        ...(thinkingMs !== undefined ? { thinkingMs } : {}),
-      };
+      parsed = parse(answer.content);
     } catch (error) {
+      await answer.completeObservation?.(
+        error instanceof InvalidOutputError ? 'invalid_output' : 'failed',
+      );
       // 只认带诊断的那一个：拿不出「错在哪一类」，重问的题面就跟上一次一字不差，白问。
       if (!(error instanceof InvalidOutputError)) throw error;
       if (attempt >= INVALID_OUTPUT_RETRIES) throw error;
       note = noteOf(answer.content, error.diagnosis);
+      continue;
     }
+    // 存储失败不属于格式错误，不能因此再问一次模型。
+    await answer.completeObservation?.('accepted');
+    return {
+      ...(answer.callId ? { callId: answer.callId } : {}),
+      content: answer.content,
+      reasoning: answer.reasoning,
+      parsed,
+      retries: attempt,
+      ...(thinkingMs !== undefined ? { thinkingMs } : {}),
+    };
   }
 }
 
@@ -354,6 +381,7 @@ async function generateNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
+  const identity = executionIdentity('generate', config);
   const { runtime, request } = config.context!;
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
@@ -364,13 +392,18 @@ async function generateNode(
   );
   const tool = toolFor(request);
   const stream = previewFor(request, 'generate', preview);
-  const { content, reasoning, parsed, retries, thinkingMs } = await askParsed(
-    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool, stream),
+  const { content, reasoning, parsed, retries, thinkingMs, callId } = await askParsed(
+    (note, formatAttempt) =>
+      ask(port, access, note === null ? turn : noted(turn, note), tool, stream, {
+        ...identity,
+        formatAttempt,
+      }),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
   return {
+    sourceCallId: callId ?? null,
     draft: content,
     decision: parsed,
     prompts: used(turn),
@@ -393,6 +426,7 @@ async function critiqueNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
+  const identity = executionIdentity('critique', config);
   const { runtime, request } = config.context!;
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
@@ -405,13 +439,14 @@ async function critiqueNode(
   );
   const stream = previewFor(request, 'critique', preview);
   const { parsed, retries, reasoning, thinkingMs } = await askParsed(
-    (note) =>
+    (note, formatAttempt) =>
       ask(
         port,
         access,
         note === null ? turn : noted(turn, note),
         toolOf(CRITIQUE_SCHEMA, '这次质疑的结论'),
         stream,
+        { ...identity, formatAttempt },
       ),
     (content) => parseStructured(content, CRITIQUE_SCHEMA, '质疑的结论'),
     // 质疑那一问没有候选，重试提示只说明格式问题。
@@ -440,6 +475,7 @@ async function reviseNode(
   state: TurnStateValue,
   config: TurnConfig,
 ): Promise<Partial<TurnStateValue>> {
+  const identity = executionIdentity('revise', config);
   if (!state.verdict) throw new Error('走到修订却没有质疑结论');
 
   const { runtime, request } = config.context!;
@@ -455,13 +491,18 @@ async function reviseNode(
   );
   const tool = toolFor(request);
   const stream = previewFor(request, 'revise', preview);
-  const { content, reasoning, parsed, retries, thinkingMs } = await askParsed(
-    (note) => ask(port, access, note === null ? turn : noted(turn, note), tool, stream),
+  const { content, reasoning, parsed, retries, thinkingMs, callId } = await askParsed(
+    (note, formatAttempt) =>
+      ask(port, access, note === null ? turn : noted(turn, note), tool, stream, {
+        ...identity,
+        formatAttempt,
+      }),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
 
   return {
+    sourceCallId: callId ?? null,
     draft: content,
     decision: parsed,
     prompts: used(turn),
@@ -491,6 +532,7 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
     outcome: {
       decision: state.decision,
       snapshot: {
+        sourceCallId: state.sourceCallId ?? null,
         actionKey: actionKeyOf(request),
         actionType: request.actionType,
         actorId: request.actorId,
@@ -509,6 +551,18 @@ function finalizeNode(state: TurnStateValue, config: TurnConfig): Partial<TurnSt
         retries: state.retries,
       },
     },
+  };
+}
+
+function executionIdentity(
+  step: string,
+  config: TurnConfig,
+): Omit<CallIdentity, 'callId' | 'formatAttempt'> {
+  return {
+    step,
+    executionId: randomUUID(),
+    taskId: config.executionInfo?.taskId,
+    checkpointId: config.executionInfo?.checkpointId,
   };
 }
 

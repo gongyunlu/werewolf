@@ -9,11 +9,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3200,
+    port: 3000,
     proxy: {
       // 开发期把 /api 转给后端，前后端同源，不需要额外配置 CORS
       '/api': {
-        target: 'http://localhost:3201',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         configure(proxy) {
           proxy.on('error', (_error, request, response) => {

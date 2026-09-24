@@ -19,6 +19,7 @@ import { EVENT_KINDS, type EventKind, type EventStore } from './events';
 import type { GameStore, RosterSeat, StoredGame } from './games';
 import type { StepStore } from './steps';
 import type { GameStores } from './stores';
+import { prismaObservations } from './prisma-observations';
 
 /** 连上对局库。调用方用完自己关。 */
 export function openPrismaClient(connectionString: string): PrismaClient {
@@ -33,6 +34,7 @@ export function prismaStores(client: PrismaClient): GameStores {
     actions: prismaActions(client),
     steps: prismaSteps(client),
     asked: prismaAsked(client),
+    observations: prismaObservations(client),
     checkpoints: prismaCheckpoints(client),
   };
 }
@@ -402,22 +404,48 @@ export function prismaSteps(client: PrismaClient): StepStore {
 
 /**
  * 提问记录的真身。
- * 一律 create、不 upsert：同一问重问几遍就该有几行，这是全仓唯一一张不认重的表。
+ * 每次重新采样都生成新 callId；重复写入同一编号由唯一约束拦下。
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
   return {
     async append(gameId, asked) {
-      await client.askedPrompt.create({
+      const row = await client.askedPrompt.create({
         data: {
           gameId,
           actionKey: asked.actionKey,
           model: asked.model,
           system: asked.system,
           prompt: asked.prompt,
+          summaryKey: asked.summaryKey,
+          ...asked.observation,
+          ...(asked.observation ? { status: 'started' } : {}),
           // 没走工具的那几问整列不写，落 SQL 的 null——不写才是「这一问压根没给工具」。
           ...(asked.tool ? { tool: asked.tool as unknown as Prisma.InputJsonValue } : {}),
         },
       });
+      if (!asked.observation) return;
+      return {
+        async finish(result) {
+          await client.askedPrompt.update({
+            where: { id: row.id },
+            data: { ...result, finishedAt: new Date() },
+          });
+        },
+        async startAttempt(attemptNo) {
+          await client.modelAttempt.create({ data: { askedPromptId: row.id, attemptNo } });
+        },
+        async finishAttempt(attemptNo, result) {
+          await client.modelAttempt.update({
+            where: { askedPromptId_attemptNo: { askedPromptId: row.id, attemptNo } },
+            data: {
+              ...result,
+              usage:
+                result.usage === null ? Prisma.DbNull : (result.usage as Prisma.InputJsonValue),
+              finishedAt: new Date(),
+            },
+          });
+        },
+      };
     },
   };
 }

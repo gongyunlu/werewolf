@@ -5,6 +5,7 @@ import type {
 } from 'openai/resources/chat/completions';
 import { z } from 'zod';
 import { endpointOf } from './model-capability';
+import { usageObject, type RequestMetrics } from './observation';
 import {
   ModelCallError,
   type ModelAccess,
@@ -213,12 +214,14 @@ async function collectStream(
   url: string,
   onDelta: (delta: StreamDelta) => void,
   signal: AbortSignal,
+  metrics: RequestMetrics,
 ): Promise<ModelResponse> {
   let content = '';
   let reasoning = '';
   let thinkingStarted: number | undefined;
   let thinkingEnded: number | undefined;
   let finishReason: string | null = null;
+  let finalUsage = false;
   /** 工具参数按 index 归拢：头一片带名字，后面的分片只带参数碎片。 */
   const calls = new Map<number, { name: string; arguments: string }>();
   let started = false;
@@ -231,6 +234,13 @@ async function collectStream(
     for await (const chunk of stream) {
       const choice = chunk.choices?.[0];
       if (choice?.finish_reason) finishReason = choice.finish_reason;
+      // 最后一片可以只有 usage、没有 choice。累计用量覆盖旧值，不逐片相加。
+      const usage = usageObject(chunk.usage);
+      if (usage) {
+        metrics.usage = usage;
+        // 只将结束分片及其后的用量视为最终值，中途累计值仍保留为部分用量。
+        finalUsage = finishReason !== null;
+      }
       const delta = choice?.delta;
       if (!delta) continue;
 
@@ -279,6 +289,8 @@ async function collectStream(
   // ——拿到手的是一段残文，调用方却以为那是对它的完整回答。
   if (signal.aborted) throw aborted(signal, url, emitted);
 
+  metrics.usageComplete = finalUsage;
+
   if (finishReason === null) {
     throw new ModelCallError('transient', `${url} 的流缺少结束原因`, { partialOutput: emitted });
   }
@@ -315,7 +327,11 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
   const { timeoutMs = DEFAULT_TIMEOUT_MS, fetch: send } = options;
 
   /** 一次请求一个客户端。密钥和端点按次给，实例就不留着了。 */
-  function clientFor(access: ModelAccess): OpenAI {
+  function clientFor(
+    access: ModelAccess,
+    metrics: RequestMetrics,
+    dispatched?: () => void,
+  ): OpenAI {
     return new OpenAI({
       apiKey: access.apiKey,
       baseURL: endpointOf(access.baseUrl),
@@ -323,95 +339,148 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
       // 重试归上层那一层管：SDK 自己再试一遍就是两层重试相乘，一次失败能烧掉十几次调用，
       // 而且最后报出来的错分不清是哪一层在试。
       maxRetries: 0,
-      ...(send ? { fetch: send } : {}),
+      fetch: async (input, init) => {
+        metrics.dispatched = true;
+        dispatched?.();
+        const response = await (send ?? fetch)(input, init);
+        metrics.httpStatus = response.status;
+        metrics.requestId = response.headers.get('x-request-id');
+        return response;
+      },
     });
   }
 
-  return {
-    async generate(
-      request: ModelRequest,
-      access: ModelAccess,
-      call: ModelCallOptions = {},
-    ): Promise<ModelResponse> {
-      const url = `${endpointOf(access.baseUrl)}/chat/completions`;
-      // 已经喊停的 signal 由 SDK 自己拦下：它一个请求都不会发，抛出来的错照样落到下面那条
-      // 「signal 已中止」的判定上。这儿不再多查一遍。
-      const signal = callSignal(call, call.timeoutMs ?? timeoutMs);
-      const client = clientFor(access);
-      const messages: ChatCompletionMessageParam[] = [
-        { role: 'system', content: request.system },
-        { role: 'user', content: request.prompt },
-      ];
-      // 关思维链那个参数各家写法不一样，形状由能力声明带进来；这家没有就是空对象。
-      const extra = access.capability.reasoningOff ?? {};
-      const params = {
-        model: access.model,
-        messages,
-        ...extra,
-        ...toolParams(request.tool, access.capability.toolChoice ?? 'required'),
-      };
+  async function requestOnce(
+    request: ModelRequest,
+    access: ModelAccess,
+    call: ModelCallOptions,
+    metrics: RequestMetrics,
+    dispatched?: () => void,
+  ): Promise<ModelResponse> {
+    const url = `${endpointOf(access.baseUrl)}/chat/completions`;
+    // 已经喊停的 signal 由 SDK 自己拦下：它一个请求都不会发，抛出来的错照样落到下面那条
+    // 「signal 已中止」的判定上。这儿不再多查一遍。
+    const signal = callSignal(call, call.timeoutMs ?? timeoutMs);
+    const client = clientFor(access, metrics, dispatched);
+    const messages: ChatCompletionMessageParam[] = [
+      { role: 'system', content: request.system },
+      { role: 'user', content: request.prompt },
+    ];
+    // 关思维链那个参数各家写法不一样，形状由能力声明带进来；这家没有就是空对象。
+    const extra = access.capability.reasoningOff ?? {};
+    const params = {
+      model: access.model,
+      messages,
+      ...extra,
+      ...toolParams(request.tool, access.capability.toolChoice ?? 'required'),
+    };
 
-      // 走工具也照样能流：思考那一段在工具参数之前到，跟正文是两条通道。
-      // 走的这一路只推思考，工具参数拼到收尾才交出去。
-      if (call.onDelta) {
-        return collectStream(client, { ...params, stream: true }, url, call.onDelta, signal);
-      }
+    // 走工具也照样能流：思考那一段在工具参数之前到，跟正文是两条通道。
+    // 走的这一路只推思考，工具参数拼到收尾才交出去。
+    if (call.onDelta) {
+      return collectStream(
+        client,
+        {
+          ...params,
+          stream: true,
+          ...(access.capability.streamUsage ? { stream_options: { include_usage: true } } : {}),
+        },
+        url,
+        call.onDelta,
+        signal,
+        metrics,
+      );
+    }
 
-      let answer: unknown;
-      try {
-        answer = await client.chat.completions.create(params, { signal });
-      } catch (error) {
-        if (signal.aborted) throw aborted(signal, url, false);
-        // SDK 只在 content-type 不是 JSON 时把正文原样交出来；它认了 JSON 头而正文又不是 JSON 时，
-        // 抛的是它自己 JSON.parse 的裸 SyntaxError，带不进 APIError。这跟网关塞段 HTML 是一回事
-        // ——这次没拿到，重发就有戏。不裹的话它会穿过重试层，报一个指不到端点的解析错。
-        if (error instanceof SyntaxError) {
-          throw new ModelCallError('transient', `${url} 的答复不是合法 JSON：${error.message}`, {
-            cause: error,
-          });
-        }
-        throw asModelCallError(error, url);
-      }
-
-      const content = RESPONSE.safeParse(answer);
-      // 正文不是 JSON 的时候 SDK 原样把那段文本交出来，所以报错里还留得下网关塞的东西。
-      //
-      // 归 transient 不归 invalid_output：正文不是 JSON、choices 是空，都是「这次没拿到」，
-      // 跟网络抖一下是一回事，重发就能成。模型答得不合规是另一回事，那归调用方那边的
-      // invalid_output——那一层看得见解析，重问也归它发。
-      if (!content.success) {
-        throw new ModelCallError('transient', `${url} 的答复不合结构：${textOf(answer)}`, {
-          cause: content.error,
+    let answer: unknown;
+    try {
+      answer = await client.chat.completions.create(params, { signal });
+    } catch (error) {
+      if (signal.aborted) throw aborted(signal, url, false);
+      // SDK 只在 content-type 不是 JSON 时把正文原样交出来；它认了 JSON 头而正文又不是 JSON 时，
+      // 抛的是它自己 JSON.parse 的裸 SyntaxError，带不进 APIError。这跟网关塞段 HTML 是一回事
+      // ——这次没拿到，重发就有戏。不裹的话它会穿过重试层，报一个指不到端点的解析错。
+      if (error instanceof SyntaxError) {
+        throw new ModelCallError('transient', `${url} 的答复不是合法 JSON：${error.message}`, {
+          cause: error,
         });
       }
+      throw asModelCallError(error, url);
+    }
 
-      // min(1) 已经保证有第一条，空答复才是要拦的那个：它走到调用方那儿只会变成一句
-      // 「模型没答」，那时已经看不见这次请求的来龙去脉了。同样是这次没拿到。
-      //
-      // 走工具时正文本来就是空的，答案在 tool_calls 那一头：只看正文会把这次判成没拿到，
-      // 白重试三次还是同一个结果。
-      const choice = content.data.choices[0];
-      checkFinishReason(choice.finish_reason, url);
-      const message = choice.message;
-      const text = message.content ?? '';
-      const invoked = message.tool_calls?.[0];
-      if (text.trim() === '' && !invoked) {
-        throw new ModelCallError('transient', `${url} 的答复正文是空的`);
-      }
+    metrics.usage = usageObject(usageObject(answer)?.usage);
+    metrics.usageComplete = metrics.usage !== null;
+    const content = RESPONSE.safeParse(answer);
+    // 正文不是 JSON 的时候 SDK 原样把那段文本交出来，所以报错里还留得下网关塞的东西。
+    //
+    // 归 transient 不归 invalid_output：正文不是 JSON、choices 是空，都是「这次没拿到」，
+    // 跟网络抖一下是一回事，重发就能成。模型答得不合规是另一回事，那归调用方那边的
+    // invalid_output——那一层看得见解析，重问也归它发。
+    if (!content.success) {
+      throw new ModelCallError('transient', `${url} 的答复不合结构：${textOf(answer)}`, {
+        cause: content.error,
+      });
+    }
 
-      // 参数是空串就是这一问一个字都没答上，跟正文空着是一回事：归 transient 让重试层重发一遍。
-      // 放它落到解析层，报出来的会是「整串不是合法 JSON」，附言里引一对空的「」，指错了地方。
-      if (invoked && invoked.function.arguments.trim() === '') {
-        throw new ModelCallError('transient', `${url} 的工具参数是空的`);
-      }
+    // min(1) 已经保证有第一条，空答复才是要拦的那个：它走到调用方那儿只会变成一句
+    // 「模型没答」，那时已经看不见这次请求的来龙去脉了。同样是这次没拿到。
+    //
+    // 走工具时正文本来就是空的，答案在 tool_calls 那一头：只看正文会把这次判成没拿到，
+    // 白重试三次还是同一个结果。
+    const choice = content.data.choices[0];
+    checkFinishReason(choice.finish_reason, url);
+    const message = choice.message;
+    const text = message.content ?? '';
+    const invoked = message.tool_calls?.[0];
+    if (text.trim() === '' && !invoked) {
+      throw new ModelCallError('transient', `${url} 的答复正文是空的`);
+    }
 
-      return {
-        content: text,
-        toolCall: invoked
-          ? { name: invoked.function.name, arguments: invoked.function.arguments }
-          : null,
-        reasoning: message.reasoning_content ?? null,
+    // 参数是空串就是这一问一个字都没答上，跟正文空着是一回事：归 transient 让重试层重发一遍。
+    // 放它落到解析层，报出来的会是「整串不是合法 JSON」，附言里引一对空的「」，指错了地方。
+    if (invoked && invoked.function.arguments.trim() === '') {
+      throw new ModelCallError('transient', `${url} 的工具参数是空的`);
+    }
+
+    return {
+      content: text,
+      toolCall: invoked
+        ? { name: invoked.function.name, arguments: invoked.function.arguments }
+        : null,
+      reasoning: message.reasoning_content ?? null,
+    };
+  }
+
+  return {
+    async generate(request, access, call = {}) {
+      const complete = await call.startAttempt?.();
+      const metrics: RequestMetrics = {
+        dispatched: false,
+        durationMs: 0,
+        httpStatus: null,
+        requestId: null,
+        usage: null,
+        usageComplete: false,
+        thinkingMs: null,
       };
+      const started = performance.now();
+      let response: ModelResponse;
+      try {
+        response = await requestOnce(request, access, call, metrics, complete?.dispatched);
+      } catch (error) {
+        metrics.durationMs = performance.now() - started;
+        const code = error instanceof ModelCallError ? error.code : 'internal';
+        await complete?.finish({
+          ...metrics,
+          status: code === 'deadline' ? 'cancelled' : 'failed',
+          failureCode: code,
+        });
+        throw error;
+      }
+      metrics.durationMs = performance.now() - started;
+      metrics.thinkingMs = response.thinkingMs ?? null;
+      await complete?.finish({ ...metrics, status: 'succeeded', failureCode: null });
+      return response;
     },
   };
 }

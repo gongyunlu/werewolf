@@ -9,8 +9,9 @@ import { checkWin } from '../win';
 import { announceDay, type NightDeath } from './announce';
 import { settleBadgeAfterDeaths } from './badge';
 
-/** 自爆窗口：campaign 首轮警上，campaign_resume 竞选续轮，day 白天常规发言之前一次。 */
-export type BlastWindow = 'campaign' | 'campaign_resume' | 'day';
+/** 每个允许自爆的阶段只在开始前询问一次，不在逐人发言之间追加询问。 */
+export type BlastWindow =
+  'campaign' | 'campaign_resume' | 'campaign_pk' | 'campaign_resume_pk' | 'day' | 'exile_pk';
 
 export interface BlastResult {
   state: GameState;
@@ -24,7 +25,7 @@ export interface BlastResult {
  * 多只都想爆时由座位序定谁爆——规则里没有「两只一起爆」，第一只喊出来白天就结束了，
  * 谁先返回只看延迟，不能拿它定结果。收齐一轮，任一失败即整轮失败。
  *
- * 自爆只中断「发言 → 投票 → 放逐」，公布死讯和死亡技能都已经走完，不该被它截掉。
+ * 警上自爆后，外层仍会公布尚未出局者的夜间死讯并结算死亡技能。
  * 白狼王自爆时额外带走一人；他爆完狼队就全灭的话当场就分出胜负了，轮不到带人那一步。
  * 被带走的人不会接着触发技能：狼王和猎人的死因表里都没有 white_wolf_take，见 skills/ 两个文件。
  *
@@ -41,6 +42,7 @@ export async function runBlastWindow(
   actions: ActionProvider,
   observe?: (state: GameState) => void,
   onFlow?: FlowObserver,
+  nightDeaths: readonly NightDeath[] = [],
 ): Promise<BlastResult> {
   const pack = alivePlayers(state).filter((player) => inWolfChannel(player.role));
 
@@ -50,28 +52,35 @@ export async function runBlastWindow(
   });
 
   const answers = await settleActions(
-    pack.map((wolf) => actions.wolfBlast(wolf.id, window === 'campaign_resume')),
+    pack.map((wolf) =>
+      actions.wolfBlast(wolf.id, window === 'campaign_resume' || window === 'campaign_resume_pk'),
+    ),
   );
   const blaster = pack.find((_, index) => answers[index]);
   if (!blaster) {
     await onFlow?.(state, { key: `${window}-blast-result`, text: '无人自爆，继续当前流程。' });
     return { state, blasted: false };
   }
-  await onFlow?.(state, {
-    key: `${window}-blast-result`,
-    text: `${blaster.seatNo} 号自爆出局，今天剩余的发言和投票结束。`,
-  });
-
   const blast = announceDay(state, [
     { playerId: blaster.id, cause: DEATH_CAUSES.SELF_DESTRUCT },
   ]).state;
   observe?.(blast);
+  await onFlow?.(blast, {
+    key: `${window}-blast-result`,
+    text: `${blaster.seatNo} 号自爆出局，今天剩余的发言和投票结束。`,
+  });
   // 自爆是个原子出局事件，先单独落地、当场判一次：爆的是最后一只狼就到此为止，
   // 白狼王不再有机会带人，警徽也不必结。胜负只由 checkWin 一处说，见 skills/white-wolf.ts。
   if (checkWin(blast) !== null) return { state: blast, blasted: true };
 
+  // 自爆覆盖实际出局原因，但吃毒仍会封住白狼王的带人能力。
+  const poisoned = nightDeaths.some(
+    (death) => death.playerId === blaster.id && death.cause === DEATH_CAUSES.WITCH_POISON,
+  );
   const taken =
-    blaster.role === ROLES.WHITE_WOLF ? await decideWhiteWolfTake(blaster, blast, actions) : null;
+    blaster.role === ROLES.WHITE_WOLF && !poisoned
+      ? await decideWhiteWolfTake(blaster, blast, actions)
+      : null;
   const deaths: NightDeath[] =
     taken === null ? [] : [{ playerId: taken, cause: DEATH_CAUSES.WHITE_WOLF_TAKE }];
 

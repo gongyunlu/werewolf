@@ -17,16 +17,16 @@ model Agent {
   name String @unique @db.VarChar(64)
 
   // 默认型号。开局时把这一刻的值冻进阵容，改这里不影响已经在跑的对局。
-  modelName String  @map("model_name") @db.VarChar(64)
+  modelName        String  @map("model_name") @db.VarChar(64)
   // 接入端点。空着表示用环境变量那一套默认接入。
-  baseUrl   String? @map("base_url") @db.VarChar(512)
+  baseUrl          String? @map("base_url") @db.VarChar(512)
   // 自带密钥的密文，只写不读，任何读接口都不返回它。
   apiKeyCiphertext String? @map("api_key_ciphertext") @db.Text
   // 密钥末四位，只为了在界面上认出配的是哪一把。
   apiKeyHint       String? @map("api_key_hint") @db.VarChar(4)
 
   // 分类标记，按它筛人用。
-  tag String? @db.VarChar(64)
+  tag      String? @db.VarChar(64)
   // 停用即软删：停用的不再能开局，历史对局里那份阵容快照照旧算数。
   isActive Boolean @default(true) @map("is_active")
   notes    String? @db.Text
@@ -60,18 +60,18 @@ model AgentMemory {
 
 // 一局对局的档案：哪块板子、排到哪儿了、分出了什么胜负。
 model Game {
-  id      String  @id @db.VarChar(64)
-  boardId String  @map("board_id") @db.VarChar(64)
+  id         String  @id @db.VarChar(64)
+  boardId    String  @map("board_id") @db.VarChar(64)
   // 开局那一刻的阵容：哪一格坐着谁、用哪个型号、从哪接入。冻在这儿，中途改 agent 不影响这一局。
   // 密钥不进这里：它按 agent 现读，换钥匙当场生效，端点对不上才拦。
-  roster  Json?   @db.JsonB
+  roster     Json?   @db.JsonB
   // 分出胜负时写这儿。有值就说明这局已经结束，不用再从阶段记录往下跑。
-  winner  String? @db.VarChar(16)
+  winner     String? @db.VarChar(16)
   // 终局局面与胜方一起写入，阶段锚点仍只用于恢复。
-  finalState Json? @map("final_state") @db.JsonB
+  finalState Json?   @map("final_state") @db.JsonB
   // 队列上的位置：queued / running / finished / failed，取值见 shared 的 GAME_STATUSES。
   // 只在队列跑的局会有 failed；CLI 直接跑完的那些建档就是 finished。
-  status  String  @default("queued") @db.VarChar(16)
+  status     String  @default("queued") @db.VarChar(16)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
@@ -103,14 +103,14 @@ model GameStep {
 
 // 过程台账：按 seq 读回来就是提示词里那份「已经发生的事」，各人只看得到受众含自己的那几条。
 model GameEvent {
-  gameId   String @map("game_id") @db.VarChar(64)
-  seq      Int    @db.SmallInt
+  gameId   String   @map("game_id") @db.VarChar(64)
+  seq      Int      @db.SmallInt
   // 由提问键派生的幂等键：重放同一问不会写下第二条。
-  eventKey String @map("event_key") @db.VarChar(200)
-  day      Int    @db.SmallInt
-  text     String @db.Text
+  eventKey String   @map("event_key") @db.VarChar(200)
+  day      Int      @db.SmallInt
+  text     String   @db.Text
   // 这条事实属于哪一类，取给谁看时按它分块；默认值只为改这一列之前的老行能补上。
-  kind     String @default("other") @db.VarChar(32)
+  kind     String   @default("other") @db.VarChar(32)
   // 这条事实发生那一刻谁看得到，存玩家 id；写的人每次都会填，默认值只为老行能补上。
   audience String[] @default([])
 
@@ -149,8 +149,7 @@ model ActionRecord {
 }
 
 // 问出去的题面。提问那一刻先落一份：答到一半断了，那一问当初看到的是什么也还查得到。
-// 全仓只有这张表不认重——同一问重问几遍就留几行，那正是要看的东西；也正因为认不出「同一问」，
-// 它派不出自然键来，只好另给一个自增主键。
+// 格式重问使用新的 callId；传输重试写在 attempts 中。旧题面没有观测字段。
 model AskedPrompt {
   id        Int     @id @default(autoincrement())
   gameId    String  @map("game_id") @db.VarChar(64)
@@ -162,13 +161,53 @@ model AskedPrompt {
   // 这一问要它走的工具定义；让它写一段话的那几问（发言）不走工具，为空。
   tool      Json?   @db.JsonB
 
+  callId        String?   @unique @map("call_id") @db.Uuid
+  summaryKey    String?   @map("summary_key") @db.VarChar(200)
+  step          String?   @db.VarChar(32)
+  executionId   String?   @map("execution_id") @db.Uuid
+  taskId        String?   @map("task_id") @db.VarChar(120)
+  checkpointId  String?   @map("checkpoint_id") @db.VarChar(120)
+  formatAttempt Int?      @map("format_attempt") @db.SmallInt
+  endpointKey   String?   @map("endpoint_key") @db.VarChar(64)
+  status        String?   @db.VarChar(32)
+  failureCode   String?   @map("failure_code") @db.VarChar(32)
+  durationMs    Float?    @map("duration_ms")
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz
+  traceId       String?   @map("trace_id") @db.VarChar(32)
+  spanId        String?   @map("span_id") @db.VarChar(16)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  game     Game           @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  attempts ModelAttempt[]
 
   @@index([actionKey])
   @@index([gameId, id])
   @@map("asked_prompts")
+}
+
+// started 只证明本地准备了请求，崩溃后不能据此断定供应商是否收到。
+model ModelAttempt {
+  askedPromptId Int       @map("asked_prompt_id")
+  attemptNo     Int       @map("attempt_no") @db.SmallInt
+  status        String    @default("started") @db.VarChar(32)
+  dispatched    Boolean?
+  failureCode   String?   @map("failure_code") @db.VarChar(32)
+  durationMs    Float?    @map("duration_ms")
+  thinkingMs    Float?    @map("thinking_ms")
+  httpStatus    Int?      @map("http_status") @db.SmallInt
+  requestId     String?   @map("request_id") @db.Text
+  usage         Json?     @db.JsonB
+  usageComplete Boolean?  @map("usage_complete")
+  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz
+  traceId       String?   @map("trace_id") @db.VarChar(32)
+  spanId        String?   @map("span_id") @db.VarChar(16)
+
+  askedPrompt AskedPrompt @relation(fields: [askedPromptId], references: [id], onDelete: Cascade)
+
+  @@id([askedPromptId, attemptNo])
+  @@map("model_attempts")
 }
 
 // 图执行进度：每个 superstep 一份状态快照。

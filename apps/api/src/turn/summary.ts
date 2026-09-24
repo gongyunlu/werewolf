@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { InvalidOutputError } from '../llm/model-port';
 import { toolOf } from './decisions';
 import { ask, askParsed, noted, parseStructured, retryNote } from './graph';
@@ -78,6 +79,7 @@ export async function summarize(
     speeches: readonly SpeechToFold[];
   },
 ): Promise<readonly SummaryItem[]> {
+  const executionId = randomUUID();
   const seatNos = input.speeches.map((speech) => speech.seatNo);
   const schema = summaryShape(seatNos);
   const turn = await renderSummary(runtime.promptSource, {
@@ -91,13 +93,15 @@ export async function summarize(
 
   const what = `第 ${input.day} 天${input.channel}的摘要`;
   const { parsed } = await askParsed(
-    (note) =>
+    (note, formatAttempt) =>
       ask(
         runtime.port,
         // 折摘要不是某个玩家在答，用整局的兜底那份接入身份。
         runtime.accessFor(null),
         note === null ? turn : noted(turn, note),
         toolOf(schema, `把这一天的${input.channel}压成每人一条`),
+        undefined,
+        { executionId, step: 'summary', formatAttempt },
       ),
     (content) => coverEveryone(parseStructured(content, schema, what).items, seatNos),
     (raw, diagnosis) =>

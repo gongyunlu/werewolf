@@ -10,23 +10,22 @@ function afterDawn(state: GameState, deaths: readonly NightDeath[]): GameState {
 }
 
 describe('走完一个白天', () => {
-  it('有警长时：竞选、发言、放逐串成一条线', async () => {
+  it('有警长时：常规发言与放逐串成一条线', async () => {
     const actions = stubActions({
-      runForSheriff: async (playerId) => playerId === 'p1' || playerId === 'p2',
-      withdraw: async (playerId) => playerId === 'p2',
       speak: async (turn, playerId) => `${turn}:${playerId}`,
       chooseSpeechSide: async () => 'right',
       vote: ballotOf({ p1: 'p3', p2: 'p3', p3: 'p3', p4: 'p3', p5: 'p3', p6: 'p3' }),
     });
 
-    const result = await runDay({ state: makeState(6), actions, minute: 22 });
+    const result = await runDay({
+      state: { ...makeState(6), sheriffId: 'p1' },
+      actions,
+      minute: 22,
+    });
 
-    // p2 退水后只剩 p1 一个候选人，直接当选。
     expect(result.state.sheriffId).toBe('p1');
-    // 警上发言从 2 号位起逆时针；白天从警长右边起顺时针，警长压轴。
+    // 白天从警长右边起顺时针，警长压轴。
     expect(result.speeches.map((speech) => [speech.turn, speech.seatNo])).toEqual([
-      ['campaign', 2],
-      ['campaign', 1],
       ['day', 2],
       ['day', 3],
       ['day', 4],
@@ -42,28 +41,23 @@ describe('走完一个白天', () => {
     });
   });
 
-  it('夜里死的人不再上警，也不进发言队列', async () => {
+  it('已公布夜间死讯的人不进常规发言和放逐投票', async () => {
     const actions = stubActions({
-      runForSheriff: async (playerId) => {
-        // p3 昨夜已经出局，问到他就当场失败。
-        if (playerId === 'p3') throw new Error('出局的人不该再被问到上警');
-        return playerId === 'p1';
-      },
-      withdraw: async () => false,
       speak: async (turn, playerId) => `${turn}:${playerId}`,
       chooseSpeechSide: async () => 'right',
       vote: ballotOf({ p1: 'p2', p2: 'p2', p4: 'p2', p5: 'p2', p6: 'p2' }),
     });
 
     const result = await runDay({
-      state: afterDawn(makeState(6), [{ playerId: 'p3', cause: DEATH_CAUSES.NIGHT_KILL }]),
+      state: afterDawn({ ...makeState(6), sheriffId: 'p1' }, [
+        { playerId: 'p3', cause: DEATH_CAUSES.NIGHT_KILL },
+      ]),
       actions,
       minute: 22,
     });
 
     expect(result.state.sheriffId).toBe('p1');
     expect(result.speeches.map((speech) => [speech.turn, speech.seatNo])).toEqual([
-      ['campaign', 1],
       ['day', 2],
       ['day', 4],
       ['day', 5],
@@ -141,27 +135,22 @@ describe('走完一个白天', () => {
     expect(result.state.sheriffId).toBe('p4');
   });
 
-  it('竞选刚选出的警长，自爆那一问的局面上看得见', async () => {
-    const state = withRoles(makeState(6), {
-      p1: ROLES.SEER,
-      p2: ROLES.WEREWOLF,
-      p6: ROLES.WEREWOLF,
-    });
+  it('当前警长，自爆那一问的局面上看得见', async () => {
+    const state = withRoles(
+      { ...makeState(6), sheriffId: 'p2' },
+      {
+        p1: ROLES.SEER,
+        p2: ROLES.WEREWOLF,
+        p6: ROLES.WEREWOLF,
+      },
+    );
     const observed: GameState[] = [];
-    // 第一个自爆窗口开在竞选里，那时还没有警长；第二个开在竞选结束之后。
-    let windows = 0;
     let blastSaw = '没交过局面';
     const actions = stubActions({
-      runForSheriff: async (playerId) => playerId === 'p2',
-      withdraw: async () => false,
       speak: async (turn, playerId) => `${turn}:${playerId}`,
-      // 一个窗口把队里的狼挨个问一遍；6 号要是也答是，按座位序爆的就是他，竞选当场作废。
-      // 只让 2 号答。
+      // 一个窗口把队里的狼挨个问一遍，只让 2 号自爆。
       wolfBlast: async (wolfId) => {
         if (wolfId !== 'p2') return false;
-        windows += 1;
-        if (windows === 1) return false;
-
         const seen = observed.at(-1);
         blastSaw = seen === undefined ? '没交过局面' : `警长 ${seen.sheriffId ?? '空'}`;
         return true;

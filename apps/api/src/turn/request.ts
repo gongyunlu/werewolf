@@ -93,7 +93,7 @@ export function decisionSchemaJson(schema: z.ZodType | undefined): Record<string
 
 /**
  * 行动序号发号器：按（节点实例、事件类型、行动者）数这是第几次被问。
- * 同一天最多问同一只狼两回（竞选那天多一次），只按节点实例编号会撞车；
+ * 同一节点里可能在竞选发言和 PK 开始前分别询问自爆，只按节点实例编号会撞车；
  * 一个发号器管一局，跨局复用会把序号接在上一位上。
  */
 export function actionOrdinals(): (

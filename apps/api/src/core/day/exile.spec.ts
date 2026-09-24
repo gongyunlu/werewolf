@@ -1,4 +1,5 @@
-import { ballotOf, stubActions, makeState } from '../../testing/fixtures';
+import { ballotOf, stubActions, makeState, withRoles, playerOf } from '../../testing/fixtures';
+import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import { runExile } from './exile';
 import type { Ballot } from '../vote';
 
@@ -10,6 +11,29 @@ function stateWithSheriff(playerCount: number, sheriffId: string | null) {
 }
 
 describe('放逐', () => {
+  it('放逐 PK 开始前自爆，保留首轮票型并跳过 PK 发言和投票', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p5: ROLES.WEREWOLF,
+      p6: ROLES.WEREWOLF,
+    });
+    const blast = jest.fn(async (id: string) => id === 'p5');
+    const result = await runExile(
+      state,
+      stubActions({
+        vote: ballotOf({ p1: 'p2', p2: 'p3', p3: 'p2', p4: 'p3', p5: 'p2', p6: 'p3' }),
+        wolfBlast: blast,
+      }),
+      SPEECH_ORDER,
+    );
+    expect(blast).toHaveBeenCalledTimes(2);
+    expect(result.aborted).toBe(true);
+    expect(result.exiledId).toBeNull();
+    expect(result.speeches).toEqual([]);
+    expect(result.ballots).toHaveLength(1);
+    expect(playerOf(result.state, 'p5').deathCause).toBe(DEATH_CAUSES.SELF_DESTRUCT);
+  });
+
   it('首轮票型在 PK 发言前发布，PK 票型在返回前发布', async () => {
     const published: Ballot[] = [];
     const actions = stubActions({

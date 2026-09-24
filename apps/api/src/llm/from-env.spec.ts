@@ -17,7 +17,7 @@ function capabilityOf(overrides: Record<string, unknown> = {}): Record<string, u
 
 /** 必填那几项照 .env.example 抄一份，拼出来的等价于一份照着模板填的 .env。 */
 const BASE = {
-  DATABASE_URL: 'postgresql://werewolf:werewolf@127.0.0.1:5434/werewolf',
+  DATABASE_URL: 'postgresql://werewolf:werewolf@127.0.0.1:5432/werewolf',
   MODEL_BASE_URL: ENDPOINT,
   MODEL_DEFAULT_MODEL: MODEL,
   MODEL_CAPABILITIES: JSON.stringify([

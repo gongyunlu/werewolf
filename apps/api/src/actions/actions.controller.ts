@@ -47,11 +47,12 @@ export class ActionsController {
           const { reasoning: _reasoning, ...entry } = logEntry(row);
           const phase = parsePhaseInstanceId(row.phaseInstanceId);
           if (!phase) throw new Error(`行动的阶段标识无效：${row.phaseInstanceId}`);
+          const node = nodeNameOf(phase);
           return {
             ...entry,
             ledgerSeq: row.ledgerSeq,
             hasReasoning: row.hasReasoning,
-            phase: nodeNameOf(phase),
+            phase: node === 'dawn' ? 'day' : node,
             eventSeq: eventSeqs.get(row.actionKey) ?? null,
           };
         }),

@@ -25,8 +25,8 @@ export interface AnnounceResult {
 }
 
 /**
- * 天亮公布死讯：把今晨的死者落到状态上，并给出对外公布的内容。
- * 白天不会再有人死，所以死亡天数就是当前天数。
+ * 将本次出局落到状态上，供夜间死讯公布和白天即时出局共用。
+ * 同一个人只能出局一次；夜间待公布名单由天亮流程排除已即时出局的人。
  */
 export function announceDay(state: GameState, deaths: readonly NightDeath[]): AnnounceResult {
   const playerById = new Map(state.players.map((player) => [player.id, player]));

@@ -1,4 +1,4 @@
-import { ACTION_TYPES, FACTIONS } from '@werewolf/shared';
+import { ACTION_TYPES, DEATH_CAUSES, FACTIONS, ROLES } from '@werewolf/shared';
 import type { BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
 import type { StageAnchor } from '../core/loop';
@@ -10,8 +10,9 @@ import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { wireOf } from '../queue/game-event-hub';
 import { stubSkills } from '../testing/fixtures';
-import type { RecordingModel } from '../testing/model';
-import { answeringPlayer, breakingPlayer } from '../testing/player';
+import { answeringModel, type RecordingModel } from '../testing/model';
+import { answeringPlayer, breakingPlayer, playerAnswer } from '../testing/player';
+import { ActionsController } from '../actions/actions.controller';
 import { LOCAL_TURN_PROMPTS } from './prompt';
 import { runModelGame } from './run-model-game';
 
@@ -120,6 +121,69 @@ function recordingStores(): { stores: GameStores; rows: StoredAskedPrompt[] } {
 }
 
 describe('整局接入', () => {
+  it('首夜中刀的 4 号仍收到报名与警下投票，模型上下文和回放均在竞选后才显示死讯', async () => {
+    const stores = memoryStores();
+    const roles = [
+      ROLES.WHITE_WOLF,
+      ROLES.VILLAGER,
+      ROLES.GUARD,
+      ROLES.SEER,
+      ROLES.WEREWOLF,
+      ROLES.VILLAGER,
+    ] as const;
+    const port = answeringModel((request) => {
+      const shape = JSON.stringify(request.tool?.parameters);
+      if (shape?.includes('"accept"')) return playerAnswer(request);
+      if (request.prompt.includes('这次要你做的事：决定今晚守护谁。')) return 'null';
+      if (request.prompt.includes('这次要你做的事：决定今晚狼队刀谁。')) {
+        return /^- 4 号$/m.test(request.prompt) ? '4' : '2';
+      }
+      return playerAnswer(request);
+    });
+    const result = await runModelGame({
+      setup: {
+        gameId: 'g-first-night-election',
+        boardId: '6p_white_wolf',
+        hasSheriff: true,
+        seats: roles.map((role, index) => ({ role, seatNo: index + 1 })),
+      },
+      playerIds: roles.map((_role, index) => `p${index + 1}`),
+      runtime: { port, accessFor: () => ACCESS, memoriesFor: () => [], skills: stubSkills() },
+      promptSource: LOCAL_TURN_PROMPTS,
+      minuteOf: () => 22,
+      stores,
+    });
+    expect(result.state.players.find((player) => player.id === 'p4')).toMatchObject({
+      deathDay: 1,
+      deathCause: DEATH_CAUSES.NIGHT_KILL,
+    });
+    const campaign = result.outcomes
+      .map((outcome) => outcome.snapshot)
+      .filter((snapshot) => snapshot.actionKey.includes('/dawn'));
+    expect(
+      campaign.filter((snapshot) => snapshot.actionType === ACTION_TYPES.SHERIFF_CANDIDACY),
+    ).toHaveLength(6);
+    expect(
+      campaign.some(
+        (snapshot) => snapshot.actionType === ACTION_TYPES.VOTE && snapshot.actorId === 'p4',
+      ),
+    ).toBe(true);
+    for (const snapshot of campaign) {
+      expect(JSON.stringify(snapshot.context.visible)).not.toMatch(/已出局|昨晚 .*倒牌/);
+    }
+    const events = await stores.events.list('g-first-night-election');
+    const resultEvent = events.find((event) => event.eventKey.endsWith('/election-result'))!;
+    const dawnEvent = events.find((event) => event.eventKey.endsWith('/dawn'))!;
+    expect(resultEvent.seq).toBeLessThan(dawnEvent.seq);
+    expect(dawnEvent.text).toBe('昨晚 4 号 倒牌。');
+    const summaries = await new ActionsController(stores).summaries('g-first-night-election');
+    expect(
+      summaries.actions
+        .filter((action) => action.actionKey.includes('/dawn'))
+        .every((action) => action.phase === 'day'),
+    ).toBe(true);
+  });
+
   it('法官流程持久化回放，私密结果不公开，同批决策不互相泄露', async () => {
     const stores = memoryStores();
     const { result } = await playGame(stores, { boardId: '6p_white_wolf' });
@@ -132,7 +196,8 @@ describe('整局接入', () => {
     const dawn = events.find((event) => event.eventKey.endsWith('/dawn'))!;
     expect(wireOf(dawn).phase).toBe('day');
     expect(dawn.audience).toHaveLength(6);
-    expect(dawn.text).toMatch(/天亮了/);
+    expect(dawn.text).toMatch(/昨晚/);
+    expect(events.find((event) => event.eventKey.endsWith('/daybreak'))?.text).toBe('天亮了。');
     expect(events.at(-1)?.text).toContain('阵营获胜');
     for (const { snapshot } of result.outcomes.filter(
       (outcome) => outcome.snapshot.context.day === 1,
