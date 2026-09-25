@@ -164,7 +164,16 @@ export async function ask(
   if (signal?.aborted) throw new ModelCallError('deadline', '这次调用已被中止');
   const callId = randomUUID();
   const response = await port.generate(
-    { system: turn.system.text, prompt: turn.user.text, tool },
+    {
+      system: turn.system.text,
+      prompt: turn.user.text,
+      tool,
+      prompts: [turn.system, turn.user].map(({ template, version, source }) => ({
+        name: template,
+        version,
+        source,
+      })),
+    },
     access,
     // 走工具的那几问只会收到思考：正文那一头本来就是空的。
     {

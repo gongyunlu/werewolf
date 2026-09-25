@@ -24,7 +24,24 @@ export class PromptContractError extends Error {
 
 /** 提示词源：按名字取一条模板，取不到就抛。 */
 export interface PromptSource {
-  load(name: string): Promise<PromptTemplate>;
+  /** 已固定的源不允许在缺失时换成本地正文。 */
+  strict?: boolean;
+  load(name: string, version?: number): Promise<PromptTemplate>;
+}
+
+/** 保存正文后恢复不再依赖平台在线，也不受标签移动影响。 */
+export function snapshotPromptSource(templates: readonly PromptTemplate[]): PromptSource {
+  const saved = new Map(templates.map((template) => [template.name, structuredClone(template)]));
+  return {
+    strict: true,
+    async load(name, version) {
+      const template = saved.get(name);
+      if (!template || (version !== undefined && template.version !== version)) {
+        throw new PromptContractError(`固定快照没有提示词 "${name}" 的所需版本`);
+      }
+      return structuredClone(template);
+    },
+  };
 }
 
 /** 正文里出现的变量名。 */

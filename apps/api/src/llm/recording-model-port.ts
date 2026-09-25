@@ -51,7 +51,9 @@ export function recordingModelPort(
     async generate(request: ModelRequest, access: ModelAccess, call: ModelCallOptions = {}) {
       const started = performance.now();
       const span =
-        scope && call.identity ? callSpan(scope.gameId, { ...scope, ...call.identity }) : undefined;
+        scope && call.identity
+          ? callSpan(scope.gameId, { ...scope, ...call.identity, prompts: request.prompts ?? [] })
+          : undefined;
       const recording = await record({
         model: access.model,
         system: request.system,
@@ -95,10 +97,16 @@ export function recordingModelPort(
             let generation: ReturnType<typeof requestSpan>;
             return {
               dispatched() {
-                generation = requestSpan(span, access.model, number, {
-                  ...scope,
-                  ...call.identity,
-                });
+                generation = requestSpan(
+                  span,
+                  access.model,
+                  number,
+                  {
+                    ...scope,
+                    ...call.identity,
+                  },
+                  request,
+                );
               },
               async finish(result) {
                 finishRequest(generation, result);

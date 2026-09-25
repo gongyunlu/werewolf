@@ -291,7 +291,9 @@ async function renderPart(
 
 /** 取一条模板，平台读不到就退到本地那份。契约不满足一律抛，不回退——模板被改坏了要当场知道。 */
 async function loadTurnPrompt(source: PromptSource, name: TurnPromptName): Promise<PromptTemplate> {
-  const template = await source.load(name).catch(() => LOCAL_TURN_PROMPTS.load(name));
+  const template = source.strict
+    ? await source.load(name)
+    : await source.load(name).catch(() => LOCAL_TURN_PROMPTS.load(name));
   assertTemplateContract(template, REQUIRED_PROMPT_VARIABLES[name]);
   return template;
 }

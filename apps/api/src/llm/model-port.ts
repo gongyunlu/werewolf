@@ -1,5 +1,8 @@
 import type { ModelCapability } from './model-capability';
 import type { AttemptCompletion, CallCompletion, CallIdentity } from './observation';
+import type { PromptTemplate } from './prompt-template';
+
+export type PromptReference = Pick<PromptTemplate, 'name' | 'version' | 'source'>;
 
 /**
  * 模型调用的失败分类，决定调用方该不该重试。
@@ -76,6 +79,10 @@ export interface ModelTool {
 
 /** 一次模型请求。提示词怎么拼由调用方决定，端口不管内容。 */
 export interface ModelRequest {
+  /** 与本次实际正文一起传递；遥测不重新查询标签。 */
+  prompts?: readonly PromptReference[];
+  /** Langfuse 原生只关联一条模板，其余仍完整保存在 metadata.prompts。 */
+  primaryPrompt?: string;
   /** 系统提示词：这名玩家是谁、守着哪些规矩。 */
   system: string;
   /** 用户提示词：这一刻的局面与这次要定的事。 */

@@ -8,11 +8,8 @@ export interface LangfusePromptConfig {
   secretKey: string;
 }
 
-/** 在线模板在客户端里缓存的秒数：面板上改了模板，最多等这么久生效。 */
-const CACHE_TTL_SECONDS = 60;
-
 /**
- * 从 Langfuse 上取 production 版本的模板。取不到就抛，由取用点拿本地那份顶上。
+ * 显式版本优先，未指定时仍按原有方式取 production。
  *
  * 不传 SDK 的 fallback 选项：传了它会在请求失败时塞一份回退正文回来而不抛错，
  * 那份东西不是平台上的模板，混进来就成了拿旧正文冒充线上的。不传就没这条路。
@@ -21,11 +18,11 @@ export function langfusePromptSource(config: LangfusePromptConfig): PromptSource
   const client = new LangfuseClient(config);
 
   return {
-    async load(name: string): Promise<PromptTemplate> {
+    async load(name: string, version?: number): Promise<PromptTemplate> {
       const prompt = await client.prompt.get(name, {
-        label: 'production',
+        ...(version === undefined ? { label: 'production' } : { version }),
         type: 'text',
-        cacheTtlSeconds: CACHE_TTL_SECONDS,
+        cacheTtlSeconds: version === undefined ? 60 : 0,
       });
 
       return { name, text: prompt.prompt, version: prompt.version, source: 'platform' };

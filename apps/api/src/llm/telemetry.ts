@@ -10,6 +10,21 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import { Logger } from '@nestjs/common';
 import type { AppEnv } from '../config/env';
 import { tokenUsage, type AttemptCompletion, type CallCompletion } from './observation';
+import type { ModelRequest } from './model-port';
+
+/** 一次真实请求只有一个 generation，所有组成模板另存完整清单。 */
+export function promptAttributes(request: Pick<ModelRequest, 'prompts' | 'primaryPrompt'>) {
+  const prompts = request.prompts ?? [];
+  const primary = request.primaryPrompt
+    ? prompts.find((prompt) => prompt.name === request.primaryPrompt)
+    : prompts[0];
+  return {
+    ...(primary?.source === 'platform' && primary.version !== null
+      ? { prompt: { name: primary.name, version: primary.version, isFallback: false } }
+      : {}),
+    metadata: { prompts },
+  };
+}
 
 const logger = new Logger('ModelTelemetry');
 let sdk: NodeSDK | undefined;
@@ -78,7 +93,9 @@ export function requestSpan(
   model: string,
   attemptNo: number,
   metadata: Record<string, unknown>,
+  request: Pick<ModelRequest, 'prompts' | 'primaryPrompt'> = {},
 ): LangfuseGeneration | undefined {
+  const attributes = promptAttributes(request);
   return (
     parent &&
     telemetry(() =>
@@ -87,7 +104,8 @@ export function requestSpan(
           'model.request',
           {
             model,
-            metadata: { ...metadata, attemptNo },
+            ...attributes,
+            metadata: { ...metadata, ...attributes.metadata, attemptNo },
           },
           { asType: 'generation' },
         ),

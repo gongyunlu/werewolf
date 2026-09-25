@@ -6,7 +6,7 @@ import { memoryStores } from '../store/memory';
 import { openaiModelPort } from './openai-model-port';
 import { recordingModelPort } from './recording-model-port';
 import { retryingModelPort } from './retrying-model-port';
-import { callSpan, startTelemetry, stopTelemetry } from './telemetry';
+import { callSpan, promptAttributes, startTelemetry, stopTelemetry } from './telemetry';
 
 interface CapturedSpan {
   name: string;
@@ -68,7 +68,14 @@ describe('遥测只记录真实请求', () => {
         { gameId, actionKey: 'a' },
       );
       const pending = port.generate(
-        { system: 'private-system', prompt: 'private-prompt' },
+        {
+          system: 'private-system',
+          prompt: 'private-prompt',
+          prompts: [
+            { name: 'turn/generate-system', version: 3, source: 'platform' },
+            { name: 'turn/generate-user', version: 8, source: 'platform' },
+          ],
+        },
         {
           baseUrl: 'http://offline.invalid',
           model: 'test',
@@ -102,6 +109,10 @@ describe('遥测只记录真实请求', () => {
       expect(span.parentSpanContext?.spanId).toBe(row.spanId);
       expect(JSON.stringify(span.attributes)).toContain(row.callId!);
       expect(JSON.stringify(span.attributes)).toContain(row.gameId);
+      expect(span.attributes['langfuse.observation.prompt.name']).toBe('turn/generate-system');
+      expect(span.attributes['langfuse.observation.prompt.version']).toBe(3);
+      expect(JSON.stringify(span.attributes)).toContain('turn/generate-user');
+      expect(JSON.stringify(span.attributes)).toContain('8');
     }
     expect(rows[2].attempts[0].spanId).toBeNull();
     expect(JSON.stringify(mockSpans.map((span) => span.attributes))).not.toMatch(
@@ -117,5 +128,17 @@ describe('遥测只记录真实请求', () => {
     expect(local.attempts[0].status).toBe('succeeded');
     await stopTelemetry();
     expect(processor.shutdown).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('单次关联可选 user，完整清单保留；本地正文不冒充平台版本', () => {
+  const prompts = [
+    { name: 'system', version: null, source: 'local' as const },
+    { name: 'user', version: 5, source: 'platform' as const },
+  ];
+  expect(promptAttributes({ prompts }).prompt).toBeUndefined();
+  expect(promptAttributes({ prompts, primaryPrompt: 'user' })).toEqual({
+    prompt: { name: 'user', version: 5, isFallback: false },
+    metadata: { prompts },
   });
 });
