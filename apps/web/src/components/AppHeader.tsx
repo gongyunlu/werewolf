@@ -28,7 +28,7 @@ export function AppHeader() {
             <NavLink
               key={item.to}
               to={item.to}
-              end
+              end={item.to === '/'}
               className={({ isActive }) =>
                 cn(
                   'rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground',

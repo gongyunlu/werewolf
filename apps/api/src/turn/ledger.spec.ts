@@ -41,6 +41,29 @@ function saidBy(process: Ledger, actorId: string, ordinal: number, day: number):
 }
 
 describe('过程台账', () => {
+  it('法官播报进入玩家上下文，恢复后仍按受众和提问水位隔离', async () => {
+    const store = memoryEvents();
+    const process = ledger(store, GAME, []);
+    await sayAs(process, EVENT_KINDS.SYSTEM, 'death', 1, '昨晚 4 号倒牌。');
+    await sayAs(process, EVENT_KINDS.SYSTEM, 'blast', 1, '3 号自爆出局。');
+    await sayAs(process, EVENT_KINDS.SYSTEM, 'take', 1, '3 号发动技能，带走了 2 号。');
+    await process.add('check', 1, '你查验了 6 号，是狼人。', ['p2'], EVENT_KINDS.SYSTEM);
+    await process.add('wolf', 1, '狼队刀了 4 号。', ['p2'], EVENT_KINDS.WOLF_SPEECH);
+    await sayAs(process, EVENT_KINDS.SYSTEM, 'future', 2, '昨晚平安夜。');
+
+    const resumed = ledger(store, GAME, await store.list(GAME));
+    expect(resumed.factsFor(VIEWER, 5)).toEqual([
+      {
+        title: '法官播报',
+        lines: ['【第 1 天】', '昨晚 4 号倒牌。', '3 号自爆出局。', '3 号发动技能，带走了 2 号。'],
+      },
+    ]);
+    expect(resumed.factsFor(VIEWER, 1)[0].lines).toEqual(['【第 1 天】', '昨晚 4 号倒牌。']);
+    expect(resumed.factsFor('p2', 5).flatMap((block) => block.lines)).toContain(
+      '你查验了 6 号，是狼人。',
+    );
+  });
+
   it('没记过就是空的', () => {
     expect(ledger(memoryEvents(), GAME, []).factsFor(VIEWER)).toEqual([]);
   });

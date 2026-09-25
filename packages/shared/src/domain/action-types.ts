@@ -26,6 +26,7 @@ export const ACTION_TYPES = {
 
   // —— 狼人 ——
   WOLF_PROPOSAL: 'wolf_proposal', // 狼队内部提刀
+  WOLF_DISCUSSION_CONTINUE: 'wolf_discussion_continue', // 是否继续狼队商议
   WOLF_KILL: 'wolf_kill', // 狼队最终刀口
   WOLF_EXPLODE: 'wolf_explode', // 狼人自爆
 

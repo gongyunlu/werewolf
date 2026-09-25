@@ -8,6 +8,29 @@ function aliveIds(state: { players: readonly { id: string; isAlive: boolean }[] 
 }
 
 describe('自爆窗口', () => {
+  it.each(['p5', null])('公开播报只说明自爆和实际技能结果，不直接报出身份：%s', async (target) => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.WHITE_WOLF,
+    });
+    const announcements: string[] = [];
+    await runBlastWindow(
+      state,
+      'day',
+      stubActions({ wolfBlast: async (id) => id === 'p3', whiteWolfTake: async () => target }),
+      undefined,
+      async (_state, event) => {
+        announcements.push(event.text);
+      },
+    );
+    expect(announcements).toContain('3 号自爆出局，今天剩余的发言和投票结束。');
+    expect(announcements.join('\n')).not.toContain('白狼王');
+    expect(announcements.filter((text) => text.includes('发动技能'))).toEqual(
+      target ? ['3 号发动技能，带走了 5 号。'] : [],
+    );
+  });
+
   it('一只狼失败后等待其他自爆回答收尾再返回失败', async () => {
     let release!: (value: boolean) => void;
     const slow = new Promise<boolean>((resolve) => {

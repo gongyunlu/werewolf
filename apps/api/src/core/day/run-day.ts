@@ -1,6 +1,6 @@
 import type { ActionProvider } from '../actions';
 import { seatNames, type FlowObserver } from '../flow';
-import { daySpeechOrder, sheriffSpeechOrder } from '../speech-order';
+import { daySpeechOrder, sheriffSpeechOrder, speechOrderReason } from '../speech-order';
 import type { GameState } from '../state';
 import { settleBadgeAfterDeaths } from './badge';
 import { runExile } from './exile';
@@ -59,7 +59,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
   const deadTodaySeatNos = state.players
     .filter((player) => !player.isAlive && player.deathDay === state.day)
     .map((player) => player.seatNo);
-  const speechOrder = await daySpeechOrderOf(
+  const { order: speechOrder, reason } = await daySpeechOrderOf(
     state,
     actions,
     aliveSeatNos,
@@ -69,7 +69,7 @@ export async function runDay(input: DayInput): Promise<DayResult> {
 
   await onFlow?.(state, {
     key: 'day-speech',
-    text: `开始白天发言，顺序：${speechOrder.map((seat) => `${seat} 号`).join('、')}。`,
+    text: `开始白天发言。${reason}顺序：${speechOrder.map((seat) => `${seat} 号`).join('、')}。`,
   });
   const speeches = await speakInOrder('day', speechOrder, state.players, actions);
 
@@ -97,16 +97,19 @@ async function daySpeechOrderOf(
   aliveSeatNos: readonly number[],
   deadSeatNos: readonly number[],
   minute: number,
-): Promise<number[]> {
+): Promise<{ order: number[]; reason: string }> {
   const { sheriffId } = state;
-  if (sheriffId === null) return daySpeechOrder(aliveSeatNos, deadSeatNos, minute);
+  if (sheriffId === null) {
+    const order = daySpeechOrder(aliveSeatNos, deadSeatNos, minute);
+    return { order, reason: speechOrderReason(minute, order, deadSeatNos) };
+  }
 
   const sheriff = state.players.find((player) => player.id === sheriffId);
   if (!sheriff) throw new Error(`警长不在局内：${sheriffId}`);
 
-  return sheriffSpeechOrder(
-    aliveSeatNos,
-    sheriff.seatNo,
-    await actions.chooseSpeechSide(sheriffId, state.day),
-  );
+  const side = await actions.chooseSpeechSide(sheriffId, state.day);
+  return {
+    order: sheriffSpeechOrder(aliveSeatNos, sheriff.seatNo, side),
+    reason: `警长 ${sheriff.seatNo} 号选择从${side === 'left' ? '左侧（逆时针）' : '右侧（顺时针）'}开始，跳过已出局者，警长最后发言。`,
+  };
 }

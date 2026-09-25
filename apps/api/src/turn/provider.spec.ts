@@ -269,7 +269,8 @@ describe('模型行动提供者', () => {
       expect(decided(model)[2].prompt).not.toContain('商议发言');
 
       // 商议发言不带白天那份场景正文：它开头写着「所有人都会听到」，在狼队频道上是句假话。
-      expect(decided(model)[0].system).not.toContain('正文：scenarios/');
+      expect(decided(model)[0].system).toContain('正文：scenarios/wolf_team');
+      expect(decided(model)[0].system).toContain('正文：scenarios/wolf_discussion');
       expect(decided(model)[2].system).toContain('正文：scenarios/day_speech');
       expect(model.calls).toHaveLength(4);
       expect(actions.outcomes().map((outcome) => outcome.snapshot.preset)).toEqual([
@@ -554,6 +555,57 @@ describe('模型行动提供者', () => {
   });
 
   describe('提交记录', () => {
+    it('商议继续判断使用完整第一轮，结果仅狼队可见，恢复不再调用模型', async () => {
+      const state = packState();
+      const { model, actions, stores } = await withActions(state, [
+        '刀 4，我悍跳，2 留警下。',
+        '同意，我在警下配合。',
+        'false',
+        ...quality('过'),
+      ]);
+      await actions.wolfSpeech('p1', 1, ['p1', 'p2']);
+      await actions.wolfSpeech('p2', 1, ['p1', 'p2']);
+      expect(await actions.wolfDiscussionContinues('p1')).toBe(false);
+      expect(decided(model)[2].prompt).toContain('同意，我在警下配合。');
+      const decision = (await stores.actions.list(state.gameId)).find(
+        (row) => row.actionType === ACTION_TYPES.WOLF_DISCUSSION_CONTINUE,
+      )!;
+      expect(decision.status).toBe('done');
+      const resumed = modelActions(
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          promptSource: LOCAL_TURN_PROMPTS,
+          skills: stubSkills(),
+        },
+        stores,
+      );
+      resumed.observe(state);
+      expect(await resumed.wolfDiscussionContinues('p1')).toBe(false);
+      expect(model.calls).toHaveLength(3);
+      await resumed.speak('day', 'p4', []);
+      expect(decided(model)[3].prompt).not.toContain('结束商议并各自提刀');
+      expect(decided(model)[3].prompt).not.toContain('我悍跳');
+    });
+
+    it('玩家后续提问可见自爆和技能带人的公开事实，不直接获得身份或他人的私有播报', async () => {
+      const state = sixPlayerState();
+      const { actions, model } = await withActions(state, quality('过'));
+      await actions.recordFlow(state, { key: 'blast', text: '1 号自爆出局。' });
+      await actions.recordFlow(state, { key: 'take', text: '1 号发动技能，带走了 2 号。' });
+      await actions.recordFlow(state, {
+        key: 'private',
+        text: '查验结果：5 号是好人。',
+        audience: ['p4'],
+      });
+      await actions.speak('day', 'p3', []);
+      expect(decided(model)[0].prompt).toContain('1 号自爆出局。');
+      expect(decided(model)[0].prompt).toContain('1 号发动技能，带走了 2 号。');
+      expect(decided(model)[0].prompt).not.toContain('白狼王');
+      expect(decided(model)[0].prompt).not.toContain('查验结果：5 号是好人。');
+    });
+
     it('恢复旧存档时不在末尾补播已走过的流程，追上进度后正常播报', async () => {
       const state = sixPlayerState();
       const { model, actions, stores } = await withActions(state, ['true', 'false']);

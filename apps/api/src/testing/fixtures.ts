@@ -85,6 +85,7 @@ export function stubActions(
     chooseSpeechSide: async () => notConfigured('chooseSpeechSide'),
     decideBadge: async () => notConfigured('decideBadge'),
     wolfSpeech: async () => notConfigured('wolfSpeech'),
+    wolfDiscussionContinues: async () => notConfigured('wolfDiscussionContinues'),
     wolfProposal: async () => notConfigured('wolfProposal'),
     guardProtect: async () => notConfigured('guardProtect'),
     seerCheck: async () => notConfigured('seerCheck'),

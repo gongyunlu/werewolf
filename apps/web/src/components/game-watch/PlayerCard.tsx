@@ -22,7 +22,7 @@ export function PlayerCard({
     <Card
       className={cn(
         'h-full min-h-0 gap-0 py-3',
-        dead && 'border-dashed',
+        dead && 'ring-destructive/30',
         active && 'ring-2 ring-primary',
       )}
     >
@@ -69,6 +69,15 @@ export function PlayerCard({
               <UserRound className="size-1/2" />
             </AvatarFallback>
           </Avatar>
+          {dead ? (
+            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-background/75">
+              <Skull className="size-1/2 text-red-600 dark:text-red-400" aria-hidden="true" />
+              <span className="sr-only">
+                {player.seatNo} 号已出局
+                {player.deathCause ? `：${deathCauseName(player.deathCause)}` : ''}
+              </span>
+            </div>
+          ) : null}
           <span
             className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-md bg-card px-1 text-2xl leading-tight font-semibold tabular-nums"
             aria-label={`${player.seatNo} 号座位`}
@@ -82,12 +91,6 @@ export function PlayerCard({
                 'absolute -top-2 size-5 text-amber-500',
                 side === 'left' ? '-left-1' : '-right-1',
               )}
-            />
-          ) : null}
-          {dead ? (
-            <Skull
-              aria-label={player.deathCause ? deathCauseName(player.deathCause) : '已出局'}
-              className="absolute -right-1 -bottom-1 size-5 text-muted-foreground"
             />
           ) : null}
         </div>

@@ -8,6 +8,8 @@ const SCENARIOS: readonly ScenarioId[] = [
   'vote',
   'night_action',
   'sheriff_decide_order',
+  'wolf_team',
+  'wolf_discussion',
 ];
 
 describe('一局要带的技能正文', () => {
@@ -24,7 +26,7 @@ describe('一局要带的技能正文', () => {
     expect(new Set(contents).size).toBe(DEALABLE_ROLES.length);
   });
 
-  it('四个场景各取到各的那一份，没有两个撞在同一份上', () => {
+  it('各场景取到各自的正文，没有两个撞在同一份上', () => {
     const skills = gameSkills(BOARD_IDS[0]);
     const contents = SCENARIOS.map((id) => skills.scenario(id).content);
 

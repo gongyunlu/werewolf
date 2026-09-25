@@ -86,7 +86,7 @@ export async function runBlastWindow(
   if (taken)
     await onFlow?.(announced, {
       key: `${window}-blast-take`,
-      text: `白狼王带走了 ${seatNames(announced, [taken])}。`,
+      text: `${blaster.seatNo} 号发动技能，带走了 ${seatNames(announced, [taken])}。`,
     });
   observe?.(announced);
   // 带走的那张也可能是最后一个神职或最后一张平民，分出来了也没必要再问警徽给谁。

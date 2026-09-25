@@ -9,8 +9,9 @@ import {
   type PendingAction,
 } from '@werewolf/shared';
 import { Fragment, memo, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { ZodType } from 'zod';
+import { GameReview } from '@/components/game-review/GameReview';
 import { ActionRow, LiveActionRow } from '@/components/game-watch/ActionRow';
 import { PlayerCard } from '@/components/game-watch/PlayerCard';
 import { SceneRow } from '@/components/game-watch/SceneRow';
@@ -53,57 +54,73 @@ const History = memo(function History({
   gameId,
   events,
   actions,
+  pending,
+  players,
   roster,
   playerCount,
 }: {
   gameId: string;
   events: GameEvent[];
   actions: ActionSummary[];
+  pending: PendingAction[];
+  players: GameDetail['players'];
   roster: GameDetail['roster'];
   playerCount: number;
 }) {
-  const rows = timelineRows(events, actions);
-  return rows.map((row, index) => (
-    <Fragment key={row.id}>
-      {index === 0 || rows[index - 1].day !== row.day || rows[index - 1].phase !== row.phase ? (
-        <MessageScrollerItem messageId={`day-${row.id}`}>
-          <Marker variant="separator">
-            <MarkerContent>
-              第 {row.day} 天 · {phaseName(row.phase)}
-            </MarkerContent>
-          </Marker>
+  const rows = timelineRows(events, actions, pending);
+  return rows.map((row, index) => {
+    const pendingPlayer = row.pending
+      ? players.find((player) => player.id === row.pending!.actorId)
+      : null;
+    return (
+      <Fragment key={row.id}>
+        {index === 0 || rows[index - 1].day !== row.day || rows[index - 1].phase !== row.phase ? (
+          <MessageScrollerItem messageId={`day-${row.id}`}>
+            <Marker variant="separator">
+              <MarkerContent>
+                第 {row.day} 天 · {phaseName(row.phase)}
+              </MarkerContent>
+            </Marker>
+          </MessageScrollerItem>
+        ) : null}
+        {row.event?.kind !== 'system' &&
+        (index === 0 ||
+          rows[index - 1].day !== row.day ||
+          rows[index - 1].phase !== row.phase ||
+          rows[index - 1].activity !== row.activity) ? (
+          <MessageScrollerItem messageId={`activity-${row.id}`}>
+            <h2 className="pt-2 text-sm font-medium text-muted-foreground">{row.activity}</h2>
+          </MessageScrollerItem>
+        ) : null}
+        <MessageScrollerItem messageId={row.id}>
+          {row.event ? (
+            <SceneRow
+              event={row.event}
+              speakerName={
+                roster.find((seat) => row.event!.text.startsWith(`${seat.seatNo} 号`))?.name
+              }
+              privateResult={row.event.audience.length < playerCount}
+            >
+              {row.action ? <ActionRow gameId={gameId} action={row.action} inline /> : null}
+            </SceneRow>
+          ) : row.pending ? (
+            <ActionRow
+              gameId={gameId}
+              action={{ ...row.pending, seatNo: pendingPlayer!.seatNo }}
+              stopped
+              speakerName={roster.find((seat) => seat.seatNo === pendingPlayer?.seatNo)?.name}
+            />
+          ) : (
+            <ActionRow
+              gameId={gameId}
+              action={row.action!}
+              speakerName={roster.find((seat) => seat.seatNo === row.action!.seatNo)?.name}
+            />
+          )}
         </MessageScrollerItem>
-      ) : null}
-      {row.event?.kind !== 'system' &&
-      (index === 0 ||
-        rows[index - 1].day !== row.day ||
-        rows[index - 1].phase !== row.phase ||
-        rows[index - 1].activity !== row.activity) ? (
-        <MessageScrollerItem messageId={`activity-${row.id}`}>
-          <h2 className="pt-2 text-sm font-medium text-muted-foreground">{row.activity}</h2>
-        </MessageScrollerItem>
-      ) : null}
-      <MessageScrollerItem messageId={row.id}>
-        {row.event ? (
-          <SceneRow
-            event={row.event}
-            speakerName={
-              roster.find((seat) => row.event!.text.startsWith(`${seat.seatNo} 号`))?.name
-            }
-            privateResult={row.event.audience.length < playerCount}
-          >
-            {row.action ? <ActionRow gameId={gameId} action={row.action} inline /> : null}
-          </SceneRow>
-        ) : (
-          <ActionRow
-            gameId={gameId}
-            action={row.action!}
-            speakerName={roster.find((seat) => seat.seatNo === row.action!.seatNo)?.name}
-          />
-        )}
-      </MessageScrollerItem>
-    </Fragment>
-  ));
+      </Fragment>
+    );
+  });
 });
 
 /** 换局即重建订阅与滚动状态。 */
@@ -113,6 +130,7 @@ export function GamePage() {
 }
 
 function GameWatch({ gameId }: { gameId: string }) {
+  const [searchParams] = useSearchParams();
   const [game, setGame] = useState<GameDetail | null>(null);
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [events, setEvents] = useState<GameEvent[]>([]);
@@ -124,6 +142,8 @@ function GameWatch({ gameId }: { gameId: string }) {
   const [resuming, setResuming] = useState(false);
   const [polling, setPolling] = useState(true);
   const ended = game?.status === GAME_STATUSES.FINISHED || game?.status === GAME_STATUSES.FAILED;
+  const reviewing =
+    game?.status === GAME_STATUSES.FINISHED && searchParams.get('view') === 'review';
 
   useEffect(() => {
     let alive = true;
@@ -217,14 +237,33 @@ function GameWatch({ gameId }: { gameId: string }) {
     [actions, perspective],
   );
   const completed = new Set(actions.map((action) => action.actionKey));
-  const currentActions = Object.values(live).filter((action) => !completed.has(action.actionKey));
+  const historicalPending = useMemo(() => {
+    const latestSeq = Math.max(
+      0,
+      ...events.map((event) => event.seq),
+      ...actions.map((action) => action.ledgerSeq),
+    );
+    return pending.filter(
+      (action) =>
+        (ended || action.ledgerSeq < latestSeq) &&
+        players.some((player) => player.id === action.actorId),
+    );
+  }, [pending, ended, events, actions, players]);
+  const historicalKeys = new Set(historicalPending.map((action) => action.actionKey));
+  const currentActions = Object.values(live).filter(
+    (action) => !completed.has(action.actionKey) && !historicalKeys.has(action.actionKey),
+  );
   const activeSeats = new Set(
     currentActions
       .filter((action) => action.steps.some((step) => step.status === 'running'))
       .map((action) => action.seatNo),
   );
+  const shownPending = useMemo(
+    () => (perspective === PERSPECTIVES.GOD ? historicalPending : []),
+    [perspective, historicalPending],
+  );
   const waitingActions = pending
-    .filter((action) => !live[action.actionKey])
+    .filter((action) => !live[action.actionKey] && !historicalKeys.has(action.actionKey))
     .flatMap((action) => {
       const player = players.find((candidate) => candidate.id === action.actorId);
       return player ? [{ ...action, seatNo: player.seatNo }] : [];
@@ -232,7 +271,8 @@ function GameWatch({ gameId }: { gameId: string }) {
   const hasActivity =
     shown.length > 0 ||
     shownActions.length > 0 ||
-    (perspective === PERSPECTIVES.GOD && (currentActions.length > 0 || waitingActions.length > 0));
+    (perspective === PERSPECTIVES.GOD &&
+      (currentActions.length > 0 || shownPending.length > 0 || waitingActions.length > 0));
   const half = Math.ceil(players.length / 2);
   const resume = async () => {
     setResuming(true);
@@ -266,15 +306,28 @@ function GameWatch({ gameId }: { gameId: string }) {
               {resuming ? '恢复中…' : '恢复对局'}
             </Button>
           ) : null}
-          <Tabs value={perspective} onValueChange={(value) => setPerspective(value as Perspective)}>
-            <TabsList>
-              {Object.values(PERSPECTIVES).map((value) => (
-                <TabsTrigger key={value} value={value}>
-                  {PERSPECTIVE_NAMES[value]}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          {game?.status === GAME_STATUSES.FINISHED ? (
+            <Link
+              className={buttonVariants({ variant: reviewing ? 'outline' : 'default', size: 'sm' })}
+              to={reviewing ? `/games/${gameId}` : `/games/${gameId}?view=review`}
+            >
+              {reviewing ? '返回对局记录' : '赛后复盘'}
+            </Link>
+          ) : null}
+          {!reviewing ? (
+            <Tabs
+              value={perspective}
+              onValueChange={(value) => setPerspective(value as Perspective)}
+            >
+              <TabsList>
+                {Object.values(PERSPECTIVES).map((value) => (
+                  <TabsTrigger key={value} value={value}>
+                    {PERSPECTIVE_NAMES[value]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          ) : null}
           <Link className={buttonVariants({ variant: 'outline', size: 'sm' })} to="/games">
             回到列表
           </Link>
@@ -290,118 +343,123 @@ function GameWatch({ gameId }: { gameId: string }) {
           对局已中断，已保存的记录仍可查看。
         </p>
       ) : null}
-      <div
-        className={cn(
-          'grid min-h-0 flex-1 gap-5 p-4 lg:p-5',
-          players.length > 0 &&
-            'lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2.8fr)_minmax(13rem,1fr)]',
-        )}
-      >
-        {players.length > 0 ? (
-          <aside
-            className="grid min-h-0 min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 lg:grid-rows-6"
-            aria-label="左侧座位"
-          >
-            {players.slice(0, half).map((player) => (
-              <PlayerCard
-                key={player.id}
-                player={player}
-                side="left"
-                seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
-                active={!ended && activeSeats.has(player.seatNo)}
-              />
-            ))}
-          </aside>
-        ) : null}
-        <section
-          aria-label="对局动态"
-          className="flex h-[70dvh] min-h-0 min-w-0 flex-col lg:h-full"
+      {reviewing ? (
+        <GameReview game={game} />
+      ) : (
+        <div
+          className={cn(
+            'grid min-h-0 flex-1 gap-5 p-4 lg:p-5',
+            players.length > 0 &&
+              'lg:grid-cols-[minmax(13rem,1fr)_minmax(0,2.8fr)_minmax(13rem,1fr)]',
+          )}
         >
-          <div className="mb-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>对局动态{perspective === PERSPECTIVES.CLOSED ? ' · 仅公开消息' : ''}</span>
-            <span>
-              {stream.connected
-                ? '已连上'
-                : stream.error
-                  ? `已断开：${errorMessage(stream.error)}`
-                  : '连接中'}
-            </span>
-          </div>
-          <MessageScrollerProvider autoScroll defaultScrollPosition="end">
-            <MessageScroller>
-              <MessageScrollerViewport aria-label="对局消息滚动区域">
-                <MessageScrollerContent aria-label="对局消息" className="gap-4 px-1 pb-12">
-                  {!hasActivity ? (
-                    <MessageScrollerItem messageId="empty">
-                      <p className="py-12 text-center text-sm text-muted-foreground">
-                        {!players.length
-                          ? '还没发牌。'
-                          : events.length
-                            ? '闭眼视角下，这一局还没有公开的事实。'
-                            : '等待对局动态，玩家发言、投票与法官播报将在这里呈现。'}
-                      </p>
-                    </MessageScrollerItem>
-                  ) : null}
-                  <History
-                    gameId={gameId}
-                    events={shown}
-                    actions={shownActions}
-                    roster={game?.roster ?? []}
-                    playerCount={players.length}
-                  />
-                  {perspective === PERSPECTIVES.GOD
-                    ? waitingActions.map((action) => (
-                        <MessageScrollerItem key={action.actionKey} messageId={action.actionKey}>
-                          <ActionRow
-                            gameId={gameId}
-                            action={action}
-                            stopped={ended}
-                            speakerName={
-                              game?.roster.find((seat) => seat.seatNo === action.seatNo)?.name
-                            }
-                          />
-                        </MessageScrollerItem>
-                      ))
-                    : null}
-                  {perspective === PERSPECTIVES.GOD
-                    ? currentActions.map((action) => (
-                        <MessageScrollerItem
-                          key={action.actionKey}
-                          messageId={`live-${action.actionKey}`}
-                        >
-                          <LiveActionRow
-                            action={action}
-                            stopped={ended}
-                            speakerName={
-                              game?.roster.find((seat) => seat.seatNo === action.seatNo)?.name
-                            }
-                          />
-                        </MessageScrollerItem>
-                      ))
-                    : null}
-                </MessageScrollerContent>
-              </MessageScrollerViewport>
-              <MessageScrollerButton />
-            </MessageScroller>
-          </MessageScrollerProvider>
-        </section>
-        {players.length > 0 ? (
-          <aside
-            className="grid min-h-0 min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 lg:grid-rows-6"
-            aria-label="右侧座位"
+          {players.length > 0 ? (
+            <aside
+              className="grid min-h-0 min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 lg:grid-rows-6"
+              aria-label="左侧座位"
+            >
+              {players.slice(0, half).map((player) => (
+                <PlayerCard
+                  key={player.id}
+                  player={player}
+                  side="left"
+                  seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
+                  active={!ended && activeSeats.has(player.seatNo)}
+                />
+              ))}
+            </aside>
+          ) : null}
+          <section
+            aria-label="对局动态"
+            className="flex h-[70dvh] min-h-0 min-w-0 flex-col lg:h-full"
           >
-            {players.slice(half).map((player) => (
-              <PlayerCard
-                key={player.id}
-                player={player}
-                side="right"
-                seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
-                active={!ended && activeSeats.has(player.seatNo)}
-              />
-            ))}
-          </aside>
-        ) : null}
-      </div>
+            <div className="mb-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>对局动态{perspective === PERSPECTIVES.CLOSED ? ' · 仅公开消息' : ''}</span>
+              <span>
+                {stream.connected
+                  ? '已连上'
+                  : stream.error
+                    ? `已断开：${errorMessage(stream.error)}`
+                    : '连接中'}
+              </span>
+            </div>
+            <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+              <MessageScroller>
+                <MessageScrollerViewport aria-label="对局消息滚动区域">
+                  <MessageScrollerContent aria-label="对局消息" className="gap-4 px-1 pb-12">
+                    {!hasActivity ? (
+                      <MessageScrollerItem messageId="empty">
+                        <p className="py-12 text-center text-sm text-muted-foreground">
+                          {!players.length
+                            ? '还没发牌。'
+                            : events.length
+                              ? '闭眼视角下，这一局还没有公开的事实。'
+                              : '等待对局动态，玩家发言、投票与法官播报将在这里呈现。'}
+                        </p>
+                      </MessageScrollerItem>
+                    ) : null}
+                    <History
+                      gameId={gameId}
+                      events={shown}
+                      actions={shownActions}
+                      pending={shownPending}
+                      players={players}
+                      roster={game?.roster ?? []}
+                      playerCount={players.length}
+                    />
+                    {perspective === PERSPECTIVES.GOD
+                      ? waitingActions.map((action) => (
+                          <MessageScrollerItem key={action.actionKey} messageId={action.actionKey}>
+                            <ActionRow
+                              gameId={gameId}
+                              action={action}
+                              speakerName={
+                                game?.roster.find((seat) => seat.seatNo === action.seatNo)?.name
+                              }
+                            />
+                          </MessageScrollerItem>
+                        ))
+                      : null}
+                    {perspective === PERSPECTIVES.GOD
+                      ? currentActions.map((action) => (
+                          <MessageScrollerItem
+                            key={action.actionKey}
+                            messageId={`live-${action.actionKey}`}
+                          >
+                            <LiveActionRow
+                              action={action}
+                              stopped={ended}
+                              speakerName={
+                                game?.roster.find((seat) => seat.seatNo === action.seatNo)?.name
+                              }
+                            />
+                          </MessageScrollerItem>
+                        ))
+                      : null}
+                  </MessageScrollerContent>
+                </MessageScrollerViewport>
+                <MessageScrollerButton />
+              </MessageScroller>
+            </MessageScrollerProvider>
+          </section>
+          {players.length > 0 ? (
+            <aside
+              className="grid min-h-0 min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 lg:grid-rows-6"
+              aria-label="右侧座位"
+            >
+              {players.slice(half).map((player) => (
+                <PlayerCard
+                  key={player.id}
+                  player={player}
+                  side="right"
+                  seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
+                  active={!ended && activeSeats.has(player.seatNo)}
+                />
+              ))}
+            </aside>
+          ) : null}
+        </div>
+      )}
     </main>
   );
 }

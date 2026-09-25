@@ -1,7 +1,7 @@
 import type { ActionProvider } from '../actions';
 import { seatNames, type FlowObserver } from '../flow';
 import { settleActions } from '../parallel';
-import { campaignSpeechOrder, pkSpeechOrder } from '../speech-order';
+import { campaignSpeechOrder, pkSpeechOrder, speechOrderReason } from '../speech-order';
 import type { GameState, PlayerState } from '../state';
 import { collectVotes, tallyVotes, type BallotObserver, type VoteRound } from '../vote';
 import { runBlastWindow } from './self-destruct';
@@ -122,7 +122,7 @@ export async function runSheriffElection(
       );
     await onFlow?.(base, {
       key: 'campaign-speech',
-      text: `请警上玩家依次发言，顺序：${campaignOrder.map((seat) => `${seat} 号`).join('、')}。`,
+      text: `请警上玩家依次发言。${speechOrderReason(minute, campaignOrder)}顺序：${campaignOrder.map((seat) => `${seat} 号`).join('、')}。`,
     });
     speeches.push(...(await speakInOrder('campaign', campaignOrder, base.players, actions)));
   } else {

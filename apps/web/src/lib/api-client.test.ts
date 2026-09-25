@@ -1,8 +1,20 @@
-import { HealthResponseSchema } from '@werewolf/shared';
+import {
+  HealthResponseSchema,
+  ReviewPreviewSchema,
+  ReviewResponseSchema,
+  ReviewStartResponseSchema,
+} from '@werewolf/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { http } from './http';
 import { saveAdminToken } from './admin-token';
-import { createGame, fetchHealth, runGame } from './api-client';
+import {
+  createGame,
+  fetchHealth,
+  runGame,
+  fetchReview,
+  fetchReviewPreview,
+  startReview,
+} from './api-client';
 
 vi.mock('./http', () => ({
   http: { get: vi.fn(), post: vi.fn() },
@@ -20,6 +32,36 @@ describe('fetchHealth', () => {
     vi.mocked(http.get).mockRejectedValue(new Error('500'));
 
     await expect(fetchHealth()).rejects.toThrow('500');
+  });
+});
+
+describe('复盘接口装配', () => {
+  beforeEach(() => {
+    vi.mocked(http.get).mockReset().mockResolvedValue({});
+    vi.mocked(http.post).mockReset().mockResolvedValue({ status: 'waiting' });
+  });
+
+  it('预览和报告仅 GET，使用对应的响应校验并传递取消信号', async () => {
+    const signal = new AbortController().signal;
+    await fetchReviewPreview('g-review', signal);
+    await fetchReview('g-review', signal);
+    expect(http.get).toHaveBeenCalledWith('/games/g-review/review/preview', {
+      schema: ReviewPreviewSchema,
+      signal,
+    });
+    expect(http.get).toHaveBeenCalledWith('/games/g-review/review', {
+      schema: ReviewResponseSchema,
+      signal,
+    });
+  });
+
+  it('生成和续跑使用同一 POST，携带管理令牌', async () => {
+    saveAdminToken('review-token');
+    await startReview('g-review');
+    expect(http.post).toHaveBeenCalledWith('/games/g-review/review', undefined, {
+      schema: ReviewStartResponseSchema,
+      headers: { 'x-admin-token': 'review-token' },
+    });
   });
 });
 

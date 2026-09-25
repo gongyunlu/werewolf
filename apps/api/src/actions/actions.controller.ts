@@ -29,6 +29,13 @@ function logEntry(row: StoredAction): ActionLogEntry {
   };
 }
 
+function phaseOf(row: StoredAction): string {
+  const phase = parsePhaseInstanceId(row.phaseInstanceId);
+  if (!phase) throw new Error(`行动的阶段标识无效：${row.phaseInstanceId}`);
+  const node = nodeNameOf(phase);
+  return node === 'dawn' ? 'day' : node;
+}
+
 @Controller('games')
 export class ActionsController {
   constructor(@Inject(GAME_STORES) private readonly stores: GameStores) {}
@@ -45,23 +52,22 @@ export class ActionsController {
         .filter((row) => row.status === 'done')
         .map((row) => {
           const { reasoning: _reasoning, ...entry } = logEntry(row);
-          const phase = parsePhaseInstanceId(row.phaseInstanceId);
-          if (!phase) throw new Error(`行动的阶段标识无效：${row.phaseInstanceId}`);
-          const node = nodeNameOf(phase);
           return {
             ...entry,
             ledgerSeq: row.ledgerSeq,
             hasReasoning: row.hasReasoning,
-            phase: node === 'dawn' ? 'day' : node,
+            phase: phaseOf(row),
             eventSeq: eventSeqs.get(row.actionKey) ?? null,
           };
         }),
       pending: rows
         .filter((row) => row.status === 'running')
-        .map(({ actionKey, actionType, actorId }) => ({
-          actionKey,
-          actionType,
-          actorId,
+        .map((row) => ({
+          actionKey: row.actionKey,
+          actionType: row.actionType,
+          actorId: row.actorId,
+          ledgerSeq: row.ledgerSeq,
+          phase: phaseOf(row),
         })),
     });
   }

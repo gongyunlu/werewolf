@@ -3,6 +3,7 @@ export * from './api/agents';
 export * from './api/error';
 export * from './api/games';
 export * from './api/health';
+export * from './api/review';
 
 export * from './domain/action-types';
 export * from './domain/death-causes';

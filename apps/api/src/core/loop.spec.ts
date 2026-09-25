@@ -36,6 +36,7 @@ describe('推到终局', () => {
     const badge = jest.fn(async () => ({ kind: 'transfer' as const, toId: 'p3' }));
     const actions = stubActions({
       wolfSpeech: async () => '刀 4 号。',
+      wolfDiscussionContinues: async () => false,
       wolfProposal: wolfTargetsByNight(['p4', 'p2']),
       guardProtect: async () => null,
       seerCheck: async () => 'p3',
@@ -129,6 +130,7 @@ describe('推到终局', () => {
     });
     const actions = stubActions({
       wolfSpeech: async () => '今晚听你们的。',
+      wolfDiscussionContinues: async () => false,
       wolfProposal: async () => 'p4',
       seerCheck: async () => 'p1',
       wolfBlast: async () => false,
@@ -162,6 +164,7 @@ describe('推到终局', () => {
     const asked: string[][] = [];
     const actions = stubActions({
       wolfSpeech: async () => '今晚听你们的。',
+      wolfDiscussionContinues: async () => false,
       wolfProposal: wolfTargetsByNight(['p6', 'p4']),
       seerCheck: async () => 'p2',
       wolfBlast: async () => false,
@@ -197,6 +200,7 @@ describe('推到终局', () => {
     const asked: string[][] = [];
     const actions = stubActions({
       wolfSpeech: async () => '今晚听你们的。',
+      wolfDiscussionContinues: async () => false,
       wolfProposal: wolfTargetsByNight(['p6', 'p3']),
       seerCheck: async () => 'p2',
       wolfBlast: async () => false,
@@ -303,6 +307,7 @@ function plan(): Partial<ActionProvider> {
   return {
     // 三狼以上才轮得到商议，这里只有这一条线要验，说了什么都不影响刀口。
     wolfSpeech: async () => '今晚听你们的。',
+    wolfDiscussionContinues: async () => false,
     // p6 还在就刀他，他没了就刀预言家 p2：恢复重跑时手里那份局面跟断的那一次一样，答案也就一样。
     wolfProposal: async (_wolfId, candidates) => (candidates.includes('p6') ? 'p6' : 'p2'),
     guardProtect: async () => null,
@@ -518,6 +523,7 @@ describe('双爆后的夜间结算与恢复', () => {
     const actions = loggingActions(
       stubActions({
         wolfSpeech: async () => '按约定刀人。',
+        wolfDiscussionContinues: async () => false,
         wolfProposal: async () => (current.day === 1 ? 'p4' : current.day === 2 ? 'p5' : 'p9'),
         guardProtect: async () => null,
         seerCheck: async (_id, candidates) => candidates[0],

@@ -25,6 +25,29 @@ const event = (seq: number, kind: string): GameEvent => ({
 });
 
 describe('观战时间线', () => {
+  it('遗留的自爆请求留在原窗口，不出现在第二天终局之后，完成时只展示一次', () => {
+    const pending = {
+      actionKey: 'blast-6',
+      actorId: 'p6',
+      actionType: 'wolf_explode' as const,
+      ledgerSeq: 1,
+      phase: 'day',
+    };
+    const events = [
+      { ...event(1, 'system'), text: '进入自爆窗口' },
+      { ...event(2, 'system'), text: '3 号自爆出局' },
+      { ...event(3, 'system'), day: 2, text: '对局结束，好人阵营获胜' },
+    ];
+    const rows = timelineRows(events, [], [pending]);
+    expect(rows.map((row) => row.id)).toEqual(['event-1', 'blast-6', 'event-2', 'event-3']);
+    expect(rows[1]).toMatchObject({ day: 1, phase: 'day', pending });
+    expect(
+      timelineRows(events, [action({ ...pending, day: 1 })], [pending]).filter(
+        (row) => row.id === pending.actionKey,
+      ),
+    ).toHaveLength(1);
+  });
+
   it('后补的模型上下文摘要不重复插入观战动态，也不把日期退回过去', () => {
     const rows = timelineRows(
       [

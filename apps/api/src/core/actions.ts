@@ -4,11 +4,7 @@ import type { BlastWindow } from './day/self-destruct';
 /** 发言轮次：campaign 警上，campaign_pk 警上平票 PK，day 白天常规，exile_pk 放逐平票 PK。 */
 export type SpeechTurn = 'campaign' | 'campaign_pk' | 'day' | 'exile_pk';
 
-/**
- * 狼队夜间商议的轮次。
- * 定死两轮，不判收没收敛：判收敛要么再多一次模型调用，要么把提议和定案搅在一起，
- * 都不如直接走满——商议只是让各狼听见别人的想法，刀口照样是各提各的取众数。
- */
+/** 狼队最多商议两轮；第一轮明确刀口与必要分工后可以结束。 */
 export const WOLF_DISCUSSION_ROUNDS = [1, 2] as const;
 
 export type WolfRound = (typeof WOLF_DISCUSSION_ROUNDS)[number];
@@ -54,6 +50,8 @@ export interface ActionProvider {
    * 你说的话只有狼队频道看得到，会进后面发言者的上下文。
    */
   wolfSpeech(wolfId: string, round: WolfRound, order: readonly string[]): Promise<string>;
+  /** 第一轮后由首位发言者确认是否仍有分歧或必要分工未明确。 */
+  wolfDiscussionContinues(wolfId: string): Promise<boolean>;
   /** 狼队提刀；candidates 是本夜可刀的存活玩家（含狼队友）。返回 null 为空刀。 */
   wolfProposal(wolfId: string, candidates: readonly string[]): Promise<string | null>;
   /**

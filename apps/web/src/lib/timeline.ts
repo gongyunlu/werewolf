@@ -1,4 +1,4 @@
-import type { ActionSummary, GameEvent } from '@werewolf/shared';
+import type { ActionSummary, GameEvent, PendingAction } from '@werewolf/shared';
 import { actionTypeName, eventKindName } from './labels';
 
 export interface TimelineRow {
@@ -9,6 +9,7 @@ export interface TimelineRow {
   order: number;
   event: GameEvent | null;
   action: ActionSummary | null;
+  pending: PendingAction | null;
 }
 
 function activityOf(action: ActionSummary): string {
@@ -24,7 +25,11 @@ function activityOf(action: ActionSummary): string {
 }
 
 /** 过程与它产生的事实合为一条；没有产生事实的判断按原台账位置保留。 */
-export function timelineRows(events: GameEvent[], actions: ActionSummary[]): TimelineRow[] {
+export function timelineRows(
+  events: GameEvent[],
+  actions: ActionSummary[],
+  pending: PendingAction[] = [],
+): TimelineRow[] {
   const eventSeqs = new Set(events.map((event) => event.seq));
   const byEvent = new Map(
     actions.filter((action) => action.eventSeq !== null).map((action) => [action.eventSeq, action]),
@@ -40,6 +45,7 @@ export function timelineRows(events: GameEvent[], actions: ActionSummary[]): Tim
         order: event.seq,
         event,
         action,
+        pending: null,
         phase: event.phase ?? action?.phase ?? (event.kind.startsWith('wolf_') ? 'night' : 'day'),
         activity: action ? activityOf(action) : eventKindName(event.kind),
       };
@@ -54,6 +60,23 @@ export function timelineRows(events: GameEvent[], actions: ActionSummary[]): Tim
       order: action.ledgerSeq + 0.5,
       event: null,
       action,
+      pending: null,
+    });
+  }
+  for (const action of pending) {
+    if (actions.some((completed) => completed.actionKey === action.actionKey)) continue;
+    rows.push({
+      id: action.actionKey,
+      day: Math.max(
+        1,
+        ...events.filter((event) => event.seq <= action.ledgerSeq).map((event) => event.day),
+      ),
+      phase: action.phase,
+      activity: actionTypeName(action.actionType),
+      order: action.ledgerSeq + 0.5,
+      event: null,
+      action: null,
+      pending: action,
     });
   }
   return rows.toSorted((a, b) => a.order - b.order);

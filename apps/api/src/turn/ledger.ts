@@ -70,6 +70,7 @@ const CHANNELS: readonly { speech: EventKind; summary: EventKind }[] = [
  * 摘要与它折的那些明细同块：它替的就是那几行，挪到别处读的人就得两头对。
  */
 const BLOCKS: readonly { kinds: readonly EventKind[]; title: string }[] = [
+  { kinds: [EVENT_KINDS.SYSTEM], title: '法官播报' },
   { kinds: [EVENT_KINDS.SHERIFF], title: '上警与警徽' },
   { kinds: [EVENT_KINDS.BALLOT], title: '票型' },
   { kinds: [EVENT_KINDS.PUBLIC_SPEECH, EVENT_KINDS.PUBLIC_SUMMARY], title: '公开发言' },

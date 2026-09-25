@@ -66,6 +66,8 @@ function nodeContent(step: ActionStep, actionType: string): string {
 
 function resultText(action: ActionSummary): string {
   if (typeof action.decision === 'boolean') {
+    if (action.actionType === 'wolf_discussion_continue')
+      return action.decision ? '继续第二轮' : '结束商议';
     if (action.actionType === 'wolf_explode') return action.decision ? '选择自爆' : '不自爆';
     if (action.actionType === 'sheriff_candidacy') return action.decision ? '上警' : '不上警';
     if (action.actionType === 'sheriff_withdraw') return action.decision ? '退水' : '不退水';

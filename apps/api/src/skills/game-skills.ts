@@ -3,7 +3,8 @@ import type { DealableRole } from '../core/roles';
 import { loadSkill, type Skill } from './skill-loader';
 
 /** 场景正文的名字，与 skills/v1/scenarios 下的目录名一一对应。 */
-export type ScenarioId = 'day_speech' | 'vote' | 'night_action' | 'sheriff_decide_order';
+export type ScenarioId =
+  'day_speech' | 'vote' | 'night_action' | 'sheriff_decide_order' | 'wolf_team' | 'wolf_discussion';
 
 /** 一局要用的全部正文。开跑前按板子取一次，整局不再变。 */
 export interface GameSkills {

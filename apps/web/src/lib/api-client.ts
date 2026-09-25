@@ -9,6 +9,9 @@ import {
   GameDetailResponseSchema,
   GameListResponseSchema,
   HealthResponseSchema,
+  ReviewPreviewSchema,
+  ReviewResponseSchema,
+  ReviewStartResponseSchema,
   type AgentListResponse,
   type AgentMemories,
   type AgentMemoriesResponse,
@@ -23,6 +26,21 @@ import {
 } from '@werewolf/shared';
 import { adminHeaders } from './admin-token';
 import { http } from './http';
+
+export async function fetchReviewPreview(gameId: string, signal?: AbortSignal) {
+  return http.get(`/games/${gameId}/review/preview`, { schema: ReviewPreviewSchema, signal });
+}
+
+export async function fetchReview(gameId: string, signal?: AbortSignal) {
+  return http.get(`/games/${gameId}/review`, { schema: ReviewResponseSchema, signal });
+}
+
+export async function startReview(gameId: string) {
+  return http.post(`/games/${gameId}/review`, undefined, {
+    schema: ReviewStartResponseSchema,
+    headers: adminHeaders(),
+  });
+}
 
 export async function fetchActionSummaries(gameId: string) {
   return http.get(`/games/${gameId}/actions/summaries`, { schema: ActionSummaryResponseSchema });

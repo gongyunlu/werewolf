@@ -353,7 +353,9 @@ describe('自爆竞速与持久化', () => {
     const result = await resumed;
     expect(result.state.players.find((player) => player.id === 'p2')?.isAlive).toBe(false);
     expect(result.state.players.find((player) => player.id === 'p1')?.isAlive).toBe(true);
-    expect(calls.filter((call) => call.request.prompt.includes('决定是否自爆'))).toHaveLength(2);
+    expect(
+      calls.filter((call) => call.request.tool?.description.startsWith('决定是否自爆')),
+    ).toHaveLength(2);
     const events = await h.stores.events.list(initial.gameId);
     expect(events.filter((event) => event.text.includes('2 号自爆出局'))).toHaveLength(1);
   });
@@ -414,7 +416,9 @@ describe('自爆竞速与持久化', () => {
       expect(asked('你自爆出局了')).toBe(1);
       expect(asked('你出局了')).toBe(2);
       const events = await h.stores.events.list(initial.gameId);
-      expect(events.filter((event) => event.text.includes('白狼王带走了'))).toHaveLength(1);
+      expect(events.filter((event) => event.text === '2 号发动技能，带走了 4 号。')).toHaveLength(
+        1,
+      );
       expect(events.some((event) => event.text.includes('4 号发动出局技能'))).toBe(false);
     },
   );

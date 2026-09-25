@@ -21,6 +21,21 @@ export function timeRule(minute: number): {
   };
 }
 
+/** 与实际排序共用取时规则，播报原始起点及顺延后的首位。 */
+export function speechOrderReason(
+  minute: number,
+  order: readonly number[],
+  deadSeatNos: readonly number[] = [],
+): string {
+  const { anchorSeatNo, direction } = timeRule(minute);
+  const anchor = deadSeatNos.length > 0 ? Math.min(...deadSeatNos) : anchorSeatNo;
+  const start =
+    deadSeatNos.length > 0
+      ? `以今天出局者中座位号最小的 ${anchor} 号为起点`
+      : `以 ${anchor} 号为起点${minute % 10 === 0 ? '（个位为 0，取 1 号）' : ''}`;
+  return `本轮取时分钟数为 ${minute}，个位为 ${minute % 10}，按单顺双逆${direction === 'clockwise' ? '顺时针' : '逆时针'}发言；${start}，跳过不参与本轮的座位，从 ${order[0]} 号开始。`;
+}
+
 /**
  * 从 anchorSeatNo 出发按 direction 环绕遍历这批座位号。anchorSeatNo 不在集合里
  * （座位号不存在、或那人没上警）就沿方向顺延，顺延不到就绕回集合起点。

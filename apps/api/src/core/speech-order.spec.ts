@@ -4,10 +4,23 @@ import {
   pkSpeechOrder,
   sheriffSpeechOrder,
   speechOrderFrom,
+  speechOrderReason,
   timeRule,
 } from './speech-order';
 
 describe('单顺双逆', () => {
+  it('播报分钟个位、方向、原始起点与实际首位', () => {
+    expect(speechOrderReason(26, campaignSpeechOrder([1, 3, 5], 26))).toBe(
+      '本轮取时分钟数为 26，个位为 6，按单顺双逆逆时针发言；以 6 号为起点，跳过不参与本轮的座位，从 5 号开始。',
+    );
+    expect(speechOrderReason(20, campaignSpeechOrder([2, 5], 20))).toContain(
+      '以 1 号为起点（个位为 0，取 1 号）',
+    );
+    expect(speechOrderReason(25, daySpeechOrder([1, 3, 5], [2, 4], 25), [2, 4])).toContain(
+      '以今天出局者中座位号最小的 2 号为起点，跳过不参与本轮的座位，从 3 号开始。',
+    );
+  });
+
   it('个位是单数就从该座位号起顺时针', () => {
     expect(timeRule(25)).toEqual({ anchorSeatNo: 5, direction: 'clockwise' });
     expect(timeRule(3)).toEqual({ anchorSeatNo: 3, direction: 'clockwise' });

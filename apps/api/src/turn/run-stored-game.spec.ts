@@ -93,7 +93,9 @@ describe('留得住的对局', () => {
     const opens = countingOpens(stores);
     const clean = await play(memoryStores());
 
-    await expect(play(stores, { model: breakingPlayer(400) })).rejects.toThrow('这一跑断在这儿');
+    await expect(
+      play(stores, { model: breakingPlayer(Math.floor(clean.model.calls.length * 0.75)) }),
+    ).rejects.toThrow('这一跑断在这儿');
     // 断的那一跑连胜方都没写：档案里记着的还是「没分出胜负」。
     const broke = await stores.games.find('g1');
     expect(broke?.winner).toBeNull();
@@ -103,7 +105,7 @@ describe('留得住的对局', () => {
     // 接着跑那一跑故意换一条洗牌路径：接的要是库里那份局面，这一份发出来的牌根本用不上。
     const resumed = await play(stores, { random: OTHER_RANDOM });
 
-    // 整局五百多次调用，断在第四百次上：接着跑只该问剩下来的那一小段。
+    // 在后半局中断，接着跑只该问剩下来的那一小段。
     expect(resumed.model.calls.length).toBeLessThan(clean.model.calls.length / 2);
     expect(resumed.result.winner).toBe(clean.result.winner);
     expect(resumed.result.state.players.map((player) => player.isAlive)).toEqual(

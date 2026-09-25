@@ -8,7 +8,11 @@ import {
   fetchBoards,
   fetchActionSummaries,
   fetchActionDetail,
+  fetchReview,
+  fetchReviewPreview,
+  startReview,
 } from '@/lib/api-client';
+import { reviewPreview, reviewResponse } from '@/test/review-fixture';
 import { SceneRow } from '@/components/game-watch/SceneRow';
 import { GamePage } from './GamePage';
 
@@ -17,6 +21,9 @@ vi.mock('@/lib/api-client', () => ({
   fetchBoards: vi.fn(),
   fetchActionSummaries: vi.fn(),
   fetchActionDetail: vi.fn(),
+  fetchReview: vi.fn(),
+  fetchReviewPreview: vi.fn(),
+  startReview: vi.fn(),
 }));
 
 // 记一笔事实行被画了几次：正在写的那一段每秒来几十片，事实那一叠不该跟着重画。
@@ -114,9 +121,9 @@ function pushWriting(
   });
 }
 
-function page() {
+function page(entry = '/games/g-1') {
   return (
-    <MemoryRouter initialEntries={['/games/g-1']}>
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/games/:gameId" element={<GamePage />} />
       </Routes>
@@ -129,6 +136,36 @@ function renderPage() {
 }
 
 describe('GamePage', () => {
+  it('已结束页面通过入口打开复盘，地址中的复盘视图可在刷新后恢复', async () => {
+    vi.mocked(fetchGameDetail).mockResolvedValue({
+      game: detail({ status: GAME_STATUSES.FINISHED, winner: 'good' }),
+    });
+    vi.mocked(fetchReviewPreview).mockResolvedValue(reviewPreview);
+    vi.mocked(fetchReview).mockResolvedValue(reviewResponse());
+    const view = renderPage();
+    await userEvent.click(await screen.findByRole('link', { name: '赛后复盘' }));
+    expect(await screen.findByText('玩家当时视角')).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: '闭眼视角' })).toBeNull();
+    view.unmount();
+    render(page('/games/g-1?view=review'));
+    expect(await screen.findByText('玩家当时视角')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('link', { name: '返回对局记录' }));
+    expect(screen.getByRole('tab', { name: '闭眼视角' })).toBeInTheDocument();
+    expect(startReview).not.toHaveBeenCalled();
+  });
+
+  it.each([GAME_STATUSES.RUNNING, GAME_STATUSES.FAILED])(
+    '%s 的对局不展示复盘入口，也不读取复盘',
+    async (status) => {
+      vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail({ status }) });
+      vi.mocked(fetchReview).mockClear();
+      render(page('/games/g-1?view=review'));
+      await screen.findByText('预言家');
+      expect(screen.queryByRole('link', { name: '赛后复盘' })).toBeNull();
+      expect(fetchReview).not.toHaveBeenCalled();
+    },
+  );
+
   it('终局详情晚于并行摘要时，最终行动仍会显示并清掉未完成状态', async () => {
     vi.useFakeTimers();
     let finishDetail!: (value: { game: GameDetail }) => void;
@@ -141,7 +178,9 @@ describe('GamePage', () => {
     vi.mocked(fetchActionSummaries)
       .mockResolvedValueOnce({
         actions: [],
-        pending: [{ actionKey: 'last', actionType: 'vote', actorId: 'p1' }],
+        pending: [
+          { actionKey: 'last', actionType: 'vote', actorId: 'p1', ledgerSeq: 0, phase: 'vote' },
+        ],
       })
       .mockResolvedValue({
         actions: [
@@ -186,7 +225,9 @@ describe('GamePage', () => {
     vi.mocked(fetchActionSummaries)
       .mockResolvedValueOnce({
         actions: [],
-        pending: [{ actionKey: 'last', actionType: 'vote', actorId: 'p1' }],
+        pending: [
+          { actionKey: 'last', actionType: 'vote', actorId: 'p1', ledgerSeq: 0, phase: 'vote' },
+        ],
       })
       .mockRejectedValueOnce(new Error('最终摘要暂时不可用'));
     const view = renderPage();
@@ -574,6 +615,46 @@ describe('GamePage', () => {
     expect(rows).not.toHaveBeenCalled();
   });
 
+  it('终局后的历史中断行动仍在原自爆窗口，刷新不把它追加到终局后', async () => {
+    vi.mocked(fetchGameDetail).mockResolvedValue({
+      game: detail({ status: GAME_STATUSES.FINISHED, winner: 'good' }),
+    });
+    vi.mocked(fetchActionSummaries).mockResolvedValue({
+      actions: [],
+      pending: [
+        {
+          actionKey: 'old-blast',
+          actionType: 'wolf_explode',
+          actorId: 'p1',
+          ledgerSeq: 1,
+          phase: 'day',
+        },
+      ],
+    });
+    const assertOrder = async () => {
+      await screen.findByRole('button', { name: /1 号 · 自爆判断/ });
+      push(1, '进入自爆窗口', ['p1', 'p2']);
+      push(2, '另一名狼人自爆出局', ['p1', 'p2']);
+      push(3, '对局结束，好人阵营获胜', ['p1', 'p2']);
+      const action = screen.getByRole('button', { name: /1 号 · 自爆判断/ });
+      expect(action).toHaveTextContent('已中断');
+      expect(
+        screen.getByText('进入自爆窗口').compareDocumentPosition(action) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        action.compareDocumentPosition(screen.getByText('另一名狼人自爆出局')) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(screen.getAllByRole('button', { name: /1 号 · 自爆判断/ })).toHaveLength(1);
+    };
+    const view = renderPage();
+    await assertOrder();
+    view.unmount();
+    renderPage();
+    await assertOrder();
+  });
+
   it('中断后刷新也能展开未完成行动，并把未完成节点标为中断', async () => {
     vi.mocked(fetchGameDetail).mockResolvedValue({
       game: detail({ status: GAME_STATUSES.FAILED }),
@@ -583,6 +664,8 @@ describe('GamePage', () => {
       pending: [
         {
           actionKey: 'pending1',
+          ledgerSeq: 0,
+          phase: 'vote',
           actionType: 'vote',
           actorId: 'p1',
         },

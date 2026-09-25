@@ -8,7 +8,7 @@ import { alivePlayers, type GameState } from '../state';
  * 狼队今夜刀谁：先商议，再各提各的取众数，并列最高就随机挑一个。
  *
  * 商议只是让各狼听见别人的想法：发言顺序整夜只抽一次，两轮用同一个顺序、第二轮仍从首位起，
- * 后说的那些人在上下文里看得到前面说了什么。定案照旧是各提各的——商议出来的共识不算数，
+ * 后说的那些人在上下文里看得到前面说了什么。第一轮后确认是否还需讨论，定案照旧是各提各的，
  * 刀口仍是众数。只剩一只狼没人可商量，跳过商议直接问。
  *
  * 空刀在计票里和座位平权——不刀也是一次提名，空刀是投票的结果，不是开关。
@@ -33,6 +33,7 @@ export async function decideWolfKill(
       for (const wolfId of order) {
         await actions.wolfSpeech(wolfId, round, order);
       }
+      if (round === 1 && !(await actions.wolfDiscussionContinues(order[0]))) break;
     }
   }
 

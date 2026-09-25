@@ -4,6 +4,7 @@ import type { Ballot } from '../core/vote';
 import type { FlowObserver } from '../core/flow';
 import { actionKey, nodeNameOf, type PhaseInstanceId } from '../core/identity';
 import { audienceOf } from '../core/visibility';
+import { inWolfChannel } from '../core/roles';
 import type { GameState } from '../core/state';
 import { recordingModelPort } from '../llm/recording-model-port';
 import type { ScenarioId } from '../skills/game-skills';
@@ -264,6 +265,7 @@ export function modelActions(
     return [
       runtime.skills.ruleset.content,
       runtime.skills.role(player.role).content,
+      ...(inWolfChannel(player.role) ? [runtime.skills.scenario('wolf_team').content] : []),
       ...(scenario ? [runtime.skills.scenario(scenario).content] : []),
       ...runtime.memoriesFor(player.seatNo),
     ];
@@ -495,13 +497,32 @@ export function modelActions(
         task: `狼队商议第 ${round} 轮，轮到你说话。`,
         shape: 'speech',
         preset: 'quick',
+        scenario: 'wolf_discussion',
         extra: [
           `本轮发言顺序：${order.map((id) => `${seatNoOf(id)} 号`).join('、')}。`,
           '你说的话只有狼队看得到，会进后面发言者的上下文。',
-          '只讨论当前刀口和紧接着的分工，优先用 2—4 句话说清。已有共识简短确认，有新增信息再调整；不要重复队友的整套计划，也不要预演数日后的分支。',
+          round === 1
+            ? '本轮就交代清楚刀口与必要分工；达成共识后不会再开第二轮。'
+            : '只解决上一轮仍有分歧或遗漏的事项；本轮后直接各自提刀。',
         ],
         fact: (content) =>
           wolfFact(EVENT_KINDS.WOLF_SPEECH, `${seatNoOf(wolfId)} 号商议发言：${oneLine(content)}`),
+      });
+    },
+
+    async wolfDiscussionContinues(wolfId) {
+      return ask({
+        actionType: ACTION_TYPES.WOLF_DISCUSSION_CONTINUE,
+        actorId: wolfId,
+        task: '确认今夜第一轮狼队商议是否需要继续。只看今夜商议：刀口（含明确空刀）和必要的眼前战术分工已有明确共识，答 false；仍有刀口分歧、分工冲突或必要事项未交代，答 true。已明确承接前一计划也算明确，不要求逐人复述。不要因不赞同策略优劣、缺少远期分支或想补充话术而追加一轮。',
+        shape: 'yesOrNo',
+        fact: (continues) =>
+          wolfFact(
+            EVENT_KINDS.OTHER,
+            continues
+              ? '狼队第一轮商议后确认仍需讨论，进入第二轮。'
+              : '狼队第一轮商议后确认刀口与分工已明确，结束商议并各自提刀。',
+          ),
       });
     },
 
@@ -633,7 +654,7 @@ export function modelActions(
       return ask({
         actionType: ACTION_TYPES.WHITE_WOLF_TAKE,
         actorId: whiteWolfId,
-        task: '你自爆出局了，决定是否带一个人一起走。',
+        task: '你自爆出局了，决定是否发动技能带走一个人。',
         shape: 'seatOrNone',
         candidates,
       });

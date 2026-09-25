@@ -38,7 +38,11 @@ export type ActionSummary = z.infer<typeof ActionSummarySchema>;
 export const PendingActionSchema = ActionLogEntrySchema.pick({
   actionKey: true,
   actionType: true,
-}).extend({ actorId: z.string() });
+}).extend({
+  actorId: z.string(),
+  ledgerSeq: z.number(),
+  phase: z.string(),
+});
 export type PendingAction = z.infer<typeof PendingActionSchema>;
 export const ActionSummaryResponseSchema = z.object({
   actions: z.array(ActionSummarySchema),

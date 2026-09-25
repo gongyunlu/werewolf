@@ -211,6 +211,8 @@ describe('行动记录只读接口', () => {
         ),
         actorId: 'p3',
         actionType: ACTION_TYPES.VOTE,
+        ledgerSeq: 0,
+        phase: 'vote',
       },
     ]);
     const { body: detail } = await request(app.getHttpServer())

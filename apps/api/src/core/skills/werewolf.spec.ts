@@ -40,7 +40,11 @@ function varyingLottery(): () => number {
  * 这几条看的是提完刀怎么定，商议说了什么与刀口无关；要看商议本身的用例覆盖 wolfSpeech。
  */
 function killActions(overrides: Partial<ActionProvider>): ActionProvider {
-  return stubActions({ wolfSpeech: async () => '今晚听你们的。', ...overrides });
+  return stubActions({
+    wolfSpeech: async () => '今晚听你们的。',
+    wolfDiscussionContinues: async () => true,
+    ...overrides,
+  });
 }
 
 /** 记下每一次商议发言：第几轮、谁说、当时发到手的那份顺序。 */
@@ -187,7 +191,33 @@ describe('狼队提刀', () => {
 });
 
 describe('狼队商议', () => {
-  it('三狼局走满两轮，每狼每轮恰说一次', async () => {
+  it('第一轮明确刀口和分工后直接提刀，只询问一次是否继续', async () => {
+    const continueDiscussion = jest.fn(async () => false);
+    const proposal = jest.fn(async () => 'p4');
+    const { spoken, actions } = talkingPack({
+      wolfDiscussionContinues: continueDiscussion,
+      wolfProposal: proposal,
+    });
+    expect(await decideWolfKill(wolfBoard(), actions, noLottery())).toBe('p4');
+    expect(spoken.map((item) => item.round)).toEqual([1, 1, 1]);
+    expect(continueDiscussion).toHaveBeenCalledTimes(1);
+    expect(continueDiscussion).toHaveBeenCalledWith(spoken[0].wolfId);
+    expect(proposal).toHaveBeenCalledTimes(3);
+  });
+
+  it('继续判断失败时不擅自跳过商议去提刀', async () => {
+    const proposal = jest.fn(async () => 'p4');
+    const { actions } = talkingPack({
+      wolfDiscussionContinues: async () => {
+        throw new Error('判断中断');
+      },
+      wolfProposal: proposal,
+    });
+    await expect(decideWolfKill(wolfBoard(), actions, noLottery())).rejects.toThrow('判断中断');
+    expect(proposal).not.toHaveBeenCalled();
+  });
+
+  it('第一轮尚有未决事项才走第二轮，每狼每轮恰说一次', async () => {
     const { spoken, actions } = talkingPack({ wolfProposal: async () => 'p4' });
 
     expect(await decideWolfKill(wolfBoard(), actions, noLottery())).toBe('p4');

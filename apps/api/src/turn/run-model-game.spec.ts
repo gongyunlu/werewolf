@@ -207,7 +207,8 @@ describe('整局接入', () => {
         expect(context).not.toContain('上警名单');
       if (snapshot.actionType === ACTION_TYPES.SHERIFF_WITHDRAW)
         expect(context).not.toContain('退水名单');
-      expect(context).not.toContain('请闭眼');
+      expect(context).toContain('请所有玩家闭眼');
+      if (snapshot.actorId !== seer.id) expect(context).not.toContain('查验结果：');
     }
     await playGame(stores, { boardId: '6p_white_wolf' });
     expect(await stores.events.list('g1')).toEqual(events);
@@ -353,7 +354,7 @@ describe('整局接入', () => {
 
   it('断在某一问上，那一问的题面也留得下', async () => {
     const { stores, rows } = recordingStores();
-    const model = breakingPlayer(400);
+    const model = breakingPlayer(100);
 
     await expect(playGame(stores, { model })).rejects.toThrow('这一跑断在这儿');
 
@@ -372,10 +373,10 @@ describe('整局接入', () => {
   it('断在局中：从最后一份锚点接着跑，答过的那些不再问模型', async () => {
     const clean = await playGame();
     const { stores, lookups } = countingStores();
-    // 整局五百多次模型调用，断在第四百次上：前面答过的那一大片都该留在记录里。
-    await expect(playGame(stores, { model: breakingPlayer(400) })).rejects.toThrow(
-      '这一跑断在这儿',
-    );
+    // 在后半局中断，避免把续跑测试绑在商议轮数对应的固定调用次数上。
+    await expect(
+      playGame(stores, { model: breakingPlayer(Math.floor(clean.model.calls.length * 0.75)) }),
+    ).rejects.toThrow('这一跑断在这儿');
 
     const anchor = await stores.steps.last('g1');
     if (!anchor) throw new Error('断了却没落下锚点');
