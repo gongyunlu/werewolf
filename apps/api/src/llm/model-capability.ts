@@ -10,6 +10,8 @@ export interface ModelCapability {
   streamUsage?: boolean;
   /** 默认 required；不支持强制工具的端点显式声明 auto，结果仍由行动层校验。 */
   toolChoice?: 'required' | 'auto';
+  /** 端点支持服务端严格工具 schema 时显式开启；不会自动切换端点。 */
+  toolStrict?: boolean;
   /**
    * 关掉供应商自己思维链的请求体片段，直接并进请求。
    * 各家的参数名和形状都不一样，所以记的是片段本身而不是一个开关。
@@ -30,6 +32,7 @@ const CAPABILITY_DECLARATIONS = z.array(
     model: z.string().min(1),
     reasoningOff: z.record(z.string(), z.unknown()).nullable(),
     toolChoice: z.enum(['required', 'auto']).optional(),
+    toolStrict: z.boolean().optional(),
     streamUsage: z.boolean().optional(),
   }),
 );
@@ -61,6 +64,7 @@ export function resolveModelCapability(
   return {
     reasoningOff: declared.reasoningOff,
     ...(declared.toolChoice ? { toolChoice: declared.toolChoice } : {}),
+    ...(declared.toolStrict !== undefined ? { toolStrict: declared.toolStrict } : {}),
     ...(declared.streamUsage !== undefined ? { streamUsage: declared.streamUsage } : {}),
   };
 }

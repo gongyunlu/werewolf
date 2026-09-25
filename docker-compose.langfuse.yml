@@ -100,7 +100,7 @@ services:
       - langfuse_minio_data:/data
 
   langfuse-web:
-    image: ghcr.1ms.run/langfuse/langfuse:4
+    image: ghcr.1ms.run/langfuse/langfuse:4.15.0
     profiles: ['observability']
     restart: unless-stopped
     depends_on:
@@ -132,7 +132,7 @@ services:
       retries: 10
 
   langfuse-worker:
-    image: ghcr.1ms.run/langfuse/langfuse-worker:4
+    image: ghcr.1ms.run/langfuse/langfuse-worker:4.15.0
     profiles: ['observability']
     restart: unless-stopped
     depends_on:

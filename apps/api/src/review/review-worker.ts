@@ -1,8 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject } from '@nestjs/common';
 import type { Job } from 'bullmq';
-import { loadEnv } from '../config/env';
-import { modelRuntimeOf } from '../llm/from-env';
 import type { GameStores } from '../store/stores';
 import { GAME_STORES } from '../store/stores.provider';
 import { REVIEW_QUEUE, type ReviewJob } from './review-queue';
@@ -16,6 +14,6 @@ export class ReviewWorker extends WorkerHost {
   }
 
   async process(job: Job<ReviewJob>): Promise<void> {
-    await runReview(this.stores, job.data.gameId, modelRuntimeOf(loadEnv()));
+    await runReview(this.stores, job.data.gameId);
   }
 }

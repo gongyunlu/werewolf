@@ -372,6 +372,65 @@ describe('OpenAI 兼容模型端口', () => {
       expect(result.toolCall).toEqual({ name: 'submit', arguments: '{"value":true}' });
     });
 
+    it.each([false, true])(
+      '严格工具模式处理嵌套约束且不修改原 schema，流式=%s',
+      async (streaming) => {
+        const { send, sent } = fakeSend(
+          200,
+          streaming
+            ? sseBody(calling('{"value":true}', 'submit'))
+            : toolAnswer('submit', '{"value":true}'),
+          streaming ? { 'content-type': 'text/event-stream' } : {},
+        );
+        const parameters = {
+          type: 'object',
+          properties: {
+            minLength: { type: 'string', minLength: 1, maxLength: 30 },
+            refs: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 3,
+              items: { type: 'string', minLength: 1 },
+            },
+          },
+          required: ['minLength', 'refs'],
+          additionalProperties: false,
+        };
+        const original = structuredClone(parameters);
+        const tool = { ...TOOL, parameters };
+        const port = openaiModelPort({ fetch: send });
+        const call = streaming ? { onDelta: () => undefined } : {};
+        await port.generate(
+          { ...REQUEST, tool },
+          { ...ACCESS, capability: { reasoningOff: null, toolStrict: true } },
+          call,
+        );
+        expect(bodyOf(sent)).toMatchObject({
+          tools: [
+            {
+              function: {
+                strict: true,
+                parameters: {
+                  ...parameters,
+                  properties: {
+                    minLength: { type: 'string' },
+                    refs: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          ],
+        });
+        expect(parameters).toEqual(original);
+        sent.length = 0;
+        await port.generate({ ...REQUEST, tool }, ACCESS, call);
+        expect(bodyOf(sent)).toMatchObject({ tools: [{ function: { parameters: original } }] });
+        expect(
+          (bodyOf(sent) as { tools: { function: object }[] }).tools[0]!.function,
+        ).not.toHaveProperty('strict');
+      },
+    );
+
     it('走工具时答案从 tool_calls 取，正文空着也不算这次没拿到', async () => {
       const { send } = fakeSend(200, toolAnswer('submit', '{"targetId":"p2"}'));
 

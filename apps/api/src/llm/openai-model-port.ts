@@ -148,6 +148,24 @@ function textOf(value: unknown): string {
   return (typeof value === 'string' ? value : (JSON.stringify(value) ?? '')).slice(0, 500);
 }
 
+/** 严格模式只发送兼容的结构约束；长度与项数仍由调用方的完整 schema 校验。 */
+function strictParameters(schema: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...schema };
+  for (const key of ['minLength', 'maxLength', 'minItems', 'maxItems']) delete result[key];
+  for (const key of ['properties', '$defs']) {
+    if (result[key]) {
+      result[key] = Object.fromEntries(
+        Object.entries(result[key] as Record<string, Record<string, unknown>>).map(
+          ([name, value]) => [name, strictParameters(value)],
+        ),
+      );
+    }
+  }
+  if (result.items) result.items = strictParameters(result.items as Record<string, unknown>);
+  if (Array.isArray(result.anyOf)) result.anyOf = result.anyOf.map(strictParameters);
+  return result;
+}
+
 /**
  * 这次请求的工具那一截。不给工具就是空对象，不往请求里塞一个空数组。
  * 只提供一个工具。默认要求调用它，不支持强制调用的端点按能力声明使用 auto。
@@ -155,13 +173,19 @@ function textOf(value: unknown): string {
 function toolParams(
   tool: ModelTool | undefined,
   choice: 'required' | 'auto',
+  strict = false,
 ): Record<string, unknown> {
   if (!tool) return {};
   return {
     tools: [
       {
         type: 'function',
-        function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: strict ? strictParameters(tool.parameters) : tool.parameters,
+          ...(strict ? { strict: true } : {}),
+        },
       },
     ],
     tool_choice: choice,
@@ -372,7 +396,11 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
       model: access.model,
       messages,
       ...extra,
-      ...toolParams(request.tool, access.capability.toolChoice ?? 'required'),
+      ...toolParams(
+        request.tool,
+        access.capability.toolChoice ?? 'required',
+        access.capability.toolStrict,
+      ),
     };
 
     // 走工具也照样能流：思考那一段在工具参数之前到，跟正文是两条通道。

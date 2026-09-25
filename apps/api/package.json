@@ -12,6 +12,7 @@
     "check": "pnpm lint && pnpm typecheck",
     "test": "jest",
     "game": "nest build && node dist/cli/run-game.js",
+    "review:setup": "nest build && node dist/cli/setup-review.js",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

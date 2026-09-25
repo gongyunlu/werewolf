@@ -28,6 +28,14 @@ describe('模型能力', () => {
   });
 
   describe('按端点加型号取能力', () => {
+    it('严格工具模式只按明确声明启用', () => {
+      expect(
+        resolveModelCapability(MODEL, ENDPOINT, declarations(declared({ toolStrict: true }))),
+      ).toEqual({ reasoningOff: null, toolStrict: true });
+      expect(() =>
+        resolveModelCapability(MODEL, ENDPOINT, declarations(declared({ toolStrict: 'true' }))),
+      ).toThrow();
+    });
     it('保留端点声明的工具选择方式', () => {
       expect(
         resolveModelCapability(MODEL, ENDPOINT, declarations(declared({ toolChoice: 'auto' }))),

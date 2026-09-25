@@ -4,10 +4,10 @@ import { phaseInstanceId } from '../core/identity';
 import { memoryStores } from '../store/memory';
 import type { ActionIntent } from '../store/actions';
 
-export async function reviewFixture() {
+export async function reviewFixture(gameId = 'g') {
   const stores = memoryStores();
   const state: GameState = {
-    gameId: 'g',
+    gameId,
     phaseInstanceId: phaseInstanceId(1, 'day'),
     day: 2,
     hasSheriff: false,
@@ -29,10 +29,10 @@ export async function reviewFixture() {
       checkedIds: [],
     })),
   };
-  await stores.games.open({ gameId: 'g', boardId: 'test', roster: [] });
-  await stores.games.finish('g', 'good', state);
+  await stores.games.open({ gameId, boardId: 'test', roster: [] });
+  await stores.games.finish(gameId, 'good', state);
   const action: ActionIntent = {
-    gameId: 'g',
+    gameId,
     actionKey: 'a',
     phaseInstanceId: '1/day',
     actorId: 'p1',
@@ -61,7 +61,7 @@ export async function reviewFixture() {
       critique: { accept: true, issues: '质疑者私有评价' },
     },
   });
-  await stores.events.append('g', {
+  await stores.events.append(gameId, {
     seq: 1,
     eventKey: 'original',
     day: 1,

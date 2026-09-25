@@ -115,6 +115,11 @@ export function gameStatistics(
   const items = page.slice(0, query.limit);
   return {
     game: data.game,
+    scope: '本地对局模型调用；Langfuse 托管复盘的开销见 review 接口，不包含在此处 total 中',
+    nativeReview: {
+      source: 'langfuse',
+      href: `/api/games/${encodeURIComponent(data.game.gameId)}/review`,
+    },
     total: costOf(data.calls),
     publicOverhead: costOf(data.calls.filter((row) => row.summaryKey !== null)),
     reviewOverhead: costOf(data.calls.filter((row) => row.step?.startsWith('review_'))),

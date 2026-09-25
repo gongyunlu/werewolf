@@ -6,7 +6,7 @@ import type { GameStores } from '../store/stores';
 import { GAME_STORES } from '../store/stores.provider';
 import { finishedGame, prepareEvidence, reviewPreview } from './evidence';
 import { REVIEW_QUEUE, type ReviewJob } from './review-queue';
-import { readReview } from './workflow';
+import { readReview, readReviewState } from './workflow';
 
 @Controller('games/:gameId/review')
 export class ReviewController {
@@ -18,7 +18,7 @@ export class ReviewController {
   @Get('preview')
   async preview(@Param('gameId') gameId: string) {
     return reviewPreview(
-      (await readReview(this.stores, gameId))?.evidence ??
+      (await readReviewState(this.stores, gameId))?.evidence ??
         (await prepareEvidence(this.stores, gameId)),
     );
   }
@@ -49,7 +49,7 @@ export class ReviewController {
   @UseGuards(AdminTokenGuard)
   async start(@Param('gameId') gameId: string) {
     await finishedGame(this.stores, gameId);
-    if ((await readReview(this.stores, gameId))?.completedAt) return { status: 'completed' };
+    if ((await readReviewState(this.stores, gameId))?.completedAt) return { status: 'completed' };
     const job = await this.queue.getJob(gameId);
     if (job) {
       if (await job.isFailed()) await job.retry('failed');
