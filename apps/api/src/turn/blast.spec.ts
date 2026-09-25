@@ -1,4 +1,4 @@
-import { ROLES } from '@werewolf/shared';
+import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import {
   ModelCallError,
   type ModelCallOptions,
@@ -9,7 +9,7 @@ import { memoryStores } from '../store/memory';
 import { runBlastWindow } from '../core/day/self-destruct';
 import { retryingModelPort } from '../llm/retrying-model-port';
 import type { CallCompletion } from '../llm/observation';
-import { makeState, stubSkills, withRoles } from '../testing/fixtures';
+import { makeState, playerOf, stubSkills, withRoles } from '../testing/fixtures';
 import { responseOf } from '../testing/model';
 import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
@@ -357,4 +357,65 @@ describe('自爆竞速与持久化', () => {
     const events = await h.stores.events.list(initial.gameId);
     expect(events.filter((event) => event.text.includes('2 号自爆出局'))).toHaveLength(1);
   });
+
+  it.each([
+    ['day', null, []],
+    ['campaign', 'p5', [{ playerId: 'p5', cause: DEATH_CAUSES.WITCH_POISON }]],
+  ] as const)(
+    '%s 带人已经落地，恢复只补出局技能并保留夜间死讯',
+    async (window, target, nightDeaths) => {
+      const h = await setup();
+      const initial = withRoles(h.state, { p2: ROLES.WHITE_WOLF, p4: ROLES.HUNTER });
+      const actions = h.actions();
+      actions.observe(initial);
+      const running = runBlastWindow(
+        initial,
+        window,
+        actions,
+        actions.observe,
+        actions.recordFlow,
+        nightDeaths,
+      );
+      const failed = expect(running).rejects.toThrow('开枪时中断');
+      const calls = await h.started();
+      calls[1].answer.resolve('true');
+      await h.started(3);
+      calls[2].answer.resolve('4');
+      await h.started(4);
+      calls[3].answer.resolve('{"accept":true,"issues":""}');
+      await h.started(5);
+      calls[4].answer.reject(new Error('开枪时中断'));
+      await failed;
+
+      const replay = h.actions();
+      replay.observe(initial);
+      const resumed = runBlastWindow(
+        initial,
+        window,
+        replay,
+        replay.observe,
+        replay.recordFlow,
+        nightDeaths,
+      );
+      await h.started(6);
+      calls[5].answer.resolve(target === null ? 'null' : '5');
+      await h.started(7);
+      calls[6].answer.resolve('{"accept":true,"issues":""}');
+      const result = await resumed;
+
+      expect(playerOf(result.state, 'p4')).toMatchObject({
+        isAlive: false,
+        deathCause: DEATH_CAUSES.WHITE_WOLF_TAKE,
+      });
+      expect(playerOf(result.state, 'p5')).toMatchObject({ isAlive: true, deathCause: null });
+      // 带人那一问已经记在台账上，恢复直接取回原答案，只把被打断的开枪问补完。
+      const asked = (task: string) =>
+        calls.filter((call) => call.request.prompt.includes(`这次要你做的事：${task}`)).length;
+      expect(asked('你自爆出局了')).toBe(1);
+      expect(asked('你出局了')).toBe(2);
+      const events = await h.stores.events.list(initial.gameId);
+      expect(events.filter((event) => event.text.includes('白狼王带走了'))).toHaveLength(1);
+      expect(events.some((event) => event.text.includes('4 号发动出局技能'))).toBe(false);
+    },
+  );
 });

@@ -90,6 +90,8 @@ export interface ActionProvider {
   /**
    * 白狼王自爆带人；candidates 是存活玩家去掉他自己，返回 null 为不带人。
    * 他已是最后一狼时不该被问到，那样的一问没有答案可言。
+   *
+   * 名单里可能混着夜里已死、死讯还没公布的人——那是他看得见的范围，挑中这样的人这一枪空放。
    */
   whiteWolfTake(whiteWolfId: string, candidates: readonly string[]): Promise<string | null>;
 }

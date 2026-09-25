@@ -3,8 +3,8 @@ import type { ActionProvider } from '../actions';
 import { alivePlayers, type GameState, type PlayerState } from '../state';
 
 /**
- * 狼王能带人的死因：被狼刀、被放逐、被猎人打死、同守同救。
- * 被毒、自爆出局、被白狼王自爆带走，都带不了。
+ * 狼王能带人的死因：被狼刀、被放逐、被猎人打死、被白狼王带走、同守同救。
+ * 被毒、自爆出局，都带不了。
  *
  * 同守同救与猎人不同：猎人那一侧开不了枪（旧项目 spec 原文），这里能带。
  */
@@ -12,6 +12,7 @@ const TAKEABLE_CAUSES: readonly DeathCause[] = [
   DEATH_CAUSES.NIGHT_KILL,
   DEATH_CAUSES.EXECUTION,
   DEATH_CAUSES.HUNTER_SHOT,
+  DEATH_CAUSES.WHITE_WOLF_TAKE,
   DEATH_CAUSES.DOUBLE_SAVE,
 ];
 

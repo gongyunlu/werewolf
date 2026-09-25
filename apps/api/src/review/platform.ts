@@ -173,7 +173,8 @@ export class LangfuseReviewPlatform implements ReviewPlatform {
     if (!observation) return false;
     const input =
       typeof observation.input === 'string' ? JSON.parse(observation.input) : observation.input;
-    if (!isDeepStrictEqual(input, unitInput(unit))) throw new Error('平台复盘输入与冻结证据不一致');
+    const submitted = JSON.parse(JSON.stringify(unitInput(unit)));
+    if (!isDeepStrictEqual(input, submitted)) throw new Error('平台复盘输入与冻结证据不一致');
     return true;
   }
 
@@ -228,21 +229,36 @@ export class LangfuseReviewPlatform implements ReviewPlatform {
     do {
       const result = await this.result(unit, profile);
       if (result) return result;
-      const generations = await this.generations(unit, profile);
-      if (generations.length && generations.every((item) => item.endTime && item.level === 'ERROR'))
-        throw new Error('Langfuse 评价调用失败，请在平台核查后续跑');
+      const observations = (await this.executionTrace(unit, profile))?.observations ?? [];
+      const latest = Math.max(
+        ...observations.map((item) => Date.parse(item.endTime ?? item.startTime)),
+      );
+      // 生成成功后仍可能在外层解析失败；较早的失败不能覆盖后来开始的执行。
+      if (
+        observations.some(
+          (item) => item.endTime && item.level === 'ERROR' && Date.parse(item.endTime) === latest,
+        )
+      )
+        throw new Error('Langfuse 原生评价执行失败，请在平台核查后续跑');
       await setTimeout(2_000);
     } while (Date.now() < deadline);
     throw new Error('Langfuse 评价尚未返回；续跑会继续读取，不能重复投递');
   }
 
   async generations(unit: ReviewUnit, profile: ReviewProfile): Promise<PlatformGeneration[]> {
+    return (
+      (await this.executionTrace(unit, profile))?.observations.filter(
+        (item) => item.type === 'GENERATION',
+      ) ?? []
+    );
+  }
+
+  private executionTrace(unit: ReviewUnit, profile: ReviewProfile): Promise<PlatformTrace | null> {
     // 4.15 的执行追踪标识由规则与目标生成，失败时也能定位，避免漏记失败调用。
     const jobId = reviewId(
       JSON.stringify(['observation-eval', profile.ruleId, unit.traceId, unit.spanId]),
     );
-    const trace = await this.trace(reviewId(jobId));
-    return trace?.observations.filter((item) => item.type === 'GENERATION') ?? [];
+    return this.trace(reviewId(jobId));
   }
 }
 

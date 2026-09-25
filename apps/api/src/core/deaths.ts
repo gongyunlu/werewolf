@@ -22,6 +22,7 @@ export async function triggerDeathSkills(
   actions: ActionProvider,
   observe?: (state: GameState) => void,
   onFlow?: FlowObserver,
+  nightDeaths: readonly NightDeath[] = [],
 ): Promise<GameState> {
   let current = state;
   // 边遍历边往尾巴上追加，连锁就自动排进了同一轮。
@@ -34,6 +35,8 @@ export async function triggerDeathSkills(
 
     const shot = await takeBySkill(player, current, death.cause, actions);
     if (shot === null) continue;
+    // 不从候选中泄露夜间死讯；选中已夜死者时空放，原死因留到天亮公布。
+    if (nightDeaths.some((nightDeath) => nightDeath.playerId === shot.playerId)) continue;
 
     // 带走的人先落地再入队；撞上已经出局的人会在这里抛错，一人只公布一次死讯。
     current = announceDay(current, [shot]).state;

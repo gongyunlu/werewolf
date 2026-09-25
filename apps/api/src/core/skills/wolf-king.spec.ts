@@ -9,17 +9,17 @@ function deadWolfKing() {
 }
 
 describe('狼王出局带人', () => {
-  it('被狼刀、被放逐、被猎人打死、同守同救，都能带人', () => {
+  it('被狼刀、被放逐、被猎人打死、被白狼王带走、同守同救，都能带人', () => {
     expect(wolfKingCanTake(DEATH_CAUSES.NIGHT_KILL)).toBe(true);
     expect(wolfKingCanTake(DEATH_CAUSES.EXECUTION)).toBe(true);
     expect(wolfKingCanTake(DEATH_CAUSES.HUNTER_SHOT)).toBe(true);
+    expect(wolfKingCanTake(DEATH_CAUSES.WHITE_WOLF_TAKE)).toBe(true);
     expect(wolfKingCanTake(DEATH_CAUSES.DOUBLE_SAVE)).toBe(true);
   });
 
-  it('被毒、自爆、被白狼王带走，都带不了', () => {
+  it('被毒、自爆，都带不了', () => {
     expect(wolfKingCanTake(DEATH_CAUSES.WITCH_POISON)).toBe(false);
     expect(wolfKingCanTake(DEATH_CAUSES.SELF_DESTRUCT)).toBe(false);
-    expect(wolfKingCanTake(DEATH_CAUSES.WHITE_WOLF_TAKE)).toBe(false);
   });
 
   it('候选是其他存活玩家，已经出局的他自己不在里面', async () => {

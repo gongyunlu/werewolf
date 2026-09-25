@@ -3,6 +3,17 @@ import { prepareEvidence } from './evidence';
 import { reviewFixture } from './testing';
 
 describe('复盘证据边界', () => {
+  it('全知分析携带实际保存的板子规则，不用当前规则重建历史', async () => {
+    const { stores } = await reviewFixture();
+    const evidence = await prepareEvidence(stores, 'g');
+    expect(evidence.formatVersion).toBe(2);
+    expect(evidence.omniscient).toContainEqual({
+      id: 'g/rules/0',
+      origin: { path: 'boardRules' },
+      value: '村民找狼',
+    });
+  });
+
   it('后续身份、赛果及事件不改变早期决策题面', async () => {
     const { stores, state } = await reviewFixture();
     const first = await prepareEvidence(stores, 'g');
@@ -32,6 +43,24 @@ describe('复盘证据边界', () => {
     expect(text).toContain('人设策略');
     expect(text).not.toContain('未看过的原文');
     expect(text).not.toContain('质疑者私有评价');
+  });
+
+  it('保留当时的决定结构，座位候选不排除结构允许的空操作', async () => {
+    const { stores, action } = await reviewFixture();
+    const original = (await stores.actions.find(action.actionKey))!.outcome as {
+      snapshot: object;
+    };
+    const schema = { anyOf: [{ type: 'number', enum: [2] }, { type: 'null' }] };
+    await stores.actions.finish(action.actionKey, {
+      decision: 2,
+      snapshot: { ...original.snapshot, schema },
+    });
+    const evidence = await prepareEvidence(stores, 'g');
+    expect(evidence.targets[0]!.sources).toContainEqual({
+      id: `g/action/${action.actionKey}/schema`,
+      origin: { actionKey: action.actionKey, path: 'schema' },
+      value: schema,
+    });
   });
 
   it('未完成与未发布发言列为缺口；同名事件不能冒充行动事件', async () => {

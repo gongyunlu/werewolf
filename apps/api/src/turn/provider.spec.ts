@@ -883,7 +883,7 @@ describe('模型行动提供者', () => {
 
       await actions.speak('day', 'p3', []);
 
-      expect(decided(model)[0].prompt).toContain('第 3 天。');
+      expect(decided(model)[0].prompt).toContain('游戏日 3；');
     });
 
     it('还没收到局面就调用是误用，当场抛', async () => {

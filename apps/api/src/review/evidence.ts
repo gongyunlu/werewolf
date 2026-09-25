@@ -10,6 +10,7 @@ const SnapshotSchema = z.object({
   actorId: z.string(),
   sourceCallId: z.string().min(1),
   decision: z.unknown(),
+  schema: z.record(z.string(), z.unknown()).nullable().optional(),
   reasoning: z.string().nullable(),
   context: z.object({
     task: z.string(),
@@ -41,6 +42,8 @@ export interface EvidenceGap {
   reason: string;
 }
 export interface ReviewEvidence {
+  /** 冻结输入的装配格式；未标版本的既有报告保持原来源映射。 */
+  formatVersion?: 2;
   gameId: string;
   players: { id: string; seatNo: number }[];
   targets: ReviewTarget[];
@@ -67,6 +70,7 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
   const published = new Map(events.map((event) => [event.eventKey, event]));
   const targets: ReviewTarget[] = [];
   const gaps: EvidenceGap[] = [];
+  const boardRules = new Set<string>();
   for (const action of actions) {
     const gap = (reason: string) =>
       gaps.push({ actorId: action.actorId, actionKey: action.actionKey, reason });
@@ -118,6 +122,7 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
     snapshot.context.skill.forEach((skill, i) => add(`context/skill/${i}`, skill));
     add('decision', decision);
     add('reasoning', snapshot.reasoning);
+    if (snapshot.schema !== undefined) add('schema', snapshot.schema);
     if (action.actionType === ACTION_TYPES.SPEECH) {
       sources.push({
         id: `${gameId}/event/${speech!.seq}`,
@@ -132,8 +137,11 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
       sourceCallId: snapshot.sourceCallId,
       sources,
     });
+    const rules = snapshot.context.skill[0];
+    if (rules) boardRules.add(rules);
   }
   return {
+    formatVersion: 2,
     gameId,
     players,
     targets,
@@ -157,6 +165,11 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
           )!.value,
           meaning: '最终回答，不代表规则实际执行了该提议',
         },
+      })),
+      ...[...boardRules].map((value, index) => ({
+        id: `${gameId}/rules/${index}`,
+        origin: { path: 'boardRules' },
+        value,
       })),
     ],
   };

@@ -419,7 +419,7 @@ export function modelActions(
       return ask({
         actionType: ACTION_TYPES.SHERIFF_WITHDRAW,
         actorId: playerId,
-        task: '要不要退水退出竞选。退水之后既不能被选，也没有票。',
+        task: '要不要退水退出竞选。你已经上警，本轮无论退不退水都没有警长投票权；退水只放弃候选资格。',
         shape: 'yesOrNo',
       });
     },

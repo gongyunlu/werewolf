@@ -189,6 +189,19 @@ describe('出局技能连锁', () => {
     expect(await triggerDeathSkills(state, deaths, stubActions())).toEqual(state);
   });
 
+  it('猎人被白狼王带走，照样开枪', async () => {
+    const deaths: NightDeath[] = [{ playerId: 'p1', cause: DEATH_CAUSES.WHITE_WOLF_TAKE }];
+    const state = boardAfter({ p1: ROLES.HUNTER }, deaths);
+    const actions = stubActions({ hunterShot: async () => 'p2' });
+
+    const after = await triggerDeathSkills(state, deaths, actions);
+
+    expect(playerOf(after, 'p2')).toMatchObject({
+      isAlive: false,
+      deathCause: DEATH_CAUSES.HUNTER_SHOT,
+    });
+  });
+
   it('不是技能牌的人出局，什么都不问', async () => {
     const deaths: NightDeath[] = [{ playerId: 'p1', cause: DEATH_CAUSES.NIGHT_KILL }];
     const state = boardAfter({}, deaths);

@@ -172,17 +172,17 @@ describe('自爆窗口', () => {
     });
   });
 
-  it('被白狼王带走的狼王带不了人', async () => {
+  it('被白狼王带走的狼王接着带人', async () => {
     const state = withRoles(makeState(6), {
       p1: ROLES.SEER,
       p2: ROLES.WEREWOLF,
       p3: ROLES.WHITE_WOLF,
       p4: ROLES.WOLF_KING,
     });
-    // 没配 wolfKingShot：狼王是被自爆带走的，不该有带人这一手。
     const actions = stubActions({
       wolfBlast: async (wolfId) => wolfId === 'p3',
       whiteWolfTake: async () => 'p4',
+      wolfKingShot: async () => 'p5',
     });
 
     const result = await runBlastWindow(state, 'day', actions);
@@ -191,6 +191,56 @@ describe('自爆窗口', () => {
       isAlive: false,
       deathCause: DEATH_CAUSES.WHITE_WOLF_TAKE,
     });
+    expect(playerOf(result.state, 'p5')).toMatchObject({
+      isAlive: false,
+      deathCause: DEATH_CAUSES.WOLF_KING_SHOT,
+    });
+  });
+
+  it('被白狼王带走的猎人当场开枪', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.WHITE_WOLF,
+      p4: ROLES.HUNTER,
+    });
+    const actions = stubActions({
+      wolfBlast: async (wolfId) => wolfId === 'p3',
+      whiteWolfTake: async () => 'p4',
+      hunterShot: async () => 'p5',
+    });
+
+    const result = await runBlastWindow(state, 'day', actions);
+
+    expect(playerOf(result.state, 'p4')).toMatchObject({
+      isAlive: false,
+      deathCause: DEATH_CAUSES.WHITE_WOLF_TAKE,
+    });
+    expect(playerOf(result.state, 'p5')).toMatchObject({
+      isAlive: false,
+      deathCause: DEATH_CAUSES.HUNTER_SHOT,
+    });
+  });
+
+  it('选中夜里已有死讯的人，这一枪空放', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.SEER,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.WHITE_WOLF,
+      p4: ROLES.HUNTER,
+    });
+    // 没配 hunterShot：p4 夜里已经被毒，死讯还没公布，这一枪不落地也就问不到他。
+    const actions = stubActions({
+      wolfBlast: async (wolfId) => wolfId === 'p3',
+      whiteWolfTake: async () => 'p4',
+    });
+
+    const result = await runBlastWindow(state, 'campaign', actions, undefined, undefined, [
+      { playerId: 'p4', cause: DEATH_CAUSES.WITCH_POISON },
+    ]);
+
+    // 他还活着：毒要等公布死讯时才落地。
+    expect(playerOf(result.state, 'p4').isAlive).toBe(true);
   });
 
   it('自爆的是警长，警徽当场交出去', async () => {

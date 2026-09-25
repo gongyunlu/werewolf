@@ -31,18 +31,18 @@ describe('提示词渲染', () => {
 
     expect(turn.system.text).toContain('3 号');
     expect(turn.system.text).toContain('预言家');
-    expect(turn.user.text).toContain('第 2 天');
+    expect(turn.user.text).toContain('游戏日 2');
     expect(turn.user.text).toContain('1 号昨天跳了预言家');
     expect(turn.user.text).toContain('投票决定放逐谁');
     expect(turn.user.text).toContain('1 号 p1');
   });
 
-  it('可见事实按块渲染，一块一个小标题', async () => {
+  it('可见材料按块保留来源，不把公开发言整体标成事实', async () => {
     const turn = await renderGenerate(offline, context, SCHEMA_JSON);
 
     expect(turn.user.text).toContain(
       [
-        '你已知的事实：',
+        '你当前可见的材料（系统记录与玩家说法分列）：',
         '【局面】',
         '- 1 号昨天跳了预言家',
         '- 2 号还没发过言',
@@ -54,6 +54,7 @@ describe('提示词渲染', () => {
     );
     // 台账换天那一行是分隔不是事实，不挂项目符号。
     expect(turn.user.text).not.toContain('- 【第 2 天】');
+    expect(turn.user.text).not.toContain('你已知的事实：');
   });
 
   it('有形状的让他走工具交，没有形状的让他写一段话', async () => {
@@ -76,7 +77,7 @@ describe('提示词渲染', () => {
 
     expect(turn.system.text).toContain('板子正文\n\n角色正文\n\n场景正文');
     expect(turn.system.text.indexOf('板子正文')).toBeGreaterThan(
-      turn.system.text.indexOf('别替规则补全。'),
+      turn.system.text.indexOf('不能改写规则。'),
     );
   });
 
@@ -88,20 +89,26 @@ describe('提示词渲染', () => {
     expect(turn.system.text).toContain('推理过程也使用简体中文');
   });
 
-  it('复核只拿板子规则，角色和场景策略只给生成与修订', async () => {
-    const critique = await renderCritique(offline, context, '{"targetId":"p1"}', SCHEMA_JSON);
+  it('复核与修订只拿规则，重新制定策略的材料只给生成', async () => {
+    const withMemories = { ...context, skill: [...context.skill, '人设正文', '个人策略正文'] };
+    const generate = await renderGenerate(offline, withMemories, SCHEMA_JSON);
+    const critique = await renderCritique(offline, withMemories, '{"targetId":"p1"}', SCHEMA_JSON);
     const revise = await renderRevise(
       offline,
-      context,
+      withMemories,
       '{"targetId":"p1"}',
       '理由不成立',
       SCHEMA_JSON,
     );
 
-    expect(critique.system.text).toContain('板子正文');
-    expect(critique.system.text).not.toContain('角色正文');
-    expect(critique.system.text).not.toContain('场景正文');
-    expect(revise.system.text).toContain('板子正文');
+    for (const text of withMemories.skill) expect(generate.system.text).toContain(text);
+    for (const rendered of [critique, revise]) {
+      expect(rendered.system.text).toContain('板子正文');
+      for (const text of withMemories.skill.slice(1)) {
+        expect(rendered.system.text).not.toContain(text);
+      }
+      expect(rendered.system.text).not.toContain('再作选择');
+    }
   });
 
   it('同一份局面渲染两次一模一样', async () => {

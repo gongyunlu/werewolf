@@ -1,7 +1,8 @@
-import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
+import { DEATH_CAUSES, FACTIONS, ROLES } from '@werewolf/shared';
 import { makeState, playerOf, stubActions, withRoles } from '../../testing/fixtures';
 import type { FlowEvent } from '../flow';
 import type { GameState } from '../state';
+import { checkWin } from '../win';
 import { announceDay } from './announce';
 import { runDawn } from './dawn';
 
@@ -57,7 +58,7 @@ describe('竞选之后公布夜间死讯', () => {
     },
   );
 
-  it('白狼王带走夜间待死猎人，即时出局并从夜间名单移除', async () => {
+  it('白狼王选中夜间待死的人，这一枪空放', async () => {
     const events: FlowEvent[] = [];
     const result = await runDawn({
       state: board(),
@@ -68,18 +69,108 @@ describe('竞选之后公布夜间死讯', () => {
         wolfBlast: async (id) => id === 'p1',
         whiteWolfTake: async () => 'p4',
       }),
-      onFlow: async (state, event) => {
+      onFlow: async (_state, event) => {
         events.push(event);
-        if (event.key === 'campaign-blast-take') {
-          expect(playerOf(state, 'p4')).toMatchObject({
-            isAlive: false,
-            deathCause: DEATH_CAUSES.WHITE_WOLF_TAKE,
-          });
-        }
       },
     });
-    expect(result.deaths).toEqual([]);
-    expect(events.find((event) => event.key === 'dawn')?.text).toBe('昨晚没有其他玩家倒牌。');
+    // p4 夜里已经中刀，白狼王挑中他也带不走：他留在夜间名单里，照刀公布。
+    expect(events.some((event) => event.key === 'campaign-blast-take')).toBe(false);
+    expect(result.deaths).toEqual([{ playerId: 'p4', cause: DEATH_CAUSES.NIGHT_KILL }]);
+    expect(events.find((event) => event.key === 'dawn')?.text).toBe('昨晚 4 号 倒牌。');
+  });
+
+  it.each([
+    [ROLES.HUNTER, DEATH_CAUSES.NIGHT_KILL],
+    [ROLES.HUNTER, DEATH_CAUSES.WITCH_POISON],
+    [ROLES.WOLF_KING, DEATH_CAUSES.NIGHT_KILL],
+    [ROLES.WOLF_KING, DEATH_CAUSES.WITCH_POISON],
+  ] as const)('白狼王触发 %s 的技能，选中夜间 %s 目标不覆盖死讯', async (role, cause) => {
+    const events: FlowEvent[] = [];
+    const nightDeaths = [{ playerId: 'p8', cause }];
+    const shoot = jest.fn(async (_id: string, candidates: readonly string[]) => {
+      expect(candidates).toContain('p8');
+      return 'p8';
+    });
+    const result = await runDawn({
+      state: withRoles(board(), { p4: role }),
+      deaths: nightDeaths,
+      minute: 22,
+      actions: stubActions({
+        runForSheriff: async (id) => id === 'p3' || id === 'p4',
+        wolfBlast: async (id) => id === 'p1',
+        whiteWolfTake: async () => 'p4',
+        ...(role === ROLES.HUNTER ? { hunterShot: shoot } : { wolfKingShot: shoot }),
+      }),
+      onFlow: async (_state, event) => {
+        events.push(event);
+      },
+    });
+
+    expect(shoot).toHaveBeenCalledTimes(1);
+    expect(playerOf(result.state, 'p8').deathCause).toBe(cause);
+    expect(result.deaths).toEqual(nightDeaths);
+    expect(events.some((event) => event.key === 'death-skill-p4')).toBe(false);
+    expect(events.find((event) => event.key === 'dawn')?.text).toBe('昨晚 8 号 倒牌。');
+    expect(nightDeaths).toEqual([{ playerId: 'p8', cause }]);
+  });
+
+  it('多层连锁也不能让夜间中毒的猎人获得开枪机会', async () => {
+    const state = withRoles(board(), {
+      p2: ROLES.WOLF_KING,
+      p6: ROLES.WEREWOLF,
+      p8: ROLES.HUNTER,
+    });
+    const hunterShot = jest.fn(async (id: string) => {
+      if (id !== 'p4') throw new Error('中毒猎人不能开枪');
+      return 'p2';
+    });
+    const result = await runDawn({
+      state,
+      deaths: [{ playerId: 'p8', cause: DEATH_CAUSES.WITCH_POISON }],
+      minute: 22,
+      actions: stubActions({
+        runForSheriff: async (id) => id === 'p3' || id === 'p4',
+        wolfBlast: async (id) => id === 'p1',
+        whiteWolfTake: async () => 'p4',
+        hunterShot,
+        wolfKingShot: async () => 'p8',
+      }),
+    });
+
+    expect(hunterShot).toHaveBeenCalledTimes(1);
+    expect(playerOf(result.state, 'p2').deathCause).toBe(DEATH_CAUSES.HUNTER_SHOT);
+    expect(playerOf(result.state, 'p8').deathCause).toBe(DEATH_CAUSES.WITCH_POISON);
+    expect(result.deaths).toEqual([{ playerId: 'p8', cause: DEATH_CAUSES.WITCH_POISON }]);
+  });
+
+  it('连锁空放不提前屠边，仍公布夜间死亡并按完整结果判胜负', async () => {
+    const state = withRoles(makeState(6), {
+      p1: ROLES.WHITE_WOLF,
+      p2: ROLES.WEREWOLF,
+      p3: ROLES.HUNTER,
+      p5: ROLES.WITCH,
+      p6: ROLES.GUARD,
+    });
+    const nightDeaths = [
+      { playerId: 'p4', cause: DEATH_CAUSES.NIGHT_KILL },
+      { playerId: 'p2', cause: DEATH_CAUSES.WITCH_POISON },
+    ];
+    const result = await runDawn({
+      state,
+      deaths: nightDeaths,
+      minute: 22,
+      actions: stubActions({
+        runForSheriff: async (id) => id === 'p1' || id === 'p3',
+        wolfBlast: async (id) => id === 'p1',
+        whiteWolfTake: async () => 'p3',
+        hunterShot: async () => 'p4',
+      }),
+    });
+
+    expect(result.deaths).toEqual(nightDeaths);
+    expect(playerOf(result.state, 'p4').deathCause).toBe(DEATH_CAUSES.NIGHT_KILL);
+    expect(playerOf(result.state, 'p2').deathCause).toBe(DEATH_CAUSES.WITCH_POISON);
+    expect(checkWin(result.state)).toBe(FACTIONS.GOOD);
   });
 
   it('吃毒白狼王可以自爆打断竞选，但不会获得带人机会', async () => {

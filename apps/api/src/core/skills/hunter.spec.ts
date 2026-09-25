@@ -9,17 +9,17 @@ function deadHunter() {
 }
 
 describe('猎人开枪', () => {
-  it('被狼刀、被放逐、被狼王带走，都能开枪', () => {
+  it('被狼刀、被放逐、被狼王带走、被白狼王带走，都能开枪', () => {
     expect(hunterCanShoot(DEATH_CAUSES.NIGHT_KILL)).toBe(true);
     expect(hunterCanShoot(DEATH_CAUSES.EXECUTION)).toBe(true);
     expect(hunterCanShoot(DEATH_CAUSES.WOLF_KING_SHOT)).toBe(true);
+    expect(hunterCanShoot(DEATH_CAUSES.WHITE_WOLF_TAKE)).toBe(true);
   });
 
-  it('被毒、同守同救、被另一个猎人打死、被白狼王带走、自爆，都开不了枪', () => {
+  it('被毒、同守同救、被另一个猎人打死、自爆，都开不了枪', () => {
     expect(hunterCanShoot(DEATH_CAUSES.WITCH_POISON)).toBe(false);
     expect(hunterCanShoot(DEATH_CAUSES.DOUBLE_SAVE)).toBe(false);
     expect(hunterCanShoot(DEATH_CAUSES.HUNTER_SHOT)).toBe(false);
-    expect(hunterCanShoot(DEATH_CAUSES.WHITE_WOLF_TAKE)).toBe(false);
     expect(hunterCanShoot(DEATH_CAUSES.SELF_DESTRUCT)).toBe(false);
   });
 

@@ -20,7 +20,7 @@ describe('白狼王自爆带人', () => {
       },
     });
 
-    expect(await decideWhiteWolfTake(playerOf(state, 'p1'), state, actions)).toBe('p3');
+    expect(await decideWhiteWolfTake(playerOf(state, 'p1'), state, actions, [])).toBe('p3');
     expect(offered).toEqual(['p2', 'p3', 'p4', 'p5', 'p6']);
   });
 
@@ -32,6 +32,7 @@ describe('白狼王自爆带人', () => {
         playerOf(state, 'p1'),
         state,
         stubActions({ whiteWolfTake: async () => null }),
+        [],
       ),
     ).toBeNull();
   });
@@ -40,8 +41,21 @@ describe('白狼王自爆带人', () => {
     const state = blastedState();
     const actions = stubActions({ whiteWolfTake: async () => 'p1' });
 
-    await expect(decideWhiteWolfTake(playerOf(state, 'p1'), state, actions)).rejects.toThrow(
+    await expect(decideWhiteWolfTake(playerOf(state, 'p1'), state, actions, [])).rejects.toThrow(
       '白狼王只能带走其他存活玩家：p1',
     );
+  });
+
+  it('选到夜里已有死讯的人，这一枪空放', async () => {
+    const state = blastedState();
+
+    expect(
+      await decideWhiteWolfTake(
+        playerOf(state, 'p1'),
+        state,
+        stubActions({ whiteWolfTake: async () => 'p3' }),
+        [{ playerId: 'p3', cause: DEATH_CAUSES.NIGHT_KILL }],
+      ),
+    ).toBeNull();
   });
 });

@@ -8,7 +8,13 @@ import {
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { GameStores } from '../store/stores';
-import { REVIEW_VERSION, reviewId, type ReviewAnalysis, type ReviewUnit } from './contracts';
+import {
+  REVIEW_VERSION,
+  evidenceInput,
+  reviewId,
+  type ReviewAnalysis,
+  type ReviewUnit,
+} from './contracts';
 import { prepareEvidence, type ReviewEvidence } from './evidence';
 import { nativeCost } from './cost';
 import { reviewPlatform, type ReviewPlatform, type ReviewProfile } from './platform';
@@ -79,7 +85,7 @@ function specsOf(evidence: ReviewEvidence): Pick<ReviewUnit, 'key' | 'step'>[] {
 }
 
 /** 已提交输入由冻结证据及平台已接受正文还原，不在每轮检查点累积整局题面。 */
-function unitOf(
+export function unitOf(
   identity: UnitIdentity,
   evidence: ReviewEvidence,
   decisions = new Map<string, ReviewAnalysis>(),
@@ -101,7 +107,16 @@ function unitOf(
       .map((item) => ({
         id: `${evidence.gameId}/assessment/${encodeURIComponent(item.actionKey)}`,
         origin: { actionKey: item.actionKey, path: 'review' },
-        value: decisions.get(`decision/${item.actionKey}`)!,
+        value: evidence.formatVersion
+          ? {
+              day: item.sources.find(
+                (source) => 'path' in source.origin && source.origin.path === 'context/day',
+              )!.value,
+              actionType: item.actionType,
+              evidence: evidenceInput(item.sources, 'E'),
+              assessment: decisions.get(`decision/${item.actionKey}`)!.text,
+            }
+          : decisions.get(`decision/${item.actionKey}`)!,
       }));
     return {
       ...base,
@@ -175,19 +190,20 @@ function reviewGraph(stores: GameStores) {
               platform,
             )
           : undefined;
+      const traceId = reviewId(
+        JSON.stringify([
+          prepared.evidence.gameId,
+          REVIEW_VERSION,
+          prepared.profile.fingerprint,
+          spec.key,
+        ]),
+      );
       const pending = unitOf(
         {
           ...spec,
           createdAt: new Date().toISOString(),
-          traceId: reviewId(
-            JSON.stringify([
-              prepared.evidence.gameId,
-              REVIEW_VERSION,
-              prepared.profile.fingerprint,
-              spec.key,
-            ]),
-          ),
-          spanId: reviewId(spec.key).slice(0, 16),
+          traceId,
+          spanId: reviewId(traceId).slice(0, 16),
         },
         prepared.evidence,
         decisions,

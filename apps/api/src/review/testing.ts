@@ -3,9 +3,15 @@ import type { GameState } from '../core/state';
 import { phaseInstanceId } from '../core/identity';
 import { memoryStores } from '../store/memory';
 import type { ActionIntent } from '../store/actions';
+import type { GameStores } from '../store/stores';
+import { analysisOf, unitInput, type ReviewAnalysis, type ReviewUnit } from './contracts';
+import type { ReviewPlatform, ReviewProfile } from './platform';
 
-export async function reviewFixture(gameId = 'g') {
-  const stores = memoryStores();
+export async function reviewFixture(
+  gameId = 'g',
+  stores: GameStores = memoryStores(),
+  actionKey = 'a',
+) {
   const state: GameState = {
     gameId,
     phaseInstanceId: phaseInstanceId(1, 'day'),
@@ -33,7 +39,7 @@ export async function reviewFixture(gameId = 'g') {
   await stores.games.finish(gameId, 'good', state);
   const action: ActionIntent = {
     gameId,
-    actionKey: 'a',
+    actionKey,
     phaseInstanceId: '1/day',
     actorId: 'p1',
     actionType: ACTION_TYPES.VOTE,
@@ -41,10 +47,10 @@ export async function reviewFixture(gameId = 'g') {
     ledgerSeq: 1,
   };
   await stores.actions.begin(action);
-  await stores.actions.finish('a', {
+  await stores.actions.finish(actionKey, {
     decision: 2,
     snapshot: {
-      actionKey: 'a',
+      actionKey,
       actionType: ACTION_TYPES.VOTE,
       actorId: 'p1',
       sourceCallId: 'original-call',
@@ -70,4 +76,35 @@ export async function reviewFixture(gameId = 'g') {
     audience: ['p1'],
   });
   return { stores, state, action };
+}
+
+export function fakeReviewPlatform() {
+  const inputs = new Map<string, ReviewUnit>();
+  const profile: ReviewProfile = {
+    evaluatorId: 'e',
+    evaluatorVersion: 1,
+    ruleId: 'r',
+    fingerprint: 'f',
+  };
+  const platform = {
+    profile: jest.fn(async () => profile),
+    exists: jest.fn(async (unit: ReviewUnit) => inputs.has(unit.key)),
+    submit: jest.fn(async (unit: ReviewUnit) => {
+      inputs.set(unit.key, structuredClone(unit));
+    }),
+    result: jest.fn(async (unit: ReviewUnit) => {
+      if (!inputs.has(unit.key)) return null;
+      return analysisOf(
+        unit,
+        `基于当时证据的判断 [证据:${unitInput(unit).sources[0]!.id}]`,
+        `score/${unit.key}`,
+        `trace/${unit.key}`,
+      );
+    }),
+    wait: jest.fn(
+      async (unit: ReviewUnit): Promise<ReviewAnalysis> => (await platform.result(unit))!,
+    ),
+    generations: jest.fn(async () => []),
+  } satisfies ReviewPlatform;
+  return { platform, inputs, profile };
 }

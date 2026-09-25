@@ -3,13 +3,16 @@ import type { ActionProvider } from '../actions';
 import { alivePlayers, type GameState, type PlayerState } from '../state';
 
 /**
- * 猎人能开枪的死因：被狼刀、被放逐、被狼王带走。
- * 被毒、同守同救、被另一个猎人打死、被白狼王自爆带走，都开不了。
+ * 猎人能开枪的死因：被狼刀、被放逐、被狼王带走、被白狼王带走。
+ * 被毒、同守同救、被另一个猎人打死，都开不了。
+ *
+ * 狼王那一侧不同：他被同守同救照样带人，见 wolf-king.ts。
  */
 const SHOOTABLE_CAUSES: readonly DeathCause[] = [
   DEATH_CAUSES.NIGHT_KILL,
   DEATH_CAUSES.EXECUTION,
   DEATH_CAUSES.WOLF_KING_SHOT,
+  DEATH_CAUSES.WHITE_WOLF_TAKE,
 ];
 
 export function hunterCanShoot(cause: DeathCause): boolean {
