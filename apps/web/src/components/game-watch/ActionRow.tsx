@@ -4,6 +4,7 @@ import type {
   ActionSummary,
   PendingAction,
 } from '@werewolf/shared';
+import { ACTION_TYPES, DayEndJudgmentSchema } from '@werewolf/shared';
 import { CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -46,6 +47,10 @@ function decisionText(value: unknown): string {
       case 'transfer':
         return `将警徽交给 ${'seatNo' in value ? value.seatNo : ''} 号`;
     }
+  }
+  const judgment = DayEndJudgmentSchema.safeParse(value);
+  if (judgment.success) {
+    return `个人判断：${judgment.data.assessment}\n主要变化：${judgment.data.changes || '未记录变化'}`;
   }
   return JSON.stringify(value);
 }
@@ -256,6 +261,12 @@ export function ActionRow({
           ) : null}
         </CollapsibleContent>
       </Collapsible>
+      {completed && action.actionType === ACTION_TYPES.DAY_END_JUDGMENT ? (
+        <p className="text-xs text-muted-foreground">
+          第 {action.day} 天日终 · 信息截至事件 #{action.ledgerSeq} ·
+          私有判断，可能有误，仅本人用于后续决策
+        </p>
+      ) : null}
       {completed && !inline ? (
         <p className="rounded-lg bg-muted/50 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">
           {resultText(action)}

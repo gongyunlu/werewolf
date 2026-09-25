@@ -1,11 +1,11 @@
-import { FACTIONS, GAME_STATUSES } from '@werewolf/shared';
+import { ACTION_TYPES, FACTIONS, GAME_STATUSES } from '@werewolf/shared';
 import { createGameSetup } from '../boards/setup';
 import type { ModelAccess } from '../llm/model-port';
 import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { makeState, stubSkills } from '../testing/fixtures';
-import type { RecordingModel } from '../testing/model';
-import { answeringPlayer, breakingPlayer } from '../testing/player';
+import { answeringModel, type RecordingModel } from '../testing/model';
+import { answeringPlayer, breakingPlayer, playerAnswer } from '../testing/player';
 import { LOCAL_TURN_PROMPTS } from './prompt';
 import { runStoredGame } from './run-stored-game';
 
@@ -73,6 +73,41 @@ function countingStatuses(stores: GameStores): string[] {
 }
 
 describe('留得住的对局', () => {
+  it('日终中断标记失败，恢复只补该日缺失玩家并继续完成正常对局', async () => {
+    const stores = memoryStores();
+    let failedSeat: string | undefined;
+    const model = answeringModel((request) => {
+      if (JSON.stringify(request.tool ?? {}).includes('assessment')) {
+        const seat = request.system.match(/坐 (\d+) 号/)![1];
+        failedSeat ??= seat;
+        if (seat === failedSeat) throw new Error('日终模型中断');
+      }
+      return playerAnswer(request);
+    });
+    await expect(play(stores, { model })).rejects.toThrow('日终模型中断');
+    expect((await stores.games.find('g1'))!.status).toBe(GAME_STATUSES.FAILED);
+    const boundary = (await stores.steps.last('g1'))!;
+    expect(boundary.phaseInstanceId).toMatch(/\/dayEnd$/);
+    const completed = (await stores.actions.list('g1')).filter(
+      (row) => row.actionType === ACTION_TYPES.DAY_END_JUDGMENT && row.status === 'done',
+    );
+    expect(completed.length).toBeGreaterThan(0);
+
+    const resumed = await play(stores);
+    const repeatedDay = resumed.model.calls.filter(
+      (request) =>
+        JSON.stringify(request.tool ?? {}).includes('assessment') &&
+        request.prompt.includes(`游戏日 ${boundary.state.day}；`),
+    );
+    expect(repeatedDay).toHaveLength(1);
+    expect(repeatedDay[0].system).toContain(`坐 ${failedSeat} 号`);
+    for (const row of completed) expect(await stores.actions.find(row.actionKey)).toEqual(row);
+    expect((await stores.games.find('g1'))!.status).toBe(GAME_STATUSES.FINISHED);
+    const later = resumed.result.outcomes.filter(
+      (outcome) => outcome.snapshot.context.day > boundary.state.day,
+    );
+    expect(later.some((outcome) => outcome.snapshot.context.previousJudgment)).toBe(true);
+  });
   it('库里没有这一局就现开一局：建档、跑完、胜方写回档案', async () => {
     const stores = memoryStores();
     const statuses = countingStatuses(stores);

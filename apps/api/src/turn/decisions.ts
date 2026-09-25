@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DayEndJudgmentSchema, type DayEndJudgment } from '@werewolf/shared';
 import type { ModelTool } from '../llm/model-port';
 
 /**
@@ -85,6 +86,7 @@ type BadgeAnswer = { kind: 'transfer'; seatNo: number } | { kind: 'tear' };
  * 多个端口共用同一个形状是常态，投票和空刀在模型眼里是同一件事。
  */
 export interface DecisionShapes {
+  judgment: DayEndJudgment;
   /** 一个座位号，或者不做（null）。 */
   seatOrNone: string | null;
   /** 必须给一个座位号，没有不做这一档。 */
@@ -132,6 +134,8 @@ export function decisionShape(name: DecisionShapeName, input: ShapeInput): Decis
   const { seatNos } = input;
 
   switch (name) {
+    case 'judgment':
+      return { schema: DayEndJudgmentSchema, toCore: (decision) => decision };
     case 'speech':
       return { schema: undefined, toCore: (decision) => decision };
     case 'yesOrNo':

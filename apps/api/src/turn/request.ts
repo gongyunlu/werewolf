@@ -1,4 +1,4 @@
-import type { ActionType, PreviewChunk } from '@werewolf/shared';
+import type { ActionType, PreviewChunk, PreviousJudgment } from '@werewolf/shared';
 import { z } from 'zod';
 import type { SeatAccess } from '../agents/seat-context';
 import { actionKey, type ActionScope } from '../core/identity';
@@ -31,6 +31,8 @@ export interface TurnContext {
   day: number;
   /** 他此刻知道的事实，按块排；空块不留。 */
   visible: readonly FactBlock[];
+  /** 本人此前的主观判断，与系统记录及他人发言分开保存。 */
+  previousJudgment?: PreviousJudgment;
   /** 这次能选什么，来自端口方法的 candidates；只有「做/不做」两态的行动为空。 */
   options: readonly string[];
   /**

@@ -17,6 +17,7 @@ export const ACTION_TYPES = {
   SPEECH: 'speech', // 发言
   SPEECH_ORDER_DETERMINED: 'speech_order_determined', // 发言顺序确定
   VOTE: 'vote', // 投票
+  DAY_END_JUDGMENT: 'day_end_judgment', // 日终个人判断，仅本人用于后续决策
   PLAYER_EXECUTED: 'player_executed', // 投票放逐结算
 
   // —— 死亡与结算 ——

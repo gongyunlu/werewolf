@@ -90,6 +90,7 @@ export function phaseName(phase: string): string {
         day: '白天',
         deathSkills: '天亮结算',
         exileSkills: '放逐结算',
+        dayEnd: '日终',
         vote: '投票',
       } as Record<string, string>
     )[phase] ?? '对局过程'

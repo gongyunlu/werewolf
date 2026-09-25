@@ -6,6 +6,8 @@ import { actionKey, nodeNameOf, type PhaseInstanceId } from '../core/identity';
 import { audienceOf } from '../core/visibility';
 import { inWolfChannel } from '../core/roles';
 import type { GameState } from '../core/state';
+import type { StageAnchor } from '../core/loop';
+import { settleActions } from '../core/parallel';
 import { recordingModelPort } from '../llm/recording-model-port';
 import type { ScenarioId } from '../skills/game-skills';
 import type { StoredAction } from '../store/actions';
@@ -19,6 +21,7 @@ import { ledger, type Ledger } from './ledger';
 import { presetOf } from './presets';
 import { actionOrdinals, type ActionRequest, type TurnRuntime } from './request';
 import { summarize } from './summary';
+import { latestJudgment, savedJudgment, type PersonalJudgment } from './judgment';
 
 /**
  * 把玩家决定交给模型的行动提供者。
@@ -34,6 +37,8 @@ export interface ModelActions extends ActionProvider {
   /** 本轮计票后记入台账。 */
   recordBallot(ballot: Ballot): Promise<void>;
   recordFlow: FlowObserver;
+  recordStage(anchor: StageAnchor): Promise<void>;
+  judgeDayEnd(): Promise<void>;
   /**
    * 这局做过的全部决定，按跑完的先后。
    * 同一批并发提问（投票、提刀、自爆）里谁先跑完由模型延迟决定，那个先后不代表牌桌上的先后。
@@ -62,6 +67,7 @@ interface AskInput<K extends DecisionShapeName> {
   fact?: (value: DecisionShapes[K]) => FactRecord | null;
   actionOrdinal?: number;
   control?: ActionControl;
+  ledgerSeq?: number;
 }
 
 /** 一条要进台账的事实：属于哪一类、正文，以及它记下那一刻谁看得到。 */
@@ -138,6 +144,14 @@ export function modelActions(
   let process: Promise<Ledger> | undefined;
   const ordinal = actionOrdinals();
   const taken: TurnOutcome[] = [];
+  let dayEndLedgerSeq: number | undefined;
+  let judgments: Promise<Map<string, PersonalJudgment>> | undefined;
+  function judgmentsNow(): Promise<Map<string, PersonalJudgment>> {
+    return (judgments ??= stores.actions.summaries(stateNow().gameId).then((rows) => {
+      const items = rows.map(savedJudgment).filter((item) => item !== null);
+      return new Map(items.map((item) => [item.actionKey, item]));
+    }));
+  }
   // 旧版本没有法官播报。恢复时只播接下来发生的流程，不把过去的提示追加到时间线末尾。
   let replaying: Promise<Set<string>> | undefined;
   function replayingKeys(): Promise<Set<string>> {
@@ -350,28 +364,48 @@ export function modelActions(
     // 先算出行动键，按它把记录里那一行取回来：题面要的是「问出去那一刻」的台账，不是此刻这份。
     const key = actionKey(scope, input.actionType, input.actorId, actionOrdinal);
     const remembered = await stores.actions.find(key);
+    const ledgerSeq = remembered?.ledgerSeq ?? input.ledgerSeq ?? facts.lastSeq();
+    const ownJudgments = await judgmentsNow();
+    const previousJudgment = latestJudgment(ownJudgments.values(), state, input.actorId, ledgerSeq);
     const request: ActionRequest = {
       scope,
       actionType: input.actionType,
       actorId: input.actorId,
       actionOrdinal,
       preset: input.preset ?? presetOf(input.actionType),
-      context: turnContextOf({
-        state,
-        // 记录里留着当时那个记号，按它取回那一刻的台账：断了再起时这份是整份铺回来的，
-        // 比那一刻长出好几条，照整份取就不是这一问当初看到的那一份了。第一次问没有记号，此刻这份就是当时那份。
-        process: facts.factsFor(input.actorId, remembered?.ledgerSeq),
-        playerId: input.actorId,
-        task: input.task,
-        skill: skillFor(state, input.actorId, input.scenario),
-        candidates,
-        extra: input.extra,
-      }),
+      context: {
+        ...turnContextOf({
+          state,
+          // 记录里留着当时那个记号，按它取回那一刻的台账：断了再起时这份是整份铺回来的，
+          // 比那一刻长出好几条，照整份取就不是这一问当初看到的那一份了。第一次问没有记号，此刻这份就是当时那份。
+          process: facts.factsFor(input.actorId, ledgerSeq),
+          playerId: input.actorId,
+          task: input.task,
+          skill: skillFor(state, input.actorId, input.scenario),
+          candidates,
+          extra: input.extra,
+        }),
+        ...(previousJudgment ? { previousJudgment } : {}),
+      },
       schema: shape.schema,
     };
 
-    const outcome = await once(request, key, remembered, facts.lastSeq(), input.control);
+    const outcome = await once(request, key, remembered, ledgerSeq, input.control);
     taken.push(outcome);
+    if (input.actionType === ACTION_TYPES.DAY_END_JUDGMENT) {
+      const judgment = savedJudgment({
+        actionKey: key,
+        gameId: state.gameId,
+        phaseInstanceId: state.phaseInstanceId,
+        actionType: input.actionType,
+        actorId: input.actorId,
+        actionOrdinal,
+        ledgerSeq,
+        status: 'done',
+        outcome,
+      })!;
+      ownJudgments.set(key, judgment);
+    }
 
     // 形状已经由 schema 卡过，认领只是把 unknown 收回形状名对应的那个类型。
     const toPlayerId = (seatNo: number): string => index.toPlayerId(seatNo);
@@ -389,6 +423,39 @@ export function modelActions(
       current = state;
     },
     outcomes: () => taken,
+
+    async recordStage(anchor) {
+      if (nodeNameOf(anchor.phaseInstanceId) === 'dayEnd') {
+        current = anchor.state;
+        const facts = await ledgerNow();
+        await ensureSummaries(facts);
+        // 截止位置与完整局面一起落锚点；尚未开始的玩家恢复后也使用同一边界。
+        dayEndLedgerSeq = (anchor.input as { ledgerSeq?: number }).ledgerSeq ?? facts.lastSeq();
+        anchor = { ...anchor, input: { ledgerSeq: dayEndLedgerSeq } };
+      }
+      await stores.steps.append(anchor.state.gameId, anchor);
+    },
+
+    async judgeDayEnd() {
+      const state = stateNow();
+      if (nodeNameOf(state.phaseInstanceId) !== 'dayEnd' || dayEndLedgerSeq === undefined) {
+        throw new Error('日终判断缺少结算后的信息边界');
+      }
+      await settleActions(
+        state.players
+          .filter((player) => player.isAlive)
+          .map((player) =>
+            ask({
+              actionType: ACTION_TYPES.DAY_END_JUDGMENT,
+              actorId: player.id,
+              actionOrdinal: 0,
+              shape: 'judgment',
+              ledgerSeq: dayEndLedgerSeq,
+              task: `整理第 ${state.day} 天日终的个人判断。当天必要结算已完成，对局尚未结束，下一夜尚未开始；信息截至事件 #${dayEndLedgerSeq}。这份记录只供你本人后续使用，不是公开发言或狼队商议，也不执行任何行动。用 assessment 简洁记录当前怀疑或信任及依据、待观察问题和行动意图中有用的内容（最多 1600 字）；用 changes 记录相较此前判断的主要变化和新依据（最多 600 字，首次或无变化可留空）。分清系统确认的事件、他人的发言或身份主张、你自己的推测，不把主张写成事实，不编造未来结果，不打分或排名。允许不确定、误判及根据新证据推翻旧判断。`,
+            }),
+          ),
+      );
+    },
 
     async recordFlow(state, event) {
       if ((await replayingKeys()).size > 0) return;

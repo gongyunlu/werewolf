@@ -30,6 +30,9 @@ export function playerAnswer(request: ModelRequest): string {
   // 质疑是唯一交 accept 的那一问，一律通过，整局走不到修订。
   // 它这一问的身份不在提示词里，得排在取身份之前。
   if (shape.includes('"accept"')) return JSON.stringify({ accept: true, issues: '' });
+  if (shape.includes('"assessment"')) {
+    return JSON.stringify({ assessment: '目前证据不足，继续观察发言和票型。', changes: '' });
+  }
 
   // 折摘要那一问不是玩家的回合：题面里没有「坐几号」，交的是每人一条。
   // 座位号从题面里读——那一份就是台账里那几行发言，每行以「N 号发言：」开头，

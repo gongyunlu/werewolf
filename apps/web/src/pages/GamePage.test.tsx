@@ -136,6 +136,35 @@ function renderPage() {
 }
 
 describe('GamePage', () => {
+  it('日终判断在上帝视角展示玩家、截止位置及变化，闭眼视角隐藏', async () => {
+    vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+    vi.mocked(fetchActionSummaries).mockResolvedValue({
+      actions: [
+        {
+          actionKey: '日终判断1',
+          actionType: 'day_end_judgment',
+          day: 1,
+          seatNo: 1,
+          role: '预言家',
+          task: '整理个人判断',
+          ledgerSeq: 18,
+          hasReasoning: false,
+          phase: 'dayEnd',
+          eventSeq: null,
+          decision: { assessment: '我开始怀疑2号的主张。', changes: '新票型使我改变了看法。' },
+        },
+      ],
+      pending: [],
+    });
+    renderPage();
+    expect(await screen.findByText('第 1 天 · 日终')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /1 号 · 日终个人判断/ })).toBeInTheDocument();
+    expect(screen.getByText(/信息截至事件 #18/)).toHaveTextContent('私有判断，可能有误');
+    expect(screen.getByText(/主要变化：新票型使我改变了看法/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: '闭眼视角' }));
+    expect(screen.queryByText(/我开始怀疑2号的主张/)).toBeNull();
+    expect(screen.queryByText(/信息截至事件 #18/)).toBeNull();
+  });
   it('已结束页面通过入口打开复盘，地址中的复盘视图可在刷新后恢复', async () => {
     vi.mocked(fetchGameDetail).mockResolvedValue({
       game: detail({ status: GAME_STATUSES.FINISHED, winner: 'good' }),

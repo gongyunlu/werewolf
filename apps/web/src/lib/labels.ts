@@ -55,6 +55,7 @@ const EVENT_KIND_NAMES: Record<string, string> = {
 const ACTION_NAMES: Record<string, string> = {
   [ACTION_TYPES.SPEECH]: '发言',
   [ACTION_TYPES.VOTE]: '投票',
+  [ACTION_TYPES.DAY_END_JUDGMENT]: '日终个人判断',
   [ACTION_TYPES.WOLF_PROPOSAL]: '商量刀谁',
   [ACTION_TYPES.WOLF_DISCUSSION_CONTINUE]: '继续商议判断',
   [ACTION_TYPES.WOLF_EXPLODE]: '自爆判断',

@@ -1,5 +1,5 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ACTION_TYPES, GAME_STATUSES } from '@werewolf/shared';
+import { ACTION_TYPES, GAME_STATUSES, PreviousJudgmentSchema } from '@werewolf/shared';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { GameStores } from '../store/stores';
@@ -17,6 +17,7 @@ const SnapshotSchema = z.object({
     day: z.number(),
     actor: z.object({ playerId: z.string(), seatNo: z.number(), role: z.string() }),
     visible: z.array(z.object({ title: z.string(), lines: z.array(z.string()) })),
+    previousJudgment: PreviousJudgmentSchema.optional(),
     options: z.array(z.string()),
     skill: z.array(z.string()),
   }),
@@ -72,6 +73,8 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
   const gaps: EvidenceGap[] = [];
   const boardRules = new Set<string>();
   for (const action of actions) {
+    // 日终记录用于认知延续，不作为额外的自动评价任务。
+    if (action.actionType === ACTION_TYPES.DAY_END_JUDGMENT) continue;
     const gap = (reason: string) =>
       gaps.push({ actorId: action.actorId, actionKey: action.actionKey, reason });
     if (action.status !== 'done') {
@@ -113,6 +116,12 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
     add('context/task', snapshot.context.task);
     add('context/actor', snapshot.context.actor);
     add('context/day', snapshot.context.day);
+    if (snapshot.context.previousJudgment) {
+      add('context/previousJudgment', {
+        meaning: '本人此前的主观判断，不是已确认事实，可以被当前证据推翻',
+        ...snapshot.context.previousJudgment,
+      });
+    }
     snapshot.context.visible.forEach((block, i) =>
       block.lines.forEach((line, j) =>
         add(`context/visible/${i}/lines/${j}`, { title: block.title, line }),

@@ -317,14 +317,20 @@ function briefOf(
 }
 
 function factsOf(context: TurnContext): string {
-  if (context.visible.length === 0) return '';
-
   // 块之间空一行，免得上一块的最后一条跟下一块的标题连成一串。
   const rendered = context.visible.map(
     (block) => `【${block.title}】\n${block.lines.map(factLine).join('\n')}`,
   );
 
-  return `你当前可见的材料（系统记录与玩家说法分列）：\n${rendered.join('\n\n')}`;
+  const previous = context.previousJudgment;
+  return blocks([
+    rendered.length > 0
+      ? `你当前可见的材料（系统记录与玩家说法分列）：\n${rendered.join('\n\n')}`
+      : '',
+    previous
+      ? `【你此前的个人判断（不是已确认事实）】\n形成于第 ${previous.day} 天日终，信息截至事件 #${previous.ledgerSeq}。\n${previous.assessment}\n当时的主要变化：${previous.changes || '未记录变化'}\n这只是你当时的推测和意图，可能误判或被骗；以当前可见证据重新判断，允许改变立场。发言和身份主张仍属于原说话人，不能因记入判断就升级为事实；计划也不代表已经执行。`
+      : '',
+  ]);
 }
 
 /** 台账换天那几行自带括号，是分隔不是事实，不加项目符号。 */

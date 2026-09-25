@@ -3,6 +3,43 @@ import { prepareEvidence } from './evidence';
 import { reviewFixture } from './testing';
 
 describe('复盘证据边界', () => {
+  it('保留行动实际使用的历史判断及其主观标签，日终本身不增加自动评价任务', async () => {
+    const { stores, action } = await reviewFixture();
+    const original = (await stores.actions.find(action.actionKey))!.outcome as {
+      snapshot: { context: object };
+    };
+    const previousJudgment = {
+      actionKey: '日终',
+      day: 1,
+      ledgerSeq: 0,
+      assessment: '暂时信任2号',
+      changes: '',
+    };
+    await stores.actions.finish(action.actionKey, {
+      decision: 2,
+      snapshot: {
+        ...original.snapshot,
+        context: { ...original.snapshot.context, previousJudgment },
+      },
+    });
+    await stores.actions.begin({
+      ...action,
+      actionKey: '日终',
+      actionType: ACTION_TYPES.DAY_END_JUDGMENT,
+    });
+    const evidence = await prepareEvidence(stores, 'g');
+    expect(evidence.targets).toHaveLength(1);
+    expect(evidence.gaps).toEqual([]);
+    expect(evidence.targets[0].sources).toContainEqual(
+      expect.objectContaining({
+        origin: { actionKey: action.actionKey, path: 'context/previousJudgment' },
+        value: {
+          ...previousJudgment,
+          meaning: '本人此前的主观判断，不是已确认事实，可以被当前证据推翻',
+        },
+      }),
+    );
+  });
   it('全知分析携带实际保存的板子规则，不用当前规则重建历史', async () => {
     const { stores } = await reviewFixture();
     const evidence = await prepareEvidence(stores, 'g');

@@ -14,7 +14,7 @@ import type { GameState } from './state';
 import { checkWin } from './win';
 
 /** 天亮阶段保存尚未公布的夜间结果，供竞选和恢复使用。 */
-const STAGES = ['night', 'dawn', 'deathSkills', 'day', 'exileSkills'] as const;
+const STAGES = ['night', 'dawn', 'deathSkills', 'day', 'exileSkills', 'dayEnd'] as const;
 type StageName = (typeof STAGES)[number];
 
 /**
@@ -45,6 +45,8 @@ export interface GameLoopInput {
   /** 每轮计票后立即发布票型，后续发言与投票才能看到。 */
   onBallot?: BallotObserver;
   onFlow?: FlowObserver;
+  /** 当日结算和胜负检查通过后、下一夜之前整理个人判断，不改变局面。 */
+  onDayEnd?: () => Promise<void>;
   /** 从哪一格接着跑。局面与这一格的输入都以它为准，它前面那几格一概不重放。 */
   resume?: StageAnchor;
   /** 天数上限，默认 20；到点还没分出胜负就是引擎没停下来。 */
@@ -77,6 +79,7 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
     onStage,
     onBallot,
     onFlow,
+    onDayEnd,
     maxDays = DEFAULT_MAX_DAYS,
   } = input;
   const resume = input.resume ?? null;
@@ -218,11 +221,16 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
       if (badgeWinner !== null) return { state, winner: badgeWinner };
     }
 
+    const nextDay = state.day + 1;
+    if (nextDay > maxDays) throw new Error(`第 ${maxDays} 天还没分出胜负`);
+    if (onDayEnd) {
+      state = await enter('dayEnd', state, from === 5 ? resume!.input : {});
+      await onDayEnd();
+    }
+
     from = 0;
     // 这一轮没进过那一格（放逐技能那一格可以整段跳过）：恢复标记跟着作废，下一轮整轮走。
     resuming = false;
-    const nextDay = state.day + 1;
-    if (nextDay > maxDays) throw new Error(`第 ${maxDays} 天还没分出胜负`);
     state = { ...state, day: nextDay };
   }
 }

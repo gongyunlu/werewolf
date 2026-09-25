@@ -54,7 +54,8 @@ export async function runModelGame(input: ModelGameInput): Promise<ModelGameResu
     minuteOf: input.minuteOf,
     observe: actions.observe,
     // 每进一格都落一份锚点：这一跑断了，下一跑就能从断的那一格接着跑。
-    onStage: (anchor) => stores.steps.append(input.setup.gameId, anchor),
+    onStage: actions.recordStage,
+    onDayEnd: actions.judgeDayEnd,
     // 票型的定局只有 Core 有，由它交出来，适配器照记进台账。
     onBallot: (ballot) => actions.recordBallot(ballot),
     onFlow: actions.recordFlow,

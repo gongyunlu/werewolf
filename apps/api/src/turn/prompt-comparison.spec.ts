@@ -50,6 +50,27 @@ function platform(): PromptSource {
 }
 
 describe('固定玩家输入对照', () => {
+  it('历史个人判断随原输入冻结，在两个 prompt 版本中保持一致且仍标为主观材料', async () => {
+    const previousJudgment = {
+      actionKey: '先前日终',
+      day: 1,
+      ledgerSeq: 12,
+      assessment: '暂时信任1号的说法',
+      changes: '',
+    };
+    const result = await preparePromptComparison(
+      {
+        ...snapshot,
+        context: { ...snapshot.context, day: 2, previousJudgment },
+      },
+      platform(),
+      selection,
+    );
+    expect(result.input.context.previousJudgment).toEqual(previousJudgment);
+    expect(result.variants[0].request.prompt).toBe(result.variants[1].request.prompt);
+    expect(result.variants[0].request.prompt).toContain('不是已确认事实');
+    expect(result.variants[0].request.prompt).toContain('暂时信任1号的说法');
+  });
   it('只改变所选模板；规则、skills、玩家输入及另一段的实际版本完全相同', async () => {
     const source = platform();
     const result = await preparePromptComparison(snapshot, source, selection);
