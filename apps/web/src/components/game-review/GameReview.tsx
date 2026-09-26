@@ -24,6 +24,7 @@ import { reviewIsRunning, useGameReview } from '@/hooks/useGameReview';
 import { roleName } from '@/lib/labels';
 import { decisionTitle, REVIEW_STATUS_NAMES } from '@/lib/review';
 import { ReviewAnalysis, ReviewEvidence, type EvidenceSelection } from './ReviewAnalysis';
+import { ExperienceGeneration } from './ExperienceGeneration';
 
 function ReportReader({ report, game }: { report: ReviewReport; game: GameDetail }) {
   const [selectedPlayer, setSelectedPlayer] = useState(report.evidence.players[0]?.id ?? '');
@@ -98,6 +99,19 @@ function ReportReader({ report, game }: { report: ReviewReport; game: GameDetail
                   </p>
                 )}
               </section>
+              <ExperienceGeneration
+                key={selectedPlayer}
+                gameId={game.gameId}
+                playerId={selectedPlayer}
+                agentId={
+                  game.roster.find(
+                    (seat) =>
+                      seat.seatNo ===
+                      report.evidence.players.find((item) => item.id === selectedPlayer)?.seatNo,
+                  )?.agentId
+                }
+                completed={Boolean(report.completedAt)}
+              />
             </CardContent>
           </Card>
           <section aria-label="逐步决策分析" className="flex flex-col gap-3" key={selectedPlayer}>

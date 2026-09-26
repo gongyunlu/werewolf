@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ACTION_TYPES } from '../domain/action-types';
+import { ExperienceCallInputSchema, ExperienceRetrievalSchema } from './experience';
 
 /** 一条行动记录里前端要用的那几项：谁、哪天、问的什么、定了什么、为什么。 */
 export const ActionLogEntrySchema = z.object({
@@ -59,6 +60,8 @@ export const ActionStepSchema = z.object({
 });
 export type ActionStep = z.infer<typeof ActionStepSchema>;
 export const ActionDetailResponseSchema = z.object({
+  experienceRetrieval: ExperienceRetrievalSchema.optional(),
+  experienceInputs: z.array(ExperienceCallInputSchema).optional(),
   reasoning: z.string().nullable(),
   steps: z.array(ActionStepSchema),
 });

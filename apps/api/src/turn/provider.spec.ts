@@ -1,10 +1,11 @@
 import { ACTION_TYPES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import type { Ballot } from '../core/vote';
-import { actionKey } from '../core/identity';
+import { actionKey, phaseInstanceId } from '../core/identity';
 import { patchPlayer, type GameState } from '../core/state';
 import type { ModelCapability } from '../llm/model-capability';
 import type { ModelAccess, ModelRequest } from '../llm/model-port';
 import type { StoredAskedPrompt } from '../store/asked';
+import { gameSkills } from '../skills/game-skills';
 import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
@@ -134,6 +135,59 @@ describe('模型行动提供者', () => {
   });
 
   describe('技能正文', () => {
+    it('通用约束进入日终判断及下一夜的生成、复核、修订，并保存在当次快照中', async () => {
+      const skills = gameSkills('6p_white_wolf');
+      let state = withRoles(makeState(6), {
+        p1: ROLES.SEER,
+        p2: ROLES.WHITE_WOLF,
+        p5: ROLES.WEREWOLF,
+        p6: ROLES.GUARD,
+      });
+      state = patchPlayer(patchPlayer(state, 'p1', { isAlive: false }), 'p2', { isAlive: false });
+      state = { ...state, phaseInstanceId: phaseInstanceId(4, 'dayEnd') };
+      const assessment = '如果1号是预言家，我出局会导致神职全灭；不能继续计划次日投票。';
+      const model = scriptedModel([
+        ...Array.from({ length: 4 }, () => JSON.stringify({ assessment, changes: '' })),
+        '3',
+        JSON.stringify({ accept: false, issues: '核对出局后的终局条件。' }),
+        '3',
+      ]);
+      const actions = modelActions(
+        {
+          port: model,
+          accessFor: () => ACCESS,
+          memoriesFor: () => [],
+          skills,
+          promptSource: {
+            load: async (name) => ({
+              ...(await LOCAL_TURN_PROMPTS.load(name)),
+              source: 'platform',
+              version: 7,
+            }),
+          },
+        },
+        memoryStores(),
+      );
+      await actions.recordStage({ state, phaseInstanceId: state.phaseInstanceId, input: {} });
+      await actions.judgeDayEnd();
+      actions.observe({ ...state, day: 2, phaseInstanceId: phaseInstanceId(5, 'night') });
+      await actions.guardProtect('p6', ['p3', 'p4', 'p5']);
+
+      expect(model.calls).toHaveLength(7);
+      for (const call of model.calls) {
+        expect(call.system).toContain(skills.common.content);
+        expect(call.system).toContain(skills.ruleset.content);
+      }
+      expect(model.calls[4].prompt).toContain(assessment);
+      for (const { snapshot } of actions.outcomes()) {
+        expect(snapshot.context.skill[0]).toContain(skills.common.content);
+        for (const prompt of snapshot.prompts.filter((part) => part.template.endsWith('-system'))) {
+          expect(prompt.text).toContain(skills.common.content);
+          expect(prompt).toMatchObject({ source: 'platform', version: 7 });
+        }
+      }
+    });
+
     it('板子、角色、场景三段按这个顺序接在系统提示词后面', async () => {
       const { model, actions } = await withActions(sixPlayerState(), quality('过'));
 

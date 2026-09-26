@@ -6,6 +6,7 @@ import type { EventStore } from './events';
 import type { GameStore } from './games';
 import type { StepStore } from './steps';
 import type { ObservationStore } from './observations';
+import type { ExperienceStore } from './experiences';
 
 /** 一局要用到的那几份存储，成对交给行动提供者。 */
 export interface GameStores {
@@ -13,6 +14,7 @@ export interface GameStores {
   games: GameStore;
   /** 参赛者的接入配置。开局按阵容取型号与端点，密钥现读。 */
   agents: AgentStore;
+  experiences: ExperienceStore;
   events: EventStore;
   actions: ActionStore;
   steps: StepStore;

@@ -5,6 +5,7 @@ export * from './api/games';
 export * from './api/health';
 export * from './api/judgment';
 export * from './api/review';
+export * from './api/experience';
 
 export * from './domain/action-types';
 export * from './domain/death-causes';

@@ -1,5 +1,6 @@
 import type { AskedPrompt } from '../llm/recording-model-port';
 import type { CallCompletion, CallRecording } from '../llm/observation';
+import type { ExperienceCallInput } from '@werewolf/shared';
 
 /** 落下来的一份提问：问出去的题面，以及它属于哪一次行动。 */
 export interface StoredAskedPrompt extends AskedPrompt {
@@ -9,6 +10,7 @@ export interface StoredAskedPrompt extends AskedPrompt {
 }
 
 export interface AskedPromptStore {
+  experienceInputs(gameId: string, actionKey: string): Promise<ExperienceCallInput[]>;
   /**
    * 落一份。
    * 每次逻辑调用一行，返回该行的观测写入口；旧题面仍可单独追加。

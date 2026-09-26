@@ -1,4 +1,9 @@
-import type { ActionType, PreviewChunk, PreviousJudgment } from '@werewolf/shared';
+import type {
+  ActionType,
+  PreviewChunk,
+  PreviousJudgment,
+  ExperienceSnapshot,
+} from '@werewolf/shared';
 import { z } from 'zod';
 import type { SeatAccess } from '../agents/seat-context';
 import { actionKey, type ActionScope } from '../core/identity';
@@ -33,10 +38,11 @@ export interface TurnContext {
   visible: readonly FactBlock[];
   /** 本人此前的主观判断，与系统记录及他人发言分开保存。 */
   previousJudgment?: PreviousJudgment;
+  experiences?: readonly ExperienceSnapshot[];
   /** 这次能选什么，来自端口方法的 candidates；只有「做/不做」两态的行动为空。 */
   options: readonly string[];
   /**
-   * 这一问要带上的技能正文，按「板子 → 角色 → 场景 → 人设与策略」排，缺哪一段就少哪一段。
+   * 这一问要带上的技能正文，按「板子与通用约束 → 角色 → 场景 → 人设与策略」排，缺哪一段就少哪一段。
    * 每问都带一份，带上之后它就是这次提问实打实的输入。
    */
   skill: readonly string[];
@@ -65,6 +71,7 @@ export function actionKeyOf(request: ActionRequest): string {
  * 提示词给的是取用口子而不是取好的正文：图里哪个节点走到才取哪两条。
  */
 export interface TurnRuntime {
+  embedding?: import('../llm/embedding').EmbeddingRuntime;
   port: ModelPort;
   /**
    * 谁在答就用谁那份接入身份，按座位取。开局那份阵容里排了人的格子各有各的端点与密钥，

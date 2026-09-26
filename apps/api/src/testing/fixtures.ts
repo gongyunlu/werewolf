@@ -17,6 +17,7 @@ function stubSkill(id: string): Skill {
  */
 export function stubSkills(): GameSkills {
   return {
+    common: stubSkill('common/reasoning'),
     ruleset: stubSkill('ruleset/test'),
     role: (role) => stubSkill(`roles/${role}`),
     scenario: (id) => stubSkill(`scenarios/${id}`),

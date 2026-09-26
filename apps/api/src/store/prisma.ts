@@ -6,6 +6,7 @@ import {
   type AgentMemories,
   type AgentMemoryType,
   type GameStatus,
+  ExperienceSnapshotSchema,
 } from '@werewolf/shared';
 import { parsePhaseInstanceId, type PhaseInstanceId } from '../core/identity';
 import type { StageAnchor } from '../core/loop';
@@ -20,6 +21,7 @@ import type { GameStore, RosterSeat, StoredGame } from './games';
 import type { StepStore } from './steps';
 import type { GameStores } from './stores';
 import { prismaObservations } from './prisma-observations';
+import { prismaExperiences } from './prisma-experiences';
 
 /** 连上对局库。调用方用完自己关。 */
 export function openPrismaClient(connectionString: string): PrismaClient {
@@ -30,6 +32,7 @@ export function prismaStores(client: PrismaClient): GameStores {
   return {
     games: prismaGames(client),
     agents: prismaAgents(client),
+    experiences: prismaExperiences(client),
     events: prismaEvents(client),
     actions: prismaActions(client),
     steps: prismaSteps(client),
@@ -296,9 +299,25 @@ export function prismaActions(client: PrismaClient): ActionStore {
     async begin(intent) {
       await client.actionRecord.upsert({
         where: { actionKey: intent.actionKey },
-        create: intent,
+        create: {
+          ...intent,
+          experienceRetrieval: intent.experienceRetrieval
+            ? (intent.experienceRetrieval as unknown as Prisma.InputJsonValue)
+            : Prisma.DbNull,
+        },
         update: {},
       });
+    },
+
+    async saveRetrieval(actionKey, previous, next) {
+      const saved = await client.actionRecord.updateMany({
+        where: {
+          actionKey,
+          experienceRetrieval: { equals: previous as unknown as Prisma.InputJsonValue },
+        },
+        data: { experienceRetrieval: next as unknown as Prisma.InputJsonValue },
+      });
+      if (saved.count !== 1) throw new Error('行动检索状态已变化，请恢复原行动');
     },
 
     async finish(actionKey, outcome) {
@@ -327,6 +346,7 @@ function storedAction(row: Prisma.ActionRecordModel): StoredAction {
     ledgerSeq: row.ledgerSeq,
     status: statusOf(row.status),
     outcome: row.outcome ?? null,
+    experienceRetrieval: row.experienceRetrieval as unknown as StoredAction['experienceRetrieval'],
   };
 }
 
@@ -408,6 +428,24 @@ export function prismaSteps(client: PrismaClient): StepStore {
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
   return {
+    async experienceInputs(gameId, actionKey) {
+      const rows = await client.askedPrompt.findMany({
+        where: { gameId, actionKey, experiences: { not: Prisma.DbNull } },
+        select: {
+          callId: true,
+          step: true,
+          experiences: true,
+          attempts: { select: { dispatched: true } },
+        },
+        orderBy: { id: 'asc' },
+      });
+      return rows.map((row) => ({
+        callId: row.callId!,
+        step: row.step!,
+        dispatched: row.attempts.some((item) => item.dispatched === true),
+        experiences: ExperienceSnapshotSchema.array().parse(row.experiences),
+      }));
+    },
     async finishCall(callId, result) {
       await client.askedPrompt.updateMany({
         where: { callId, status: 'started' },
@@ -427,6 +465,9 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
           ...(asked.observation ? { status: 'started' } : {}),
           // 没走工具的那几问整列不写，落 SQL 的 null——不写才是「这一问压根没给工具」。
           ...(asked.tool ? { tool: asked.tool as unknown as Prisma.InputJsonValue } : {}),
+          ...(asked.experiences
+            ? { experiences: asked.experiences as unknown as Prisma.InputJsonValue }
+            : {}),
         },
       });
       if (!asked.observation) return;

@@ -1,5 +1,10 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ACTION_TYPES, GAME_STATUSES, PreviousJudgmentSchema } from '@werewolf/shared';
+import {
+  ACTION_TYPES,
+  GAME_STATUSES,
+  PreviousJudgmentSchema,
+  ExperienceSnapshotSchema,
+} from '@werewolf/shared';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { GameStores } from '../store/stores';
@@ -18,6 +23,7 @@ const SnapshotSchema = z.object({
     actor: z.object({ playerId: z.string(), seatNo: z.number(), role: z.string() }),
     visible: z.array(z.object({ title: z.string(), lines: z.array(z.string()) })),
     previousJudgment: PreviousJudgmentSchema.optional(),
+    experiences: z.array(ExperienceSnapshotSchema).optional(),
     options: z.array(z.string()),
     skill: z.array(z.string()),
   }),
@@ -116,6 +122,11 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
     add('context/task', snapshot.context.task);
     add('context/actor', snapshot.context.actor);
     add('context/day', snapshot.context.day);
+    if (snapshot.context.experiences?.length)
+      add('context/experiences', {
+        meaning: '历史经验参考，不是本局事实；输入不代表明确采纳',
+        items: snapshot.context.experiences,
+      });
     if (snapshot.context.previousJudgment) {
       add('context/previousJudgment', {
         meaning: '本人此前的主观判断，不是已确认事实，可以被当前证据推翻',

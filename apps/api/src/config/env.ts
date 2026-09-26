@@ -24,6 +24,11 @@ const envSchema = z.object({
 
   // 模型接入。密钥空着服务照样起得来，真开局时才会拦。
   MODEL_API_KEY: z.string().default(''),
+  // 向量化独立选型；端点和密钥留空时沿用应用的默认模型接入。
+  EMBEDDING_MODEL: z.string().default(''),
+  EMBEDDING_BASE_URL: z.string().default(''),
+  EMBEDDING_API_KEY: z.string().default(''),
+  EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(2048),
   // 下面这几项没有默认值：它们是「这一局是谁在答」，不是「服务怎么起」。
   // 在这儿再写一份默认，等于把选型藏回代码里——换型号要改 TS，漏配也不吭声。
   MODEL_BASE_URL: z.url(),

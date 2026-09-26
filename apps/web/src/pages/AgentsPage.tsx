@@ -1,5 +1,7 @@
 import type { AgentSummary } from '@werewolf/shared';
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { AgentExperiences } from '@/components/AgentExperiences';
 import { AgentEditDialog } from '@/components/AgentEditDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -34,6 +36,7 @@ function failureOf(failure: unknown): string | null {
 }
 
 export function AgentsPage() {
+  const [params, setParams] = useSearchParams();
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   // undefined 是没开，null 是新建，给一个 agent 就是编辑那一个
   const [dialog, setDialog] = useState<{ agent: AgentSummary | null } | null>(null);
@@ -101,7 +104,9 @@ export function AgentsPage() {
       <div className="flex items-end justify-between gap-4">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">参赛者</h1>
-          <p className="text-sm text-muted-foreground">管理玩家的模型接入、人设与策略。</p>
+          <p className="text-sm text-muted-foreground">
+            管理模型接入、人工人设与策略，以及独立保存的个人历史经验。
+          </p>
         </div>
         <Button onClick={() => setDialog({ agent: null })}>新建参赛者</Button>
       </div>
@@ -182,6 +187,13 @@ export function AgentsPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setParams({ experience: agent.id })}
+                    >
+                      经验
+                    </Button>
                     <Button variant="outline" size="sm" onClick={() => setDialog({ agent })}>
                       编辑
                     </Button>
@@ -206,6 +218,11 @@ export function AgentsPage() {
         }}
         onSaved={() => void load()}
       />
+      {agents
+        .filter((agent) => agent.id === params.get('experience'))
+        .map((agent) => (
+          <AgentExperiences key={agent.id} agent={agent} onClose={() => setParams({})} />
+        ))}
     </main>
   );
 }

@@ -3,6 +3,7 @@ import {
   propagateAttributes,
   startObservation,
   type LangfuseGeneration,
+  type LangfuseEmbedding,
   type LangfuseSpan,
 } from '@langfuse/tracing';
 import { isSpanContextValid, TraceFlags } from '@opentelemetry/api';
@@ -70,7 +71,7 @@ export function telemetry<T>(operation: () => T): T | undefined {
   }
 }
 
-export function traceIds(span: LangfuseSpan | LangfuseGeneration | undefined) {
+export function traceIds(span: LangfuseSpan | LangfuseGeneration | LangfuseEmbedding | undefined) {
   if (!span) return {};
   const context = span.otelSpan.spanContext();
   return isSpanContextValid(context) && (context.traceFlags & TraceFlags.SAMPLED) !== 0
@@ -93,29 +94,28 @@ export function requestSpan(
   model: string,
   attemptNo: number,
   metadata: Record<string, unknown>,
-  request: Pick<ModelRequest, 'prompts' | 'primaryPrompt'> = {},
-): LangfuseGeneration | undefined {
+  request: Pick<ModelRequest, 'prompts' | 'primaryPrompt' | 'embedding'> = {},
+): LangfuseGeneration | LangfuseEmbedding | undefined {
   const attributes = promptAttributes(request);
+  const values = {
+    model,
+    ...attributes,
+    metadata: { ...metadata, ...attributes.metadata, attemptNo },
+  };
   return (
     parent &&
     telemetry(() =>
       propagateAttributes({ sessionId: String(metadata.gameId) }, () =>
-        parent.startObservation(
-          'model.request',
-          {
-            model,
-            ...attributes,
-            metadata: { ...metadata, ...attributes.metadata, attemptNo },
-          },
-          { asType: 'generation' },
-        ),
+        request.embedding
+          ? parent.startObservation('model.request', values, { asType: 'embedding' })
+          : parent.startObservation('model.request', values, { asType: 'generation' }),
       ),
     )
   );
 }
 
 export function finishRequest(
-  span: LangfuseGeneration | undefined,
+  span: LangfuseGeneration | LangfuseEmbedding | undefined,
   result: AttemptCompletion,
 ): void {
   if (!span) return;

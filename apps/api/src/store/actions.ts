@@ -1,5 +1,13 @@
 import type { ActionType } from '@werewolf/shared';
 import { z } from 'zod';
+import type { ExperienceRetrieval } from '@werewolf/shared';
+import type { EmbeddingTask } from '../experience/embedding-task';
+import type { ExperienceScope } from './experiences';
+
+export type StoredExperienceRetrieval = ExperienceRetrieval & {
+  scope: ExperienceScope;
+  embedding?: EmbeddingTask;
+};
 
 /** 列表读取的快照字段；旧记录可以没有思考或耗时。 */
 export const ActionSnapshotFields = z.object({
@@ -20,6 +28,7 @@ export interface StoredActionSummary extends StoredAction {
 
 /** 一次提问立下的意图：问的是谁、问的什么、问的时候台账到哪儿。 */
 export interface ActionIntent {
+  experienceRetrieval?: StoredExperienceRetrieval | null;
   actionKey: string;
   gameId: string;
   phaseInstanceId: string;
@@ -50,6 +59,11 @@ export interface ActionStore {
   summaries(gameId: string): Promise<StoredActionSummary[]>;
   /** 立意图。已经立过的不再写，先立那份原样留着。 */
   begin(intent: ActionIntent): Promise<void>;
+  saveRetrieval(
+    actionKey: string,
+    previous: StoredExperienceRetrieval,
+    next: StoredExperienceRetrieval,
+  ): Promise<void>;
   /** 答完，补上结果。 */
   finish(actionKey: string, outcome: unknown): Promise<void>;
 }

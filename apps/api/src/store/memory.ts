@@ -1,5 +1,5 @@
 import { MemorySaver } from '@langchain/langgraph';
-import { GAME_STATUSES, type AgentMemories } from '@werewolf/shared';
+import { GAME_STATUSES, type AgentMemories, type ExperienceSnapshot } from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import type { StageAnchor } from '../core/loop';
 import {
@@ -15,6 +15,7 @@ import type { EventStore, StoredEvent } from './events';
 import type { GameStore, StoredGame } from './games';
 import type { StepStore } from './steps';
 import type { GameStores } from './stores';
+import { memoryExperiences } from './memory-experiences';
 
 /**
  * 整局跑在内存里的那几份存储：进程一结束就没了。
@@ -27,6 +28,7 @@ export function memoryStores(): GameStores {
   return {
     games,
     agents: memoryAgents(),
+    experiences: memoryExperiences(),
     events: memoryEvents(),
     actions,
     steps: memorySteps(),
@@ -200,6 +202,13 @@ export function memoryActions(): ActionStore {
       }
     },
 
+    async saveRetrieval(actionKey, previous, next) {
+      const row = byKey.get(actionKey);
+      if (!row || JSON.stringify(row.experienceRetrieval) !== JSON.stringify(previous))
+        throw new Error('行动检索状态已变化，请恢复原行动');
+      byKey.set(actionKey, { ...row, experienceRetrieval: structuredClone(next) });
+    },
+
     async finish(actionKey, outcome) {
       const row = byKey.get(actionKey);
       if (!row) throw new Error(`没立过意图就直接补结果：${actionKey}`);
@@ -209,7 +218,22 @@ export function memoryActions(): ActionStore {
 }
 
 export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
+  const inputs = new Map<number, readonly ExperienceSnapshot[]>();
   return {
+    async experienceInputs(gameId, actionKey) {
+      return structuredClone(
+        rows
+          .filter(
+            (row) => row.gameId === gameId && row.actionKey === actionKey && inputs.has(row.id),
+          )
+          .map((row) => ({
+            callId: row.callId!,
+            step: row.step!,
+            dispatched: row.attempts.some((item) => item.dispatched === true),
+            experiences: [...inputs.get(row.id)!],
+          })),
+      );
+    },
     async finishCall(callId, result) {
       const row = rows.find((item) => item.callId === callId);
       if (!row) throw new Error('调用记录不存在');
@@ -228,6 +252,7 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
         asked.observation,
       );
       rows.push(row);
+      if (asked.experiences) inputs.set(row.id, structuredClone(asked.experiences));
       if (!asked.observation) return;
       return {
         async finish(result) {

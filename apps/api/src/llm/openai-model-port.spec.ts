@@ -18,6 +18,34 @@ const ACCESS: ModelAccess = {
 
 const REQUEST = { system: '你是谁', prompt: '要你做什么' };
 
+it('向量请求复用接入和用量记录，不发送聊天参数', async () => {
+  const { send, sent } = fakeSend(
+    200,
+    JSON.stringify({
+      data: [{ index: 0, embedding: [0.2, 0.8] }],
+      usage: { prompt_tokens: 4, total_tokens: 4 },
+    }),
+  );
+  const finish = jest.fn();
+  const response = await openaiModelPort({ fetch: send }).generate(
+    { ...REQUEST, embedding: { dimensions: 2 } },
+    ACCESS,
+    { startAttempt: async () => ({ dispatched() {}, finish }) },
+  );
+  expect(response.vector).toEqual([0.2, 0.8]);
+  expect(sent[0]!.url).toBe(`${BASE_URL}/embeddings`);
+  expect(JSON.parse(sent[0]!.init!.body as string)).toEqual({
+    model: ACCESS.model,
+    input: [REQUEST.prompt],
+    dimensions: 2,
+    encoding_format: 'float',
+  });
+  expect(finish.mock.calls[0]![0]).toMatchObject({
+    usageComplete: true,
+    usage: { total_tokens: 4 },
+  });
+});
+
 it('完整答复在请求开销写入之前同步通知，写入完成前仍不结束调用', async () => {
   const port = openaiModelPort({ fetch: fakeSend(200, answer('已收到')).send });
   const order: string[] = [];

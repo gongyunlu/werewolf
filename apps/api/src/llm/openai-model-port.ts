@@ -386,6 +386,28 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
     // 「signal 已中止」的判定上。这儿不再多查一遍。
     const signal = callSignal(call, call.timeoutMs ?? timeoutMs);
     const client = clientFor(access, metrics, dispatched);
+    if (request.embedding) {
+      let answer;
+      try {
+        answer = await client.embeddings.create(
+          {
+            model: access.model,
+            input: [request.prompt],
+            encoding_format: 'float',
+            dimensions: request.embedding.dimensions,
+          },
+          { signal },
+        );
+      } catch (error) {
+        if (signal.aborted) throw aborted(signal, access.baseUrl, false);
+        throw asModelCallError(error, access.baseUrl);
+      }
+      metrics.usage = usageObject(answer.usage);
+      metrics.usageComplete = metrics.usage !== null;
+      if (answer.data.length !== 1 || answer.data[0]?.index !== 0)
+        throw new ModelCallError('invalid_output', '向量响应数量或索引不正确');
+      return { vector: answer.data[0].embedding, content: '', toolCall: null, reasoning: null };
+    }
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: request.system },
       { role: 'user', content: request.prompt },

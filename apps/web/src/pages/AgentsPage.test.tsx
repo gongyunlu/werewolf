@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchAgents } from '@/lib/api-client';
 import { AgentsPage } from './AgentsPage';
@@ -49,7 +50,11 @@ describe('参赛者筛选', () => {
   });
 
   it('默认显示全部启用者，标签与停用开关可以组合筛选', async () => {
-    render(<AgentsPage />);
+    render(
+      <MemoryRouter>
+        <AgentsPage />
+      </MemoryRouter>,
+    );
     await screen.findByText('甲');
     expect(screen.getByRole('combobox', { name: '按标签筛选' })).toHaveTextContent('全部标签');
     expect(screen.queryByText('丙')).toBeNull();

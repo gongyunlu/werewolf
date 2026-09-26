@@ -7,6 +7,7 @@ import type {
 import { ACTION_TYPES, DayEndJudgmentSchema } from '@werewolf/shared';
 import { CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react';
 import { useState } from 'react';
+import { ExperienceCard } from '@/components/ExperienceCard';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { fetchActionDetail } from '@/lib/api-client';
@@ -248,6 +249,66 @@ export function ActionRow({
           ) : null}
           {detail ? (
             <>
+              <section aria-label="历史经验输入" className="mb-4 flex flex-col gap-3">
+                <h4 className="text-sm font-medium">本次行动的历史经验输入</h4>
+                <p className="text-xs text-muted-foreground">
+                  展示各次调用固定的输入版本。输入不代表模型明确采纳；未另行判断采纳情况。
+                </p>
+                {detail.experienceRetrieval ? (
+                  <details className="text-xs text-muted-foreground">
+                    <summary>
+                      当次检索：
+                      {
+                        STATUS_NAMES[
+                          detail.experienceRetrieval.status === 'pending'
+                            ? 'running'
+                            : detail.experienceRetrieval.status
+                        ]
+                      }{' '}
+                      · 已选 {detail.experienceRetrieval.selected.length} 条
+                    </summary>
+                    <p>
+                      向量模型：{detail.experienceRetrieval.model ?? '无适用经验，未调用向量模型'}
+                    </p>
+                    <pre className="whitespace-pre-wrap wrap-anywhere">
+                      {detail.experienceRetrieval.query}
+                    </pre>
+                    {detail.experienceRetrieval.failure ? (
+                      <p role="alert">{detail.experienceRetrieval.failure}</p>
+                    ) : null}
+                    <p>候选按向量相似度排列，相似度不代表经验正确性或模型采纳。</p>
+                    {detail.experienceRetrieval.candidates.map((item) => (
+                      <p key={item.id}>
+                        {item.id} · 相似度 {item.similarity.toFixed(3)}
+                      </p>
+                    ))}
+                    {detail.experienceRetrieval.selected.map((item) => (
+                      <ExperienceCard key={item.id} experience={item} />
+                    ))}
+                  </details>
+                ) : null}
+                {!detail.experienceInputs?.length ? (
+                  <p className="text-xs text-muted-foreground">
+                    这条行动没有可追溯的经验输入记录。
+                  </p>
+                ) : (
+                  detail.experienceInputs.map((call) => (
+                    <div key={call.callId} className="flex flex-col gap-2">
+                      <p className="text-xs text-muted-foreground">
+                        {call.step} · {call.dispatched ? '已实际发送' : '已准备，尚未确认发送'} ·
+                        调用 {call.callId}
+                      </p>
+                      {call.experiences.length ? (
+                        call.experiences.map((item) => (
+                          <ExperienceCard key={item.id} experience={item} />
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">此次调用未输入历史经验。</p>
+                      )}
+                    </div>
+                  ))
+                )}
+              </section>
               {detail.steps.length ? (
                 <Steps steps={detail.steps} actionType={action.actionType} stopped={stopped} />
               ) : (

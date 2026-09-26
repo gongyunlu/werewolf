@@ -1,4 +1,4 @@
-import type { GameStatus } from '@werewolf/shared';
+import type { GameStatus, ExperienceSnapshot } from '@werewolf/shared';
 import type { GameState } from '../core/state';
 
 /**
@@ -12,6 +12,8 @@ export interface RosterSeat {
   modelName: string;
   /** 接入端点；null 表示用环境变量那一套。 */
   baseUrl: string | null;
+  /** 兼容已有行动使用的旧阵容快照；新行动改为逐次检索。 */
+  experiences?: ExperienceSnapshot[];
 }
 
 /** 一局对局的档案：这一局是哪块板子、什么时候开的、排到哪儿了、终局胜方。 */

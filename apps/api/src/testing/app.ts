@@ -6,6 +6,8 @@ import { GAME_QUEUE } from '../queue/game-queue';
 import { GameWorker } from '../queue/game-worker';
 import { REVIEW_QUEUE } from '../review/review-queue';
 import { ReviewWorker } from '../review/review-worker';
+import { EXPERIENCE_QUEUE } from '../experience/experience-queue';
+import { ExperienceWorker } from '../experience/experience-worker';
 import type { GameStores } from '../store/stores';
 import { GAME_STORES, PRISMA_CLIENT } from '../store/stores.provider';
 import { FakeRedis } from './stream';
@@ -21,6 +23,8 @@ export function testAppModule(stores: GameStores) {
     .useValue({})
     .overrideProvider(getQueueToken(REVIEW_QUEUE))
     .useValue({})
+    .overrideProvider(getQueueToken(EXPERIENCE_QUEUE))
+    .useValue({})
     .overrideProvider(REDIS_PUB)
     .useValue(new FakeRedis())
     .overrideProvider(REDIS_SUB)
@@ -28,5 +32,7 @@ export function testAppModule(stores: GameStores) {
     .overrideProvider(GameWorker)
     .useValue({})
     .overrideProvider(ReviewWorker)
+    .useValue({})
+    .overrideProvider(ExperienceWorker)
     .useValue({});
 }

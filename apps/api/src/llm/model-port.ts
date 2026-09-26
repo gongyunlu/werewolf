@@ -1,6 +1,7 @@
 import type { ModelCapability } from './model-capability';
 import type { AttemptCompletion, CallCompletion, CallIdentity } from './observation';
 import type { PromptTemplate } from './prompt-template';
+import type { ExperienceSnapshot } from '@werewolf/shared';
 
 export type PromptReference = Pick<PromptTemplate, 'name' | 'version' | 'source'>;
 
@@ -79,6 +80,9 @@ export interface ModelTool {
 
 /** 一次模型请求。提示词怎么拼由调用方决定，端口不管内容。 */
 export interface ModelRequest {
+  /** 向量请求复用接入、重试和观测；不发送聊天提示词或工具。 */
+  embedding?: { dimensions: number };
+  experiences?: readonly ExperienceSnapshot[];
   /** 与本次实际正文一起传递；遥测不重新查询标签。 */
   prompts?: readonly PromptReference[];
   /** Langfuse 原生只关联一条模板，其余仍完整保存在 metadata.prompts。 */
@@ -95,6 +99,7 @@ export interface ModelRequest {
 }
 
 export interface ModelResponse {
+  vector?: number[];
   /** 解析结束后补写逻辑调用结果；只存在于内存，不写入图状态。 */
   completeObservation?: (
     status: 'accepted' | 'invalid_output' | 'failed',

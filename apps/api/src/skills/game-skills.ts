@@ -8,6 +8,8 @@ export type ScenarioId =
 
 /** 一局要用的全部正文。开跑前按板子取一次，整局不再变。 */
 export interface GameSkills {
+  /** 所有角色共用的规则推演约束。 */
+  common: Skill;
   /** 板子那份：这局公开的规则与流程。 */
   ruleset: Skill;
   /** 按角色取。 */
@@ -19,6 +21,7 @@ export interface GameSkills {
 /** 按板子取齐一局的正文。名字就是取值域里的串，路径直接拼得出来，不另做映射。 */
 export function gameSkills(boardId: BoardId): GameSkills {
   return {
+    common: loadSkill('common/reasoning'),
     ruleset: loadSkill(`rulesets/${boardId}`),
     role: (role) => loadSkill(`roles/${role}`),
     scenario: (id) => loadSkill(`scenarios/${id}`),

@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { QueueModule } from './queue/queue.module';
 import { TelemetryModule } from './llm/telemetry.module';
 import { ReviewModule } from './review/review.module';
+import { ExperienceModule } from './experience/experience.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ReviewModule } from './review/review.module';
     AgentsModule,
     QueueModule,
     ReviewModule,
+    ExperienceModule,
   ],
 })
 export class AppModule {}

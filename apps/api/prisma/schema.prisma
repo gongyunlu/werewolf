@@ -34,9 +34,49 @@ model Agent {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  memories AgentMemory[]
+  memories              AgentMemory[]
+  experiences           AgentExperience[]
+  experienceGenerations ExperienceGeneration[]
 
   @@map("agents")
+}
+
+// 每份完成复盘中的玩家只提炼一次；输入、调用回执和零条结果也留档。
+model ExperienceGeneration {
+  id            String            @id @default(uuid()) @db.Uuid
+  agentId       String            @map("agent_id") @db.Uuid
+  gameId        String            @map("game_id") @db.VarChar(64)
+  playerId      String            @map("player_id") @db.VarChar(64)
+  reviewVersion String            @map("review_version") @db.VarChar(64)
+  state         Json              @db.JsonB
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  agent         Agent             @relation(fields: [agentId], references: [id])
+  experiences   AgentExperience[]
+
+  @@unique([gameId, playerId, reviewVersion])
+  @@map("experience_generations")
+}
+
+// 正文不可变；启停影响后续行动的检索，不改已保存的输入。
+model AgentExperience {
+  id           String               @id @db.Uuid
+  agentId      String               @map("agent_id") @db.Uuid
+  generationId String               @map("generation_id") @db.Uuid
+  ordinal      Int                  @db.SmallInt
+  boardId      String               @map("board_id") @db.VarChar(64)
+  role         String               @db.VarChar(32)
+  content      Json                 @db.JsonB
+  enabled      Boolean              @default(true)
+  embedding    Float[]              @default([])
+  embeddingKey String?              @map("embedding_key") @db.VarChar(64)
+  createdAt    DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  agent        Agent                @relation(fields: [agentId], references: [id])
+  generation   ExperienceGeneration @relation(fields: [generationId], references: [id])
+
+  @@unique([generationId, ordinal])
+  @@index([agentId, boardId, enabled])
+  @@index([boardId, role, enabled, embeddingKey])
+  @@map("agent_experiences")
 }
 
 // 一个 agent 的人设与策略。整批替换，不单条增删；(agent, type, sort) 就是这条的身份。
@@ -126,18 +166,20 @@ model GameEvent {
 // 一次提问的提交记录。先立意图，答完再补结果。
 // 恢复按主键取回：答完的直接复用，答一半的带着图里的检查点接着跑完。
 model ActionRecord {
-  actionKey       String @id @map("action_key") @db.VarChar(200)
-  gameId          String @map("game_id") @db.VarChar(64)
-  phaseInstanceId String @map("phase_instance_id") @db.VarChar(64)
-  actionType      String @map("action_type") @db.VarChar(32)
-  actorId         String @map("actor_id") @db.VarChar(64)
-  actionOrdinal   Int    @map("action_ordinal") @db.SmallInt
+  actionKey           String @id @map("action_key") @db.VarChar(200)
+  gameId              String @map("game_id") @db.VarChar(64)
+  phaseInstanceId     String @map("phase_instance_id") @db.VarChar(64)
+  actionType          String @map("action_type") @db.VarChar(32)
+  actorId             String @map("actor_id") @db.VarChar(64)
+  actionOrdinal       Int    @map("action_ordinal") @db.SmallInt
   // 立这一问时台账记到第几条。要取回的是这一问当初看到的那一份事实，而那是「位置」不是「键」：
   // 投票这种答完不留事实的提问，凭键找不回它的位置。
-  ledgerSeq       Int    @default(0) @map("ledger_seq") @db.SmallInt
+  ledgerSeq           Int    @default(0) @map("ledger_seq") @db.SmallInt
   // running 是「这次还没答完」，图里那几个检查点接着把它跑完；done 才是结果。
-  status          String @default("running") @db.VarChar(16)
-  outcome         Json?  @db.JsonB
+  status              String @default("running") @db.VarChar(16)
+  outcome             Json?  @db.JsonB
+  // 模型决策前固定本次检索；恢复时不读取后来变化的经验库。
+  experienceRetrieval Json?  @map("experience_retrieval") @db.JsonB
 
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   doneAt    DateTime? @map("done_at") @db.Timestamptz
@@ -151,15 +193,16 @@ model ActionRecord {
 // 问出去的题面。提问那一刻先落一份：答到一半断了，那一问当初看到的是什么也还查得到。
 // 格式重问使用新的 callId；传输重试写在 attempts 中。旧题面没有观测字段。
 model AskedPrompt {
-  id        Int     @id @default(autoincrement())
-  gameId    String  @map("game_id") @db.VarChar(64)
+  id          Int     @id @default(autoincrement())
+  gameId      String  @map("game_id") @db.VarChar(64)
   // 这一问属于哪次行动，按它跟行动记录对上；折摘要那一问不在行动里，为空。
-  actionKey String? @map("action_key") @db.VarChar(200)
-  model     String  @db.VarChar(64)
-  system    String  @db.Text
-  prompt    String  @db.Text
+  actionKey   String? @map("action_key") @db.VarChar(200)
+  model       String  @db.VarChar(64)
+  system      String  @db.Text
+  prompt      String  @db.Text
   // 这一问要它走的工具定义；让它写一段话的那几问（发言）不走工具，为空。
-  tool      Json?   @db.JsonB
+  tool        Json?   @db.JsonB
+  experiences Json?   @db.JsonB
 
   callId        String?   @unique @map("call_id") @db.Uuid
   summaryKey    String?   @map("summary_key") @db.VarChar(200)

@@ -71,6 +71,50 @@ describe('行动记录只读接口', () => {
     await app.close();
   });
 
+  it('行动检索详情只返回保存的查询和结果，不传原始向量或读取当前经验池', async () => {
+    const retrieval = {
+      status: 'completed' as const,
+      query: '当时可见的信息',
+      model: '向量模型',
+      failure: null,
+      candidates: [],
+      selected: [],
+      scope: { gameId: 'g-retrieval', role: 'guard', boardId: '6p_white_wolf' },
+      embedding: {
+        text: '当时可见的信息',
+        key: 'key',
+        model: '向量模型',
+        dimensions: 2,
+        attempts: [{ callId: 'v1', status: 'responded' as const, vector: [1, 0] }],
+      },
+    };
+    await stores.actions.begin({
+      actionKey: 'retrieval-key',
+      gameId: 'g-retrieval',
+      phaseInstanceId: phaseInstanceId(1, 'night'),
+      actionType: 'guard_protect',
+      actorId: 'p1',
+      actionOrdinal: 0,
+      ledgerSeq: 0,
+      experienceRetrieval: retrieval,
+    });
+    const search = jest.spyOn(stores.experiences, 'search');
+    const { body } = await request(app.getHttpServer())
+      .get('/api/games/g-retrieval/actions/detail')
+      .query({ actionKey: 'retrieval-key' })
+      .expect(200);
+    expect(body.experienceRetrieval).toEqual({
+      status: 'completed',
+      query: retrieval.query,
+      model: retrieval.model,
+      failure: null,
+      candidates: [],
+      selected: [],
+    });
+    expect(search).not.toHaveBeenCalled();
+    search.mockRestore();
+  });
+
   it('按问的先后出答完的那些，没答完的不进列表', async () => {
     const asked = (seatNo: number) =>
       snapshotOf({ day: 2, seatNo, role: '预言家', task: '投票决定放逐谁。', decision: seatNo });
@@ -188,7 +232,7 @@ describe('行动记录只读接口', () => {
       .get(`/api/games/${gameId}/actions/detail`)
       .query({ actionKey: summary.actions[0].actionKey })
       .expect(200);
-    expect(detail).toEqual({ reasoning: '保留下来的推理', steps: [] });
+    expect(detail).toEqual({ reasoning: '保留下来的推理', steps: [], experienceInputs: [] });
     await request(app.getHttpServer())
       .get('/api/games/other/actions/detail')
       .query({ actionKey: summary.actions[0].actionKey })
@@ -219,6 +263,6 @@ describe('行动记录只读接口', () => {
       .get('/api/games/g-pending/actions/detail')
       .query({ actionKey: body.pending[0].actionKey })
       .expect(200);
-    expect(detail).toEqual({ reasoning: null, steps: [] });
+    expect(detail).toEqual({ reasoning: null, steps: [], experienceInputs: [] });
   });
 });

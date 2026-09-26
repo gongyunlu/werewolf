@@ -77,8 +77,10 @@ export class ActionsController {
     const row = await this.stores.actions.find(key);
     if (!row || row.gameId !== gameId) throw new NotFoundException('没有这条行动记录');
     return ActionDetailResponseSchema.parse({
+      experienceRetrieval: row.experienceRetrieval ?? undefined,
       reasoning: row.status === 'done' ? logEntry(row).reasoning : null,
       steps: await actionSteps(this.stores.checkpoints, key),
+      experienceInputs: await this.stores.asked.experienceInputs(gameId, key),
     });
   }
 

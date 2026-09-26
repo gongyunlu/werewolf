@@ -22,6 +22,8 @@ import { presetOf } from './presets';
 import { actionOrdinals, type ActionRequest, type TurnRuntime } from './request';
 import { summarize } from './summary';
 import { latestJudgment, savedJudgment, type PersonalJudgment } from './judgment';
+import { experiencesFor } from '../experience/selection';
+import { initialRetrieval, retrieveExperiences } from '../experience/retrieval';
 
 /**
  * 把玩家决定交给模型的行动提供者。
@@ -146,6 +148,7 @@ export function modelActions(
   const taken: TurnOutcome[] = [];
   let dayEndLedgerSeq: number | undefined;
   let judgments: Promise<Map<string, PersonalJudgment>> | undefined;
+  let experienceRoster: ReturnType<GameStores['games']['find']> | undefined;
   function judgmentsNow(): Promise<Map<string, PersonalJudgment>> {
     return (judgments ??= stores.actions.summaries(stateNow().gameId).then((rows) => {
       const items = rows.map(savedJudgment).filter((item) => item !== null);
@@ -267,7 +270,7 @@ export function modelActions(
   }
 
   /**
-   * 这一问要带的技能正文，按「板子 → 角色 → 场景 → 这个人自己的人设与策略」排。
+   * 这一问要带的技能正文，按「板子与通用约束 → 角色 → 场景 → 这个人自己的人设与策略」排。
    *
    * 每问都带一份：系统提示词明说过没写出来的就是看不到的、别替规则补全，
    * 所以模型手里关于狼人杀的全部知识就是前几段，不带它就只能瞎猜；
@@ -277,7 +280,8 @@ export function modelActions(
     const player = playerOf(state, playerId);
 
     return [
-      runtime.skills.ruleset.content,
+      // 首块供生成、复核和修订共用，通用约束不混入角色策略。
+      [runtime.skills.ruleset.content, runtime.skills.common.content].join('\n\n'),
       runtime.skills.role(player.role).content,
       ...(inWolfChannel(player.role) ? [runtime.skills.scenario('wolf_team').content] : []),
       ...(scenario ? [runtime.skills.scenario(scenario).content] : []),
@@ -302,13 +306,11 @@ export function modelActions(
    * @param request 这一次提问
    * @param key 它的行动键，调用方算过一次——题面要先按它去记录里取那一刻的台账
    * @param remembered 记录里那一行；第一次问就是 null
-   * @param ledgerSeq 台账此刻记到第几条，第一次问时存下
    */
   async function once(
     request: ActionRequest,
     key: string,
     remembered: StoredAction | null,
-    ledgerSeq: number,
     control?: ActionControl,
   ): Promise<TurnOutcome> {
     const generated = control?.generated;
@@ -321,16 +323,6 @@ export function modelActions(
         (await replayingKeys()).delete(key);
         return remembered.outcome as TurnOutcome;
       }
-    } else {
-      await stores.actions.begin({
-        actionKey: key,
-        gameId: request.scope.gameId,
-        phaseInstanceId: request.scope.phaseInstanceId,
-        actionType: request.actionType,
-        actorId: request.actorId,
-        actionOrdinal: request.actionOrdinal,
-        ledgerSeq,
-      });
     }
 
     const outcome = await runActionGraph(logged(key), request, {
@@ -367,6 +359,13 @@ export function modelActions(
     const ledgerSeq = remembered?.ledgerSeq ?? input.ledgerSeq ?? facts.lastSeq();
     const ownJudgments = await judgmentsNow();
     const previousJudgment = latestJudgment(ownJudgments.values(), state, input.actorId, ledgerSeq);
+    const storedGame = await (experienceRoster ??= stores.games.find(state.gameId));
+    const actor = playerOf(state, input.actorId);
+    const legacyExperiences = experiencesFor(
+      storedGame?.roster.find((seat) => seat.seatNo === actor.seatNo),
+      storedGame?.boardId ?? '',
+      actor.role,
+    );
     const request: ActionRequest = {
       scope,
       actionType: input.actionType,
@@ -386,11 +385,38 @@ export function modelActions(
           extra: input.extra,
         }),
         ...(previousJudgment ? { previousJudgment } : {}),
+        experiences: legacyExperiences,
       },
       schema: shape.schema,
     };
 
-    const outcome = await once(request, key, remembered, ledgerSeq, input.control);
+    let retrieval = remembered?.experienceRetrieval;
+    if (!remembered) {
+      retrieval = initialRetrieval(request.context, {
+        gameId: state.gameId,
+        boardId: storedGame?.boardId ?? '',
+        role: actor.role,
+      });
+      await stores.actions.begin({
+        actionKey: key,
+        gameId: state.gameId,
+        phaseInstanceId: state.phaseInstanceId,
+        actionType: input.actionType,
+        actorId: input.actorId,
+        actionOrdinal,
+        ledgerSeq,
+        experienceRetrieval: retrieval,
+      });
+    }
+    // 老行动未记录检索时保持原快照。新行动在生成前保存本次命中，复核和恢复不再选取。
+    if (retrieval)
+      request.context = {
+        ...request.context,
+        experiences: (await retrieveExperiences(stores, key, retrieval, runtime.embedding))
+          .selected,
+      };
+
+    const outcome = await once(request, key, remembered, input.control);
     taken.push(outcome);
     if (input.actionType === ACTION_TYPES.DAY_END_JUDGMENT) {
       const judgment = savedJudgment({

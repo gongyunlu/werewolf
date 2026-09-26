@@ -8,6 +8,8 @@ import { GAME_QUEUE } from './game-queue';
 import { GameWorker } from './game-worker';
 import { REVIEW_QUEUE } from '../review/review-queue';
 import { ReviewWorker } from '../review/review-worker';
+import { EXPERIENCE_QUEUE } from '../experience/experience-queue';
+import { ExperienceWorker } from '../experience/experience-worker';
 
 /**
  * 跑局那一层：入队、出队、把跑出来的事实推给正在看的人。
@@ -22,6 +24,7 @@ import { ReviewWorker } from '../review/review-worker';
     }),
     BullModule.registerQueue({ name: GAME_QUEUE }),
     BullModule.registerQueue({ name: REVIEW_QUEUE }),
+    BullModule.registerQueue({ name: EXPERIENCE_QUEUE }),
   ],
   providers: [
     // 队列自己开自己的连接，这两条只给事件中转用：一条发、一条收。
@@ -30,6 +33,7 @@ import { ReviewWorker } from '../review/review-worker';
     GameEventHub,
     GameWorker,
     ReviewWorker,
+    ExperienceWorker,
   ],
   exports: [BullModule, GameEventHub],
 })

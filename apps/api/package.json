@@ -13,6 +13,7 @@
     "test": "jest",
     "game": "nest build && node dist/cli/run-game.js",
     "review:setup": "nest build && node dist/cli/setup-review.js",
+    "experience:setup": "nest build && node dist/cli/setup-experience-prompts.js",
     "prompt:compare": "nest build && node dist/cli/compare-prompts.js",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
