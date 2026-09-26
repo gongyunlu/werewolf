@@ -1,8 +1,17 @@
 import { createHash } from 'node:crypto';
 import { endpointOf } from './model-capability';
 import { ModelCallError } from './model-port';
+import { requestPricing } from './cost';
 import type { CallCompletion, CallIdentity, CallRecording } from './observation';
-import { callSpan, finishCall, finishRequest, requestSpan, traceIds } from './telemetry';
+import {
+  callSpan,
+  finishCall,
+  finishRequest,
+  recordResponse,
+  requestSpan,
+  traceIds,
+  telemetry,
+} from './telemetry';
 import type {
   ModelAccess,
   ModelCallOptions,
@@ -57,9 +66,17 @@ export function recordingModelPort(
   return {
     async generate(request: ModelRequest, access: ModelAccess, call: ModelCallOptions = {}) {
       const started = performance.now();
+      const endpointKey = createHash('sha256').update(endpointOf(access.baseUrl)).digest('hex');
+      const metadata = {
+        ...scope,
+        ...call.identity,
+        endpointKey,
+        accountingVersion: 'requests-v1',
+        formatReask: (call.identity?.formatAttempt ?? 1) > 1,
+      };
       const span =
         scope && call.identity
-          ? callSpan(scope.gameId, { ...scope, ...call.identity, prompts: request.prompts ?? [] })
+          ? callSpan(scope.gameId, { ...metadata, prompts: request.prompts ?? [] })
           : undefined;
       const recording = await record({
         model: access.model,
@@ -72,7 +89,7 @@ export function recordingModelPort(
           ? {
               observation: {
                 ...call.identity,
-                endpointKey: createHash('sha256').update(endpointOf(access.baseUrl)).digest('hex'),
+                endpointKey,
                 ...traceIds(span),
               },
             }
@@ -87,6 +104,8 @@ export function recordingModelPort(
       });
       if (!recording) return port.generate(request, access, call);
       let attemptNo = 0;
+      let generation: ReturnType<typeof requestSpan>;
+      let pricing: ReturnType<typeof requestPricing> | undefined;
       const finish = async (
         status: 'accepted' | 'invalid_output' | 'failed' | 'cancelled',
         failureCode: string | null,
@@ -100,25 +119,21 @@ export function recordingModelPort(
       try {
         const response = await port.generate(request, access, {
           ...call,
+          onResponse(received) {
+            recordResponse(generation, received);
+            call.onResponse?.(received);
+          },
           startAttempt: async () => {
+            generation = undefined;
             const number = ++attemptNo;
             await persist(() => recording.startAttempt(number));
-            let generation: ReturnType<typeof requestSpan>;
             return {
-              dispatched() {
-                generation = requestSpan(
-                  span,
-                  access.model,
-                  number,
-                  {
-                    ...scope,
-                    ...call.identity,
-                  },
-                  request,
-                );
+              dispatched(body) {
+                pricing = telemetry(() => requestPricing(access, new Date()));
+                generation = requestSpan(span, access.model, number, metadata, request, body);
               },
               async finish(result) {
-                finishRequest(generation, result);
+                finishRequest(generation, result, pricing);
                 await persist(() =>
                   recording.finishAttempt(number, { ...result, ...traceIds(generation) }),
                 );

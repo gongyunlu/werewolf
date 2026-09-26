@@ -9,6 +9,7 @@ import type { GameState } from '../core/state';
 import type { StageAnchor } from '../core/loop';
 import { settleActions } from '../core/parallel';
 import { recordingModelPort } from '../llm/recording-model-port';
+import { observeOperation, telemetry } from '../llm/telemetry';
 import type { ScenarioId } from '../skills/game-skills';
 import type { StoredAction } from '../store/actions';
 import { EVENT_KINDS, type EventKind } from '../store/events';
@@ -361,11 +362,8 @@ export function modelActions(
     const previousJudgment = latestJudgment(ownJudgments.values(), state, input.actorId, ledgerSeq);
     const storedGame = await (experienceRoster ??= stores.games.find(state.gameId));
     const actor = playerOf(state, input.actorId);
-    const legacyExperiences = experiencesFor(
-      storedGame?.roster.find((seat) => seat.seatNo === actor.seatNo),
-      storedGame?.boardId ?? '',
-      actor.role,
-    );
+    const rosterSeat = storedGame?.roster.find((seat) => seat.seatNo === actor.seatNo);
+    const legacyExperiences = experiencesFor(rosterSeat, storedGame?.boardId ?? '', actor.role);
     const request: ActionRequest = {
       scope,
       actionType: input.actionType,
@@ -412,17 +410,56 @@ export function modelActions(
         experienceRetrieval: retrieval,
       });
     }
-    // 老行动未记录检索时保持原快照。新行动在生成前保存本次命中，复核和恢复不再选取。
-    if (retrieval) {
-      const references = await retrieveExperiences(stores, key, retrieval, runtime.embedding);
-      request.context = {
-        ...request.context,
-        experiences: references.selected,
-        ...(references.knowledge ? { knowledge: references.knowledge.selected } : {}),
-      };
-    }
-
-    const outcome = await once(request, key, remembered, input.control);
+    const metadata = {
+      gameId: state.gameId,
+      actionKey: key,
+      boardId: storedGame?.boardId ?? '',
+      actorId: input.actorId,
+      actionType: input.actionType,
+      role: actor.role,
+      ...(rosterSeat ? { agentId: rosterSeat.agentId } : {}),
+    };
+    const outcome =
+      remembered?.status === 'done'
+        ? await once(request, key, remembered, input.control)
+        : await observeOperation(
+            'turn.action',
+            'agent',
+            {
+              input: { task: request.context.task, options: request.context.options },
+              metadata: {
+                ...metadata,
+                day: request.context.day,
+                seatNo: actor.seatNo,
+                resumed: remembered?.status === 'running',
+                ledgerSeq,
+              },
+            },
+            async (span) => {
+              // 老行动没有检索记录时保持原快照；新行动保存命中，恢复不重新选取。
+              if (retrieval) {
+                const references = await retrieveExperiences(
+                  stores,
+                  key,
+                  retrieval,
+                  runtime.embedding,
+                );
+                request.context = {
+                  ...request.context,
+                  experiences: references.selected,
+                  ...(references.knowledge ? { knowledge: references.knowledge.selected } : {}),
+                };
+              }
+              const result = await once(request, key, remembered, input.control);
+              telemetry(() =>
+                span?.update({
+                  output: { decision: result.decision, sourceCallId: result.snapshot.sourceCallId },
+                }),
+              );
+              return result;
+            },
+            { sessionId: state.gameId, metadata },
+          );
     taken.push(outcome);
     if (input.actionType === ACTION_TYPES.DAY_END_JUDGMENT) {
       const judgment = savedJudgment({

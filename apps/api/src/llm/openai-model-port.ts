@@ -354,7 +354,7 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
   function clientFor(
     access: ModelAccess,
     metrics: RequestMetrics,
-    dispatched?: () => void,
+    dispatched?: (body?: string) => void,
   ): OpenAI {
     return new OpenAI({
       apiKey: access.apiKey,
@@ -365,7 +365,7 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
       maxRetries: 0,
       fetch: async (input, init) => {
         metrics.dispatched = true;
-        dispatched?.();
+        dispatched?.(typeof init?.body === 'string' ? init.body : undefined);
         const response = await (send ?? fetch)(input, init);
         metrics.httpStatus = response.status;
         metrics.requestId = response.headers.get('x-request-id');
@@ -379,7 +379,7 @@ export function openaiModelPort(options: OpenaiModelPortOptions = {}): ModelPort
     access: ModelAccess,
     call: ModelCallOptions,
     metrics: RequestMetrics,
-    dispatched?: () => void,
+    dispatched?: (body?: string) => void,
   ): Promise<ModelResponse> {
     const url = `${endpointOf(access.baseUrl)}/chat/completions`;
     // 已经喊停的 signal 由 SDK 自己拦下：它一个请求都不会发，抛出来的错照样落到下面那条

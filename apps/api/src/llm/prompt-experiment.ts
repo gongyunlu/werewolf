@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { ModelAccess, ModelPort } from './model-port';
 import { ModelCallError } from './model-port';
 import { tokenUsage, type AttemptCompletion } from './observation';
+import { requestPricing } from './cost';
 import { finishRequest, promptAttributes } from './telemetry';
 import { fingerprint, type PromptComparison } from '../turn/prompt-comparison';
 
@@ -71,6 +72,7 @@ export async function runPromptExperiment(input: {
         if (fingerprint(datasetInput) !== comparison.inputHash)
           throw new Error('数据集输入与固定输入不一致');
         let generation: LangfuseGeneration | undefined;
+        let pricing: ReturnType<typeof requestPricing> | undefined;
         try {
           const response = await port.generate(variant.request, access, {
             onResponse: (received) =>
@@ -83,6 +85,7 @@ export async function runPromptExperiment(input: {
               }),
             startAttempt: async () => ({
               dispatched() {
+                pricing = requestPricing(access, new Date());
                 dispatched++;
                 generation = startObservation(
                   'prompt-comparison.generate',
@@ -100,7 +103,7 @@ export async function runPromptExperiment(input: {
               },
               async finish(result) {
                 attempt = result;
-                finishRequest(generation, result);
+                finishRequest(generation, result, pricing);
               },
             }),
           });

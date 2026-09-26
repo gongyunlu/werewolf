@@ -5,13 +5,19 @@ import {
   type LangfuseGeneration,
   type LangfuseEmbedding,
   type LangfuseSpan,
+  type LangfuseAgent,
+  type LangfuseChain,
+  type LangfuseRetriever,
+  type LangfuseSpanAttributes,
+  type PropagateAttributesParams,
 } from '@langfuse/tracing';
-import { isSpanContextValid, TraceFlags } from '@opentelemetry/api';
+import { context, trace, isSpanContextValid, TraceFlags } from '@opentelemetry/api';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { Logger } from '@nestjs/common';
 import type { AppEnv } from '../config/env';
 import { tokenUsage, type AttemptCompletion, type CallCompletion } from './observation';
-import type { ModelRequest } from './model-port';
+import { ModelCallError, type ModelRequest, type ModelResponse } from './model-port';
+import { requestAccounting, type requestPricing } from './cost';
 
 /** 一次真实请求只有一个 generation，所有组成模板另存完整清单。 */
 export function promptAttributes(request: Pick<ModelRequest, 'prompts' | 'primaryPrompt'>) {
@@ -29,9 +35,14 @@ export function promptAttributes(request: Pick<ModelRequest, 'prompts' | 'primar
 
 const logger = new Logger('ModelTelemetry');
 let sdk: NodeSDK | undefined;
+let deployment: Pick<LangfuseSpanAttributes, 'environment' | 'version'> = {};
 
 export function startTelemetry(env: AppEnv): void {
   if (sdk || !env.LANGFUSE_PUBLIC_KEY || !env.LANGFUSE_SECRET_KEY) return;
+  deployment = {
+    environment: env.NODE_ENV,
+    ...(env.LANGFUSE_RELEASE ? { version: env.LANGFUSE_RELEASE } : {}),
+  };
   sdk = telemetry(() => {
     const instance = new NodeSDK({
       serviceName: 'werewolf-api',
@@ -41,6 +52,8 @@ export function startTelemetry(env: AppEnv): void {
           publicKey: env.LANGFUSE_PUBLIC_KEY,
           secretKey: env.LANGFUSE_SECRET_KEY,
           baseUrl: env.LANGFUSE_HOST,
+          environment: env.NODE_ENV,
+          release: env.LANGFUSE_RELEASE || undefined,
           mediaUploadEnabled: false,
         }),
       ],
@@ -71,11 +84,52 @@ export function telemetry<T>(operation: () => T): T | undefined {
   }
 }
 
+/** 只隔离观测故障；业务回调始终只执行一次，原始异常继续向上传递。 */
+export async function observeOperation<T>(
+  name: string,
+  asType: 'agent' | 'chain' | 'retriever',
+  attributes: LangfuseSpanAttributes,
+  operation: (span: LangfuseAgent | LangfuseChain | LangfuseRetriever | undefined) => Promise<T>,
+  propagation: PropagateAttributesParams = {},
+): Promise<T> {
+  const observed = sdk
+    ? telemetry(() =>
+        propagateAttributes({ ...deployment, ...propagation }, () => {
+          const span =
+            asType === 'agent'
+              ? startObservation(name, attributes, { asType: 'agent' })
+              : asType === 'retriever'
+                ? startObservation(name, attributes, { asType: 'retriever' })
+                : startObservation(name, attributes, { asType: 'chain' });
+          return { span, active: trace.setSpan(context.active(), span.otelSpan) };
+        }),
+      )
+    : undefined;
+  if (!observed) return operation(undefined);
+  const { span, active } = observed;
+  const run = async () => {
+    try {
+      return await operation(span);
+    } catch (error) {
+      telemetry(() =>
+        span.update({
+          level: error instanceof ModelCallError && error.code === 'deadline' ? 'WARNING' : 'ERROR',
+          statusMessage: error instanceof ModelCallError ? error.code : 'operation_failed',
+        }),
+      );
+      throw error;
+    } finally {
+      telemetry(() => span.end());
+    }
+  };
+  return context.with(active, run);
+}
+
 export function traceIds(span: LangfuseSpan | LangfuseGeneration | LangfuseEmbedding | undefined) {
   if (!span) return {};
-  const context = span.otelSpan.spanContext();
-  return isSpanContextValid(context) && (context.traceFlags & TraceFlags.SAMPLED) !== 0
-    ? { traceId: context.traceId, spanId: context.spanId }
+  const identity = span.otelSpan.spanContext();
+  return isSpanContextValid(identity) && (identity.traceFlags & TraceFlags.SAMPLED) !== 0
+    ? { traceId: identity.traceId, spanId: identity.spanId }
     : {};
 }
 
@@ -87,7 +141,7 @@ export function callSpan(
   return telemetry(() =>
     propagateAttributes(
       { sessionId: gameId ?? `knowledge/${String(metadata.knowledgeVersionId)}` },
-      () => startObservation('model.call', { metadata }),
+      () => startObservation('model.call', { ...deployment, metadata }),
     ),
   );
 }
@@ -98,17 +152,28 @@ export function requestSpan(
   attemptNo: number,
   metadata: Record<string, unknown>,
   request: Pick<ModelRequest, 'prompts' | 'primaryPrompt' | 'embedding'> = {},
+  body?: string,
 ): LangfuseGeneration | LangfuseEmbedding | undefined {
   const attributes = promptAttributes(request);
   const values = {
+    ...deployment,
     model,
     ...attributes,
-    metadata: { ...metadata, ...attributes.metadata, attemptNo },
+    metadata: {
+      ...metadata,
+      ...attributes.metadata,
+      attemptNo,
+      transportRetry: attemptNo > 1,
+      costStatus: 'unknown',
+      costReason: 'request_pending',
+      usageComplete: false,
+    },
   };
   return (
     parent &&
-    telemetry(() =>
-      propagateAttributes(
+    telemetry(() => {
+      const captured = { ...values, ...(body === undefined ? {} : { input: JSON.parse(body) }) };
+      return propagateAttributes(
         {
           sessionId:
             metadata.gameId == null
@@ -117,31 +182,58 @@ export function requestSpan(
         },
         () =>
           request.embedding
-            ? parent.startObservation('model.request', values, { asType: 'embedding' })
-            : parent.startObservation('model.request', values, { asType: 'generation' }),
-      ),
-    )
+            ? parent.startObservation(`model.request.${String(metadata.step)}`, captured, {
+                asType: 'embedding',
+              })
+            : parent.startObservation(`model.request.${String(metadata.step)}`, captured, {
+                asType: 'generation',
+              }),
+      );
+    })
+  );
+}
+
+export function recordResponse(
+  span: LangfuseGeneration | LangfuseEmbedding | undefined,
+  response: ModelResponse,
+): void {
+  telemetry(() =>
+    span?.update({
+      output: response.vector
+        ? { dimensions: response.vector.length }
+        : {
+            role: 'assistant',
+            content: response.content,
+            ...(response.toolCall
+              ? { tool_calls: [{ type: 'function', function: response.toolCall }] }
+              : {}),
+            ...(response.reasoning === null ? {} : { reasoning_content: response.reasoning }),
+          },
+    }),
   );
 }
 
 export function finishRequest(
   span: LangfuseGeneration | LangfuseEmbedding | undefined,
   result: AttemptCompletion,
+  pricing?: ReturnType<typeof requestPricing>,
 ): void {
   if (!span) return;
   telemetry(() => {
     const tokens = tokenUsage(result.usage);
-    const usageDetails = Object.fromEntries(
-      ['input', 'output', 'total'].flatMap((key) => {
-        const value = tokens[key as 'input' | 'output' | 'total'];
-        return result.usageComplete && value !== null ? [[key, value]] : [];
-      }),
-    );
+    const accounting = requestAccounting(result, pricing);
     span.update({
-      usageDetails,
-      level: result.status === 'succeeded' ? 'DEFAULT' : 'ERROR',
+      usageDetails: accounting.usageDetails,
+      costDetails: accounting.costDetails,
+      level:
+        result.status === 'succeeded'
+          ? 'DEFAULT'
+          : result.status === 'cancelled'
+            ? 'WARNING'
+            : 'ERROR',
       statusMessage: result.failureCode ?? undefined,
       metadata: {
+        ...accounting.metadata,
         status: result.status,
         durationMs: result.durationMs,
         httpStatus: result.httpStatus,

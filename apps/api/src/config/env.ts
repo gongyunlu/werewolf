@@ -21,6 +21,7 @@ const envSchema = z.object({
   LANGFUSE_HOST: z.string().default('http://localhost:3100'),
   LANGFUSE_PUBLIC_KEY: z.string().default(''),
   LANGFUSE_SECRET_KEY: z.string().default(''),
+  LANGFUSE_RELEASE: z.string().default(''),
 
   // 模型接入。密钥空着服务照样起得来，真开局时才会拦。
   MODEL_API_KEY: z.string().default(''),

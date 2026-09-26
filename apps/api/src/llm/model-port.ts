@@ -134,7 +134,8 @@ export interface ModelCallOptions {
   identity?: CallIdentity;
   /** 适配器进入和离开一次 SDK 请求时调用，写库在 SDK 错误转换之外。 */
   startAttempt?: () => Promise<{
-    dispatched(): void;
+    /** 已序列化的请求体，不包含地址、请求头或接入密钥。 */
+    dispatched(body?: string): void;
     finish(result: AttemptCompletion): Promise<void>;
   }>;
   /**

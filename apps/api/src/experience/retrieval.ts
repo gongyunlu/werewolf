@@ -11,6 +11,7 @@ import type { GameStores } from '../store/stores';
 import type { TurnContext } from '../turn/request';
 import { embedTask, newEmbeddingTask } from './embedding-task';
 import { EXPERIENCE_CHARACTERS, EXPERIENCE_LIMIT } from './selection';
+import { observeOperation, telemetry } from '../llm/telemetry';
 
 /** 查询只来自已裁剪的玩家视角，不读取其他玩家私密信息或整局状态。 */
 export function retrievalQuery(context: TurnContext, boardId: string): string {
@@ -50,6 +51,64 @@ export function initialRetrieval(
 }
 
 export async function retrieveExperiences(
+  stores: GameStores,
+  actionKey: string,
+  initial: StoredExperienceRetrieval,
+  provided?: EmbeddingRuntime,
+): Promise<StoredExperienceRetrieval> {
+  const reused = initial.status === 'completed';
+  return observeOperation(
+    reused ? 'references.snapshot' : 'references.retrieve',
+    reused ? 'chain' : 'retriever',
+    {
+      input: {
+        query: initial.query,
+        scope: initial.scope,
+        ...(initial.knowledge
+          ? { actionType: initial.knowledge.actionType, day: initial.knowledge.day }
+          : {}),
+      },
+      metadata: { gameId: initial.scope.gameId, actionKey, reused },
+    },
+    async (span) => {
+      const result = await retrieve(stores, actionKey, initial, provided);
+      telemetry(() =>
+        span?.update({
+          output: {
+            experiences: {
+              candidates: result.candidates,
+              selected: result.selected,
+              count: result.selected.length,
+              characters: JSON.stringify(result.selected).length,
+              limit: EXPERIENCE_LIMIT,
+              characterLimit: EXPERIENCE_CHARACTERS,
+            },
+            ...(result.knowledge
+              ? {
+                  knowledge: {
+                    candidates: result.knowledge.candidates,
+                    selected: result.knowledge.selected,
+                    count: result.knowledge.selected.length,
+                    characters: JSON.stringify(result.knowledge.selected).length,
+                    limit: KNOWLEDGE_LIMIT,
+                    characterLimit: KNOWLEDGE_CHARACTERS,
+                  },
+                }
+              : {}),
+          },
+          metadata: {
+            model: result.model,
+            embeddingReused: initial.embedding?.attempts.at(-1)?.status === 'responded',
+          },
+        }),
+      );
+      return result;
+    },
+    { sessionId: initial.scope.gameId },
+  );
+}
+
+async function retrieve(
   stores: GameStores,
   actionKey: string,
   initial: StoredExperienceRetrieval,

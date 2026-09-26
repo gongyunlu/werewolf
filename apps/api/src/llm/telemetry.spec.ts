@@ -99,7 +99,7 @@ describe('遥测只记录真实请求', () => {
     const rows = await Promise.all([run('a', false), run('b', false), run('c', true)]);
     expect(new Set(rows.map((row) => row.traceId)).size).toBe(3);
     expect(mockSpans.filter((span) => span.name === 'model.call')).toHaveLength(3);
-    const generations = mockSpans.filter((span) => span.name === 'model.request');
+    const generations = mockSpans.filter((span) => span.name.startsWith('model.request.'));
     expect(generations).toHaveLength(2);
     for (const row of rows.slice(0, 2)) {
       const span = generations.find(
@@ -113,10 +113,21 @@ describe('遥测只记录真实请求', () => {
       expect(span.attributes['langfuse.observation.prompt.version']).toBe(3);
       expect(JSON.stringify(span.attributes)).toContain('turn/generate-user');
       expect(JSON.stringify(span.attributes)).toContain('8');
+      expect(JSON.parse(span.attributes['langfuse.observation.input'] as string)).toEqual({
+        model: 'test',
+        messages: [
+          { role: 'system', content: 'private-system' },
+          { role: 'user', content: 'private-prompt' },
+        ],
+      });
+      expect(JSON.parse(span.attributes['langfuse.observation.output'] as string)).toEqual({
+        role: 'assistant',
+        content: 'private-answer',
+      });
     }
     expect(rows[2].attempts[0].spanId).toBeNull();
     expect(JSON.stringify(mockSpans.map((span) => span.attributes))).not.toMatch(
-      /private-system|private-prompt|private-answer|private-api-key|offline.invalid/,
+      /private-api-key|offline.invalid/,
     );
     const processor = jest.mocked(LangfuseSpanProcessor).mock.results[0].value;
     processor.onEnd = () => {

@@ -14,6 +14,7 @@
     "game": "nest build && node dist/cli/run-game.js",
     "review:setup": "nest build && node dist/cli/setup-review.js",
     "experience:setup": "nest build && node dist/cli/setup-experience-prompts.js",
+    "dashboard:setup": "nest build && node dist/cli/setup-dashboard.js",
     "knowledge:seed": "nest build && node dist/cli/seed-knowledge.js",
     "prompt:compare": "nest build && node dist/cli/compare-prompts.js",
     "postinstall": "prisma generate",

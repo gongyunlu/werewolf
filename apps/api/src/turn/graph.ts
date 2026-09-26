@@ -26,6 +26,7 @@ import {
 } from './prompt';
 import { actionKeyOf, decisionSchemaJson, type ActionRequest, type TurnRuntime } from './request';
 import type { Critique, DecisionSnapshot } from './snapshot';
+import { observeOperation, telemetry } from '../llm/telemetry';
 
 /** 一次行动交出去的东西。 */
 export interface TurnOutcome {
@@ -685,10 +686,10 @@ function afterCritique(state: TurnStateValue): 'revise' | 'finalize' {
 /** 行动图：先生成，按档位决定要不要质疑，质疑没过才修订，修订完直接收口。 */
 function buildActionGraph(saver?: BaseCheckpointSaver) {
   const builder = new StateGraph(TurnState, { context: TurnContext })
-    .addNode('generate', generateNode)
-    .addNode('critique', critiqueNode)
-    .addNode('revise', reviseNode)
-    .addNode('finalize', finalizeNode)
+    .addNode('generate', observedNode('generate', generateNode))
+    .addNode('critique', observedNode('critique', critiqueNode))
+    .addNode('revise', observedNode('revise', reviseNode))
+    .addNode('finalize', observedNode('finalize', finalizeNode))
     .addEdge(START, 'generate')
     .addConditionalEdges('generate', needsCritique, ['critique', 'finalize'])
     .addConditionalEdges('critique', afterCritique, ['revise', 'finalize'])
@@ -696,6 +697,34 @@ function buildActionGraph(saver?: BaseCheckpointSaver) {
     .addEdge('finalize', END);
 
   return saver ? builder.compile({ checkpointer: saver }) : builder.compile();
+}
+
+function observedNode(
+  name: string,
+  node: (
+    state: TurnStateValue,
+    config: TurnConfig,
+  ) => Partial<TurnStateValue> | Promise<Partial<TurnStateValue>>,
+): typeof generateNode {
+  return (state, config) =>
+    observeOperation(
+      `turn.${name}`,
+      'chain',
+      {
+        metadata: {
+          step: name,
+          taskId: config.executionInfo?.taskId,
+          checkpointId: config.executionInfo?.checkpointId,
+          reused: name === 'generate' && Boolean(config.context?.control?.generated),
+        },
+      },
+      async (span) => {
+        const result = await node(state, config);
+        telemetry(() => span?.update({ output: stepContent(name, result) }));
+        return result;
+      },
+      { sessionId: config.context!.request.scope.gameId },
+    );
 }
 
 /** 不带进度的图：编一次用到底。 */
