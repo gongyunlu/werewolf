@@ -3,6 +3,7 @@ import type {
   PreviewChunk,
   PreviousJudgment,
   ExperienceSnapshot,
+  KnowledgeSnapshot,
 } from '@werewolf/shared';
 import { z } from 'zod';
 import type { SeatAccess } from '../agents/seat-context';
@@ -39,6 +40,7 @@ export interface TurnContext {
   /** 本人此前的主观判断，与系统记录及他人发言分开保存。 */
   previousJudgment?: PreviousJudgment;
   experiences?: readonly ExperienceSnapshot[];
+  knowledge?: readonly KnowledgeSnapshot[];
   /** 这次能选什么，来自端口方法的 candidates；只有「做/不做」两态的行动为空。 */
   options: readonly string[];
   /**

@@ -14,3 +14,4 @@ export * from './domain/phases';
 export * from './domain/roles';
 export * from './domain/seer-check-results';
 export * from './domain/visibility-types';
+export * from './api/knowledge';

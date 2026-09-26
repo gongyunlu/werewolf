@@ -169,6 +169,7 @@ export async function ask(
       prompt: turn.user.text,
       tool,
       experiences: turn.experiences,
+      knowledge: turn.knowledge,
       prompts: [turn.system, turn.user].map(({ template, version, source }) => ({
         name: template,
         version,

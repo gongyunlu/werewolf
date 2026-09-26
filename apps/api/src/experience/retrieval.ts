@@ -1,4 +1,9 @@
-import { ExperienceSnapshotSchema } from '@werewolf/shared';
+import {
+  ExperienceSnapshotSchema,
+  KnowledgeSnapshotSchema,
+  KNOWLEDGE_LIMIT,
+  KNOWLEDGE_CHARACTERS,
+} from '@werewolf/shared';
 import { embeddingRuntime, type EmbeddingRuntime } from '../llm/embedding';
 import type { StoredExperienceRetrieval } from '../store/actions';
 import type { ExperienceScope } from '../store/experiences';
@@ -28,6 +33,7 @@ export function retrievalQuery(context: TurnContext, boardId: string): string {
 export function initialRetrieval(
   context: TurnContext,
   scope: ExperienceScope,
+  actionType?: string,
 ): StoredExperienceRetrieval {
   return {
     status: 'pending',
@@ -37,6 +43,9 @@ export function initialRetrieval(
     failure: null,
     candidates: [],
     selected: [],
+    ...(actionType
+      ? { knowledge: { actionType, day: context.day, candidates: [], selected: [] } }
+      : {}),
   };
 }
 
@@ -54,7 +63,19 @@ export async function retrieveExperiences(
     state = next;
   };
   try {
-    if (!state.embedding && !(await stores.experiences.hasCandidates(state.scope))) {
+    const knowledgeScope = state.knowledge
+      ? {
+          boardId: state.scope.boardId,
+          role: state.scope.role,
+          actionType: state.knowledge.actionType,
+          day: state.knowledge.day,
+        }
+      : null;
+    const [hasExperiences, hasKnowledge] = await Promise.all([
+      stores.experiences.hasCandidates(state.scope),
+      knowledgeScope ? stores.knowledge.hasCandidates(knowledgeScope) : false,
+    ]);
+    if (!state.embedding && !hasExperiences && !hasKnowledge) {
       await save({ status: 'completed', failure: null });
       return state;
     }
@@ -71,9 +92,20 @@ export async function retrieveExperiences(
       runtime,
       (embedding) => save({ embedding, status: 'pending', failure: null }),
     );
-    const hits = await stores.experiences.search(state.scope, state.embedding!.key, vector, 20);
+    const [hits, knowledgeHits] = await Promise.all([
+      stores.experiences.search(state.scope, state.embedding!.key, vector, 20),
+      knowledgeScope
+        ? stores.knowledge.search(knowledgeScope, state.embedding!.key, vector, 20)
+        : [],
+    ]);
     if (!hits.length && (await stores.experiences.hasCandidates(state.scope)))
       throw new Error('适用经验尚未建立当前模型的向量索引，请先完成索引');
+    if (
+      knowledgeScope &&
+      !knowledgeHits.length &&
+      (await stores.knowledge.hasCandidates(knowledgeScope))
+    )
+      throw new Error('适用知识尚未建立当前模型的向量索引，请先完成索引');
     const selected = [];
     for (const hit of hits) {
       if (hit.similarity <= 0) continue;
@@ -84,11 +116,34 @@ export async function retrieveExperiences(
       )
         selected.push(snapshot);
     }
+    const knowledge = [];
+    for (const hit of knowledgeHits) {
+      const snapshot = KnowledgeSnapshotSchema.parse(hit.knowledge);
+      if (
+        hit.similarity > 0 &&
+        knowledge.length < KNOWLEDGE_LIMIT &&
+        JSON.stringify([...knowledge, snapshot]).length <= KNOWLEDGE_CHARACTERS
+      )
+        knowledge.push(snapshot);
+    }
     await save({
       status: 'completed',
       failure: null,
       selected,
       candidates: hits.map((hit) => ({ id: hit.experience.id, similarity: hit.similarity })),
+      ...(state.knowledge
+        ? {
+            knowledge: {
+              ...state.knowledge,
+              selected: knowledge,
+              candidates: knowledgeHits.map((hit) => ({
+                id: hit.knowledge.id,
+                versionId: hit.knowledge.versionId,
+                similarity: hit.similarity,
+              })),
+            },
+          }
+        : {}),
     });
     return state;
   } catch (error) {
@@ -96,9 +151,10 @@ export async function retrieveExperiences(
       error instanceof Error &&
       (error.message.startsWith('上次向量') ||
         error.message.startsWith('适用经验') ||
+        error.message.startsWith('适用知识') ||
         error.message.startsWith('尚未配置'))
         ? error.message
-        : '经验检索失败；本次行动尚未继续，恢复时复用已保存的向量答复';
+        : '参考材料检索失败；本次行动尚未继续，恢复时复用已保存的向量答复';
     await save({ status: 'failed', failure });
     throw error;
   }

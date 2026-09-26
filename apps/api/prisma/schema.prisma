@@ -79,6 +79,42 @@ model AgentExperience {
   @@map("agent_experiences")
 }
 
+// 外部知识条目与当前启用版本。索引开始后，正文和来源固定在版本中。
+model KnowledgeItem {
+  id              String             @id @db.Uuid
+  revision        Int                @default(0)
+  activeVersionId String?            @unique @map("active_version_id") @db.Uuid
+  activeVersion   KnowledgeVersion?  @relation("ActiveKnowledge", fields: [activeVersionId], references: [id])
+  versions        KnowledgeVersion[] @relation("KnowledgeVersions")
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("knowledge_items")
+}
+
+model KnowledgeVersion {
+  id           String         @id @db.Uuid
+  itemId       String         @map("item_id") @db.Uuid
+  version      Int
+  content      Json           @db.JsonB
+  contentHash  String         @map("content_hash") @db.VarChar(64)
+  kind         String         @db.VarChar(16)
+  boardIds     String[]       @map("board_ids")
+  roles        String[]
+  actionTypes  String[]       @map("action_types")
+  firstDayOnly Boolean        @map("first_day_only")
+  minDay       Int            @default(1) @map("min_day")
+  state        Json           @db.JsonB
+  embedding    Float[]        @default([])
+  embeddingKey String?        @map("embedding_key") @db.VarChar(64)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  item         KnowledgeItem  @relation("KnowledgeVersions", fields: [itemId], references: [id])
+  activeFor    KnowledgeItem? @relation("ActiveKnowledge")
+  calls        AskedPrompt[]
+
+  @@unique([itemId, version])
+  @@map("knowledge_versions")
+}
+
 // 一个 agent 的人设与策略。整批替换，不单条增删；(agent, type, sort) 就是这条的身份。
 model AgentMemory {
   agentId String @map("agent_id") @db.Uuid
@@ -193,16 +229,18 @@ model ActionRecord {
 // 问出去的题面。提问那一刻先落一份：答到一半断了，那一问当初看到的是什么也还查得到。
 // 格式重问使用新的 callId；传输重试写在 attempts 中。旧题面没有观测字段。
 model AskedPrompt {
-  id          Int     @id @default(autoincrement())
-  gameId      String  @map("game_id") @db.VarChar(64)
+  id                 Int     @id @default(autoincrement())
+  gameId             String? @map("game_id") @db.VarChar(64)
+  knowledgeVersionId String? @map("knowledge_version_id") @db.Uuid
   // 这一问属于哪次行动，按它跟行动记录对上；折摘要那一问不在行动里，为空。
-  actionKey   String? @map("action_key") @db.VarChar(200)
-  model       String  @db.VarChar(64)
-  system      String  @db.Text
-  prompt      String  @db.Text
+  actionKey          String? @map("action_key") @db.VarChar(200)
+  model              String  @db.VarChar(64)
+  system             String  @db.Text
+  prompt             String  @db.Text
   // 这一问要它走的工具定义；让它写一段话的那几问（发言）不走工具，为空。
-  tool        Json?   @db.JsonB
-  experiences Json?   @db.JsonB
+  tool               Json?   @db.JsonB
+  experiences        Json?   @db.JsonB
+  knowledge          Json?   @db.JsonB
 
   callId        String?   @unique @map("call_id") @db.Uuid
   summaryKey    String?   @map("summary_key") @db.VarChar(200)
@@ -221,10 +259,12 @@ model AskedPrompt {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  game     Game           @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  attempts ModelAttempt[]
+  game             Game?             @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  knowledgeVersion KnowledgeVersion? @relation(fields: [knowledgeVersionId], references: [id])
+  attempts         ModelAttempt[]
 
   @@index([actionKey])
+  @@index([knowledgeVersionId])
   @@index([gameId, id])
   @@map("asked_prompts")
 }

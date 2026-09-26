@@ -1,12 +1,13 @@
 import type { ActionType } from '@werewolf/shared';
 import { z } from 'zod';
-import type { ExperienceRetrieval } from '@werewolf/shared';
+import type { ExperienceRetrieval, KnowledgeRetrieval } from '@werewolf/shared';
 import type { EmbeddingTask } from '../experience/embedding-task';
 import type { ExperienceScope } from './experiences';
 
 export type StoredExperienceRetrieval = ExperienceRetrieval & {
   scope: ExperienceScope;
   embedding?: EmbeddingTask;
+  knowledge?: KnowledgeRetrieval;
 };
 
 /** 列表读取的快照字段；旧记录可以没有思考或耗时。 */

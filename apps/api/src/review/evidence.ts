@@ -4,6 +4,7 @@ import {
   GAME_STATUSES,
   PreviousJudgmentSchema,
   ExperienceSnapshotSchema,
+  KnowledgeSnapshotSchema,
 } from '@werewolf/shared';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -24,6 +25,7 @@ const SnapshotSchema = z.object({
     visible: z.array(z.object({ title: z.string(), lines: z.array(z.string()) })),
     previousJudgment: PreviousJudgmentSchema.optional(),
     experiences: z.array(ExperienceSnapshotSchema).optional(),
+    knowledge: z.array(KnowledgeSnapshotSchema).optional(),
     options: z.array(z.string()),
     skill: z.array(z.string()),
   }),
@@ -122,6 +124,11 @@ export async function prepareEvidence(stores: GameStores, gameId: string): Promi
     add('context/task', snapshot.context.task);
     add('context/actor', snapshot.context.actor);
     add('context/day', snapshot.context.day);
+    if (snapshot.context.knowledge?.length)
+      add('context/knowledge', {
+        meaning: '外部攻略参考，不是本局事实；输入不代表明确采纳',
+        items: snapshot.context.knowledge,
+      });
     if (snapshot.context.experiences?.length)
       add('context/experiences', {
         meaning: '历史经验参考，不是本局事实；输入不代表明确采纳',

@@ -17,7 +17,8 @@ export interface AttemptRow extends Omit<
 
 export interface CallRow {
   id: number;
-  gameId: string;
+  gameId: string | null;
+  knowledgeVersionId?: string;
   actionKey: string | null;
   summaryKey: string | null;
   model: string;
@@ -57,7 +58,7 @@ export interface ObservationStore {
 
 export function newCallRow(
   id: number,
-  gameId: string,
+  gameId: string | null,
   model: string,
   actionKey: string | null,
   summaryKey: string | undefined,

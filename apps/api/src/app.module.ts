@@ -8,6 +8,7 @@ import { QueueModule } from './queue/queue.module';
 import { TelemetryModule } from './llm/telemetry.module';
 import { ReviewModule } from './review/review.module';
 import { ExperienceModule } from './experience/experience.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ExperienceModule } from './experience/experience.module';
     QueueModule,
     ReviewModule,
     ExperienceModule,
+    KnowledgeModule,
   ],
 })
 export class AppModule {}

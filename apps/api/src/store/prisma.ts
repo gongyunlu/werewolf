@@ -7,6 +7,8 @@ import {
   type AgentMemoryType,
   type GameStatus,
   ExperienceSnapshotSchema,
+  KnowledgeSnapshotSchema,
+  KnowledgeCallsSchema,
 } from '@werewolf/shared';
 import { parsePhaseInstanceId, type PhaseInstanceId } from '../core/identity';
 import type { StageAnchor } from '../core/loop';
@@ -14,7 +16,7 @@ import type { GameState } from '../core/state';
 import { Prisma, PrismaClient } from '../generated/prisma/client';
 import type { ActionStore, StoredAction, StoredActionSummary } from './actions';
 import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
-import type { AskedPromptStore } from './asked';
+import { assertAskedScope, type AskedPromptStore } from './asked';
 import { prismaCheckpoints } from './checkpoints';
 import { EVENT_KINDS, type EventKind, type EventStore } from './events';
 import type { GameStore, RosterSeat, StoredGame } from './games';
@@ -22,6 +24,7 @@ import type { StepStore } from './steps';
 import type { GameStores } from './stores';
 import { prismaObservations } from './prisma-observations';
 import { prismaExperiences } from './prisma-experiences';
+import { prismaKnowledge } from './prisma-knowledge';
 
 /** 连上对局库。调用方用完自己关。 */
 export function openPrismaClient(connectionString: string): PrismaClient {
@@ -33,6 +36,7 @@ export function prismaStores(client: PrismaClient): GameStores {
     games: prismaGames(client),
     agents: prismaAgents(client),
     experiences: prismaExperiences(client),
+    knowledge: prismaKnowledge(client),
     events: prismaEvents(client),
     actions: prismaActions(client),
     steps: prismaSteps(client),
@@ -428,6 +432,41 @@ export function prismaSteps(client: PrismaClient): StepStore {
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
   return {
+    async knowledgeCalls(versionId) {
+      return KnowledgeCallsSchema.parse({
+        calls: await client.askedPrompt.findMany({
+          where: { knowledgeVersionId: versionId },
+          orderBy: { id: 'asc' },
+          select: {
+            callId: true,
+            model: true,
+            status: true,
+            attempts: {
+              orderBy: { attemptNo: 'asc' },
+              select: { attemptNo: true, status: true, dispatched: true, usage: true },
+            },
+          },
+        }),
+      });
+    },
+    async knowledgeInputs(gameId, actionKey) {
+      const rows = await client.askedPrompt.findMany({
+        where: { gameId, actionKey, knowledge: { not: Prisma.DbNull } },
+        select: {
+          callId: true,
+          step: true,
+          knowledge: true,
+          attempts: { select: { dispatched: true } },
+        },
+        orderBy: { id: 'asc' },
+      });
+      return rows.map((row) => ({
+        callId: row.callId!,
+        step: row.step!,
+        dispatched: row.attempts.some((item) => item.dispatched === true),
+        knowledge: KnowledgeSnapshotSchema.array().parse(row.knowledge),
+      }));
+    },
     async experienceInputs(gameId, actionKey) {
       const rows = await client.askedPrompt.findMany({
         where: { gameId, actionKey, experiences: { not: Prisma.DbNull } },
@@ -453,9 +492,11 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
       });
     },
     async append(gameId, asked) {
+      assertAskedScope(gameId, asked.knowledgeVersionId);
       const row = await client.askedPrompt.create({
         data: {
           gameId,
+          knowledgeVersionId: asked.knowledgeVersionId,
           actionKey: asked.actionKey,
           model: asked.model,
           system: asked.system,
@@ -467,6 +508,9 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
           ...(asked.tool ? { tool: asked.tool as unknown as Prisma.InputJsonValue } : {}),
           ...(asked.experiences
             ? { experiences: asked.experiences as unknown as Prisma.InputJsonValue }
+            : {}),
+          ...(asked.knowledge
+            ? { knowledge: asked.knowledge as unknown as Prisma.InputJsonValue }
             : {}),
         },
       });

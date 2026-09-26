@@ -9,6 +9,7 @@ import {
 } from '../llm/prompt-template';
 import type { TurnContext } from './request';
 import { renderExperiences } from '../experience/selection';
+import { renderKnowledge } from '../knowledge/render';
 
 /** 质疑者的回答，形状固定，不跟着行动类型变。提示词与解析共用这一份。 */
 export const CRITIQUE_SCHEMA = z.object({ accept: z.boolean(), issues: z.string() });
@@ -44,6 +45,7 @@ export interface RenderedTurn {
   system: RenderedPrompt;
   user: RenderedPrompt;
   experiences?: TurnContext['experiences'];
+  knowledge?: TurnContext['knowledge'];
 }
 
 /** 平台读不到时顶上来的兜底正文。它允许与平台不一致，平台改了不回填这里。 */
@@ -158,7 +160,7 @@ export async function renderGenerate(
     renderPart(source, TURN_PROMPT_NAMES.generateUser, briefOf(context, schemaJson)),
   ]);
 
-  return { system, user, experiences: context.experiences };
+  return { system, user, experiences: context.experiences, knowledge: context.knowledge };
 }
 
 /**
@@ -189,7 +191,7 @@ export async function renderCritique(
     }),
   ]);
 
-  return { system, user, experiences: context.experiences };
+  return { system, user, experiences: context.experiences, knowledge: context.knowledge };
 }
 
 /** 核对质疑意见并校正原稿，不附加重新制定策略的指南。 */
@@ -214,7 +216,7 @@ export async function renderRevise(
     }),
   ]);
 
-  return { system, user, experiences: context.experiences };
+  return { system, user, experiences: context.experiences, knowledge: context.knowledge };
 }
 
 /**
@@ -333,6 +335,7 @@ function factsOf(context: TurnContext): string {
       ? `【你此前的个人判断（不是已确认事实）】\n形成于第 ${previous.day} 天日终，信息截至事件 #${previous.ledgerSeq}。\n${previous.assessment}\n当时的主要变化：${previous.changes || '未记录变化'}\n这只是你当时的推测和意图，可能误判或被骗；以当前可见证据重新判断，允许改变立场。发言和身份主张仍属于原说话人，不能因记入判断就升级为事实；计划也不代表已经执行。`
       : '',
     renderExperiences(context.experiences ?? []),
+    renderKnowledge(context.knowledge ?? []),
   ]);
 }
 

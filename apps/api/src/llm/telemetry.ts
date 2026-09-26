@@ -80,12 +80,15 @@ export function traceIds(span: LangfuseSpan | LangfuseGeneration | LangfuseEmbed
 }
 
 export function callSpan(
-  gameId: string,
+  gameId: string | null,
   metadata: Record<string, unknown>,
 ): LangfuseSpan | undefined {
   if (!sdk) return undefined;
   return telemetry(() =>
-    propagateAttributes({ sessionId: gameId }, () => startObservation('model.call', { metadata })),
+    propagateAttributes(
+      { sessionId: gameId ?? `knowledge/${String(metadata.knowledgeVersionId)}` },
+      () => startObservation('model.call', { metadata }),
+    ),
   );
 }
 
@@ -105,10 +108,17 @@ export function requestSpan(
   return (
     parent &&
     telemetry(() =>
-      propagateAttributes({ sessionId: String(metadata.gameId) }, () =>
-        request.embedding
-          ? parent.startObservation('model.request', values, { asType: 'embedding' })
-          : parent.startObservation('model.request', values, { asType: 'generation' }),
+      propagateAttributes(
+        {
+          sessionId:
+            metadata.gameId == null
+              ? `knowledge/${String(metadata.knowledgeVersionId)}`
+              : String(metadata.gameId),
+        },
+        () =>
+          request.embedding
+            ? parent.startObservation('model.request', values, { asType: 'embedding' })
+            : parent.startObservation('model.request', values, { asType: 'generation' }),
       ),
     )
   );

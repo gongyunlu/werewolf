@@ -30,7 +30,12 @@ export function newEmbeddingTask(text: string, runtime: EmbeddingRuntime): Embed
 /** 先保存向量答复，再结束观测；后续写库失败只恢复答复，不重新调用。 */
 export async function embedTask(
   stores: GameStores,
-  scope: { gameId: string; actionKey: string | null; summaryKey?: string },
+  scope: {
+    gameId: string | null;
+    actionKey: string | null;
+    summaryKey?: string;
+    knowledgeVersionId?: string;
+  },
   initial: EmbeddingTask,
   runtime: EmbeddingRuntime,
   save: (task: EmbeddingTask) => Promise<void>,
@@ -58,13 +63,17 @@ export async function embedTask(
     const started = performance.now();
     try {
       const response = await port.generate(
-        { system: '经验语义向量化', prompt: task.text, embedding: { dimensions: task.dimensions } },
+        {
+          system: '参考材料语义向量化',
+          prompt: task.text,
+          embedding: { dimensions: task.dimensions },
+        },
         runtime.access,
         {
           identity: {
             callId: attempt.callId,
             executionId: randomUUID(),
-            step: 'experience_embedding',
+            step: scope.knowledgeVersionId ? 'knowledge_embedding' : 'experience_embedding',
             formatAttempt: 1,
           },
           onResponse: (value) => {

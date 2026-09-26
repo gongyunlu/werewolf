@@ -21,6 +21,7 @@ async function persist<T>(write: () => Promise<T>): Promise<T> {
 
 /** 一次提问：题面送出去那一刻的样子。答复是另一回事，崩掉的那一问根本没有答复。 */
 export interface AskedPrompt {
+  knowledge?: ModelRequest['knowledge'];
   experiences?: ModelRequest['experiences'];
   observation?: CallIdentity & { endpointKey: string; traceId?: string; spanId?: string };
   /** 用的哪个型号：同一局换过型号的话，题面一样也不是同一问。 */
@@ -46,7 +47,12 @@ export interface AskedPrompt {
 export function recordingModelPort(
   port: ModelPort,
   record: (asked: AskedPrompt) => Promise<CallRecording | void>,
-  scope?: { gameId: string; actionKey: string | null; summaryKey?: string },
+  scope?: {
+    gameId: string | null;
+    actionKey: string | null;
+    summaryKey?: string;
+    knowledgeVersionId?: string;
+  },
 ): ModelPort {
   return {
     async generate(request: ModelRequest, access: ModelAccess, call: ModelCallOptions = {}) {
@@ -61,6 +67,7 @@ export function recordingModelPort(
         prompt: request.prompt,
         tool: request.tool,
         experiences: request.experiences,
+        knowledge: request.knowledge,
         ...(call.identity
           ? {
               observation: {

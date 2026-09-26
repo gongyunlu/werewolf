@@ -8,6 +8,7 @@ import { ACTION_TYPES, DayEndJudgmentSchema } from '@werewolf/shared';
 import { CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react';
 import { useState } from 'react';
 import { ExperienceCard } from '@/components/ExperienceCard';
+import { KnowledgeInputs } from '@/components/KnowledgeInputs';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { fetchActionDetail } from '@/lib/api-client';
@@ -309,6 +310,7 @@ export function ActionRow({
                   ))
                 )}
               </section>
+              <KnowledgeInputs detail={detail} />
               {detail.steps.length ? (
                 <Steps steps={detail.steps} actionType={action.actionType} stopped={stopped} />
               ) : (

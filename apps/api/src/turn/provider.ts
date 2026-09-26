@@ -392,11 +392,15 @@ export function modelActions(
 
     let retrieval = remembered?.experienceRetrieval;
     if (!remembered) {
-      retrieval = initialRetrieval(request.context, {
-        gameId: state.gameId,
-        boardId: storedGame?.boardId ?? '',
-        role: actor.role,
-      });
+      retrieval = initialRetrieval(
+        request.context,
+        {
+          gameId: state.gameId,
+          boardId: storedGame?.boardId ?? '',
+          role: actor.role,
+        },
+        input.actionType,
+      );
       await stores.actions.begin({
         actionKey: key,
         gameId: state.gameId,
@@ -409,12 +413,14 @@ export function modelActions(
       });
     }
     // 老行动未记录检索时保持原快照。新行动在生成前保存本次命中，复核和恢复不再选取。
-    if (retrieval)
+    if (retrieval) {
+      const references = await retrieveExperiences(stores, key, retrieval, runtime.embedding);
       request.context = {
         ...request.context,
-        experiences: (await retrieveExperiences(stores, key, retrieval, runtime.embedding))
-          .selected,
+        experiences: references.selected,
+        ...(references.knowledge ? { knowledge: references.knowledge.selected } : {}),
       };
+    }
 
     const outcome = await once(request, key, remembered, input.control);
     taken.push(outcome);

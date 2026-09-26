@@ -76,11 +76,18 @@ export class ActionsController {
   async detail(@Param('gameId') gameId: string, @Query('actionKey') key: string) {
     const row = await this.stores.actions.find(key);
     if (!row || row.gameId !== gameId) throw new NotFoundException('没有这条行动记录');
+    const [steps, experienceInputs, knowledgeInputs] = await Promise.all([
+      actionSteps(this.stores.checkpoints, key),
+      this.stores.asked.experienceInputs(gameId, key),
+      this.stores.asked.knowledgeInputs(gameId, key),
+    ]);
     return ActionDetailResponseSchema.parse({
       experienceRetrieval: row.experienceRetrieval ?? undefined,
+      knowledgeRetrieval: row.experienceRetrieval?.knowledge,
       reasoning: row.status === 'done' ? logEntry(row).reasoning : null,
-      steps: await actionSteps(this.stores.checkpoints, key),
-      experienceInputs: await this.stores.asked.experienceInputs(gameId, key),
+      steps,
+      experienceInputs,
+      knowledgeInputs,
     });
   }
 

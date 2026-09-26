@@ -232,7 +232,12 @@ describe('行动记录只读接口', () => {
       .get(`/api/games/${gameId}/actions/detail`)
       .query({ actionKey: summary.actions[0].actionKey })
       .expect(200);
-    expect(detail).toEqual({ reasoning: '保留下来的推理', steps: [], experienceInputs: [] });
+    expect(detail).toEqual({
+      reasoning: '保留下来的推理',
+      steps: [],
+      experienceInputs: [],
+      knowledgeInputs: [],
+    });
     await request(app.getHttpServer())
       .get('/api/games/other/actions/detail')
       .query({ actionKey: summary.actions[0].actionKey })
@@ -263,6 +268,11 @@ describe('行动记录只读接口', () => {
       .get('/api/games/g-pending/actions/detail')
       .query({ actionKey: body.pending[0].actionKey })
       .expect(200);
-    expect(detail).toEqual({ reasoning: null, steps: [], experienceInputs: [] });
+    expect(detail).toEqual({
+      reasoning: null,
+      steps: [],
+      experienceInputs: [],
+      knowledgeInputs: [],
+    });
   });
 });

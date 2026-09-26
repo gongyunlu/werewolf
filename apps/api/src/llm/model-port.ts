@@ -1,7 +1,7 @@
 import type { ModelCapability } from './model-capability';
 import type { AttemptCompletion, CallCompletion, CallIdentity } from './observation';
 import type { PromptTemplate } from './prompt-template';
-import type { ExperienceSnapshot } from '@werewolf/shared';
+import type { ExperienceSnapshot, KnowledgeSnapshot } from '@werewolf/shared';
 
 export type PromptReference = Pick<PromptTemplate, 'name' | 'version' | 'source'>;
 
@@ -83,6 +83,7 @@ export interface ModelRequest {
   /** 向量请求复用接入、重试和观测；不发送聊天提示词或工具。 */
   embedding?: { dimensions: number };
   experiences?: readonly ExperienceSnapshot[];
+  knowledge?: readonly KnowledgeSnapshot[];
   /** 与本次实际正文一起传递；遥测不重新查询标签。 */
   prompts?: readonly PromptReference[];
   /** Langfuse 原生只关联一条模板，其余仍完整保存在 metadata.prompts。 */

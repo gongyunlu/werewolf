@@ -1,5 +1,10 @@
 import { MemorySaver } from '@langchain/langgraph';
-import { GAME_STATUSES, type AgentMemories, type ExperienceSnapshot } from '@werewolf/shared';
+import {
+  GAME_STATUSES,
+  type AgentMemories,
+  type ExperienceSnapshot,
+  type KnowledgeSnapshot,
+} from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import type { StageAnchor } from '../core/loop';
 import {
@@ -9,13 +14,14 @@ import {
   type StoredAction,
 } from './actions';
 import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
-import type { AskedPromptStore } from './asked';
+import { assertAskedScope, type AskedPromptStore } from './asked';
 import { newCallRow, newAttemptRow, finishCallRow, type CallRow } from './observations';
 import type { EventStore, StoredEvent } from './events';
 import type { GameStore, StoredGame } from './games';
 import type { StepStore } from './steps';
 import type { GameStores } from './stores';
 import { memoryExperiences } from './memory-experiences';
+import { memoryKnowledge } from './memory-knowledge';
 
 /**
  * 整局跑在内存里的那几份存储：进程一结束就没了。
@@ -29,6 +35,7 @@ export function memoryStores(): GameStores {
     games,
     agents: memoryAgents(),
     experiences: memoryExperiences(),
+    knowledge: memoryKnowledge(),
     events: memoryEvents(),
     actions,
     steps: memorySteps(),
@@ -219,7 +226,26 @@ export function memoryActions(): ActionStore {
 
 export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
   const inputs = new Map<number, readonly ExperienceSnapshot[]>();
+  const knowledgeInputs = new Map<number, readonly KnowledgeSnapshot[]>();
   return {
+    async knowledgeCalls(versionId) {
+      return { calls: structuredClone(rows.filter((row) => row.knowledgeVersionId === versionId)) };
+    },
+    async knowledgeInputs(gameId, actionKey) {
+      return structuredClone(
+        rows
+          .filter(
+            (row) =>
+              row.gameId === gameId && row.actionKey === actionKey && knowledgeInputs.has(row.id),
+          )
+          .map((row) => ({
+            callId: row.callId!,
+            step: row.step!,
+            dispatched: row.attempts.some((attempt) => attempt.dispatched === true),
+            knowledge: [...knowledgeInputs.get(row.id)!],
+          })),
+      );
+    },
     async experienceInputs(gameId, actionKey) {
       return structuredClone(
         rows
@@ -240,6 +266,7 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
       if (row.status === 'started') finishCallRow(row, result);
     },
     async append(gameId, asked) {
+      assertAskedScope(gameId, asked.knowledgeVersionId);
       if (asked.observation && rows.some((row) => row.callId === asked.observation?.callId)) {
         throw new Error('调用编号重复');
       }
@@ -252,6 +279,8 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
         asked.observation,
       );
       rows.push(row);
+      row.knowledgeVersionId = asked.knowledgeVersionId;
+      if (asked.knowledge) knowledgeInputs.set(row.id, structuredClone(asked.knowledge));
       if (asked.experiences) inputs.set(row.id, structuredClone(asked.experiences));
       if (!asked.observation) return;
       return {

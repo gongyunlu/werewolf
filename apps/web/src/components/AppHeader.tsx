@@ -11,6 +11,7 @@ const NAV = [
   { to: '/', label: '首页' },
   { to: '/games', label: '对局' },
   { to: '/agents', label: '参赛者' },
+  { to: '/knowledge', label: '知识库' },
 ];
 
 export function AppHeader() {
