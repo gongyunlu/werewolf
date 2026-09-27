@@ -17,6 +17,8 @@
     "dashboard:setup": "nest build && node dist/cli/setup-dashboard.js",
     "knowledge:seed": "nest build && node dist/cli/seed-knowledge.js",
     "prompt:compare": "nest build && node dist/cli/compare-prompts.js",
+    "prompt:sample": "nest build && node dist/cli/save-prompt-sample.js",
+    "prompt:label": "nest build && node dist/cli/label-prompt.js",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

@@ -9,38 +9,54 @@ import { seatContextOf } from '../agents/seat-context';
 import { loadEnv } from '../config/env';
 import { loadEnvFiles } from '../config/env-files';
 import { modelRuntimeOf, promptSourceOf } from '../llm/from-env';
-import type { ModelTool } from '../llm/model-port';
 import { openaiModelPort } from '../llm/openai-model-port';
 import { runPromptExperiment } from '../llm/prompt-experiment';
+import { assertPromptSample, sampleMetadata } from '../llm/prompt-sample';
 import { startTelemetry, stopTelemetry } from '../llm/telemetry';
 import { openPrismaClient, prismaStores } from '../store/prisma';
-import { preparePromptComparison } from '../turn/prompt-comparison';
-import type { TurnOutcome } from '../turn/graph';
+import { comparisonInput, preparePromptComparison } from '../turn/prompt-comparison';
+import { loadPromptAction } from './prompt-action';
 
 async function main() {
   const { values } = parseArgs({
     options: {
       game: { type: 'string' },
       action: { type: 'string' },
+      sample: { type: 'string' },
       prompt: { type: 'string', default: 'turn/generate-system' },
       baseline: { type: 'string' },
       candidate: { type: 'string' },
       run: { type: 'boolean', default: false },
     },
   });
-  if (!values.game)
+  if (values.sample && (values.game || values.action))
+    throw new Error('--sample 不能与 --game 或 --action 同用');
+  if (!values.game && !values.sample)
     throw new Error(
-      '用法：prompt:compare --game <对局id>；选好 action 后再加 --action <键> --baseline <版本> --candidate <版本> [--run]',
+      '用法：prompt:compare --game <对局id>；选择 --game <id> --action <键> 或 --sample <样本id>，再加 --baseline <版本> --candidate <版本> [--run]',
     );
   loadEnvFiles();
   const env = loadEnv();
+  const needsPlatform = Boolean(values.action || values.sample);
+  if (needsPlatform && (!env.LANGFUSE_PUBLIC_KEY || !env.LANGFUSE_SECRET_KEY))
+    throw new Error('版本对照需要配置 Langfuse');
+  const client = needsPlatform
+    ? new LangfuseClient({
+        baseUrl: env.LANGFUSE_HOST,
+        publicKey: env.LANGFUSE_PUBLIC_KEY,
+        secretKey: env.LANGFUSE_SECRET_KEY,
+      })
+    : undefined;
+  const sample = values.sample ? await client!.api.datasetItems.get(values.sample) : undefined;
+  const sampleInfo = sample ? sampleMetadata(sample) : undefined;
+  const gameId = sampleInfo?.source.gameId ?? values.game!;
+  const actionKey = sampleInfo?.source.actionKey ?? values.action;
   const db = openPrismaClient(env.DATABASE_URL);
   try {
     const stores = prismaStores(db);
-    const game = await stores.games.find(values.game);
-    if (!game) throw new Error('没有这局对局');
-    if (!values.action) {
-      const actions = await stores.actions.summaries(values.game);
+    if (!actionKey) {
+      if (!(await stores.games.find(gameId))) throw new Error('没有这局对局');
+      const actions = await stores.actions.summaries(gameId);
       Logger.log(
         JSON.stringify(
           actions
@@ -56,23 +72,8 @@ async function main() {
       );
       return;
     }
-    if (!env.LANGFUSE_PUBLIC_KEY || !env.LANGFUSE_SECRET_KEY)
-      throw new Error('版本对照需要配置 Langfuse');
-    const action = await stores.actions.find(values.action);
-    if (!action || action.gameId !== game.gameId || action.status !== 'done')
-      throw new Error('需要本局已完成的行动');
-    const { snapshot } = action.outcome as TurnOutcome;
-    const asked = await db.askedPrompt.findFirst({
-      where: {
-        gameId: game.gameId,
-        actionKey: action.actionKey,
-        step: 'generate',
-        formatAttempt: 1,
-      },
-      orderBy: { id: 'asc' },
-      select: { tool: true, traceId: true, spanId: true },
-    });
-    if (!asked) throw new Error('原行动没有生成调用记录');
+    const { game, snapshot, tool, source } = await loadPromptAction(db, gameId, actionKey);
+    if (sample) assertPromptSample(sample, comparisonInput(snapshot, tool), source);
     const comparison = await preparePromptComparison(
       snapshot,
       promptSourceOf(env),
@@ -81,7 +82,7 @@ async function main() {
         baseline: Number(values.baseline),
         candidate: Number(values.candidate),
       },
-      asked.tool === null ? undefined : (asked.tool as unknown as ModelTool),
+      tool,
     );
     const { access: fallback } = modelRuntimeOf(env);
     const seat = game.roster.find((entry) => entry.seatNo === snapshot.context.actor.seatNo);
@@ -102,7 +103,10 @@ async function main() {
       writeFile(resolve(directory, name), JSON.stringify(value, null, 2), 'utf8');
     await save('input.json', {
       sourceGameId: game.gameId,
-      sourceActionKey: action.actionKey,
+      sourceActionKey: actionKey,
+      ...(sample
+        ? { sample: { id: sample.id, datasetName: sample.datasetName, metadata: sample.metadata } }
+        : {}),
       ...comparison,
       modelConditions: { model: access.model, capability: access.capability, stream: false },
     });
@@ -112,23 +116,14 @@ async function main() {
       return;
     }
     startTelemetry(env);
-    const client = new LangfuseClient({
-      baseUrl: env.LANGFUSE_HOST,
-      publicKey: env.LANGFUSE_PUBLIC_KEY,
-      secretKey: env.LANGFUSE_SECRET_KEY,
-    });
     const results = await runPromptExperiment({
-      client,
+      client: client!,
       comparison,
       access,
       // 不套网络重试或格式重试，每个版本只发起一次请求。
       port: openaiModelPort({ timeoutMs: env.MODEL_REQUEST_TIMEOUT_MS }),
-      source: {
-        gameId: game.gameId,
-        actionKey: action.actionKey,
-        traceId: asked.traceId ?? undefined,
-        observationId: asked.spanId ?? undefined,
-      },
+      source,
+      datasetItem: sample,
       onResult: (result) => save(`${result.label}.json`, result),
     });
     Logger.log(

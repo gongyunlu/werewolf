@@ -18,6 +18,8 @@
     "typecheck": "pnpm -r run typecheck",
     "check": "pnpm build:shared && pnpm lint && pnpm typecheck",
     "test": "pnpm build:shared && pnpm -r run test",
+    "langfuse:read": "node scripts/langfuse-read.mjs",
+    "test:langfuse": "node --test scripts/langfuse-read.test.mjs",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,mjs,cjs,yml,yaml}\"",
     "prepare": "husky"
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@commitlint/cli": "^21.2.1",
     "@commitlint/config-conventional": "^21.2.0",
+    "@langfuse/cli": "1.2.4",
     "husky": "^9.1.7",
     "lint-staged": "^17.2.0",
     "prettier": "^3.9.6",

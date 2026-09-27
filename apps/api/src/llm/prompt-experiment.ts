@@ -7,6 +7,11 @@ import { tokenUsage, type AttemptCompletion } from './observation';
 import { requestPricing } from './cost';
 import { finishRequest, promptAttributes } from './telemetry';
 import { fingerprint, type PromptComparison } from '../turn/prompt-comparison';
+import {
+  assertPromptSample,
+  type PromptDatasetItem,
+  type PromptSampleSource,
+} from './prompt-sample';
 
 /** 原生 dataset + 两个 experiment run；每个 run 只允许一条输入、一次真实请求。 */
 export async function runPromptExperiment(input: {
@@ -14,7 +19,8 @@ export async function runPromptExperiment(input: {
   comparison: PromptComparison;
   port: ModelPort;
   access: ModelAccess;
-  source: { gameId: string; actionKey: string; traceId?: string; observationId?: string };
+  source: PromptSampleSource;
+  datasetItem?: PromptDatasetItem;
   onResult: (result: Record<string, unknown>) => Promise<void>;
 }) {
   // 运行中不再读配置、标签或输入，双方共用同一份接入条件。
@@ -30,19 +36,26 @@ export async function runPromptExperiment(input: {
   }
   const { client, port, source, onResult } = input;
   const pairId = randomUUID();
-  const datasetName = `werewolf/prompt-input-${comparison.inputHash.slice(0, 16)}`;
-  await client.api.datasets.create({
-    name: datasetName,
-    description: '同一玩家当时可见输入的单次生成对照',
-  });
-  const item = await client.dataset.createItem({
-    datasetName,
-    id: comparison.inputHash,
-    input: comparison.input,
-    metadata: { sourceGameId: source.gameId, sourceActionKey: source.actionKey },
-    sourceTraceId: source.traceId,
-    sourceObservationId: source.observationId,
-  });
+  const datasetName =
+    input.datasetItem?.datasetName ?? `werewolf/prompt-input-${comparison.inputHash.slice(0, 16)}`;
+  let item: PromptDatasetItem;
+  if (input.datasetItem) {
+    item = structuredClone(input.datasetItem);
+    assertPromptSample(item, comparison.input, source);
+  } else {
+    await client.api.datasets.create({
+      name: datasetName,
+      description: '同一玩家当时可见输入的单次生成对照',
+    });
+    item = await client.dataset.createItem({
+      datasetName,
+      id: comparison.inputHash,
+      input: comparison.input,
+      metadata: { sourceGameId: source.gameId, sourceActionKey: source.actionKey },
+      sourceTraceId: source.traceId,
+      sourceObservationId: source.observationId,
+    });
+  }
   const conditionsHash = fingerprint({
     input: comparison.input,
     endpoint: access.baseUrl,
@@ -67,6 +80,8 @@ export async function runPromptExperiment(input: {
         conditionsHash,
         prompts: variant.request.prompts,
         scope: 'single-generation',
+        datasetItemId: item.id,
+        datasetItemUpdatedAt: item.updatedAt,
       },
       task: async ({ input: datasetInput }) => {
         if (fingerprint(datasetInput) !== comparison.inputHash)
@@ -126,6 +141,7 @@ export async function runPromptExperiment(input: {
       version,
       pairId,
       datasetName,
+      datasetItemId: item.id,
       runName: run.runName,
       url: run.datasetRunUrl,
       inputHash: comparison.inputHash,

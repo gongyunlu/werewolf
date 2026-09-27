@@ -3,6 +3,7 @@ import type { ExperimentParams } from '@langfuse/client';
 import { openaiModelPort } from './openai-model-port';
 import { fingerprint, type PromptComparison } from '../turn/prompt-comparison';
 import { runPromptExperiment } from './prompt-experiment';
+import { sampleMetadata, type PromptDatasetItem } from './prompt-sample';
 
 const comparison: PromptComparison = {
   input: {
@@ -167,3 +168,86 @@ it('真实端口失败只请求一次，不重试也不启动候选', async () =
   ).rejects.toThrow('模型请求失败');
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+function savedSample(): PromptDatasetItem {
+  return {
+    id: 'sample-1',
+    datasetId: 'dataset-id',
+    datasetName: 'werewolf/action-samples',
+    status: 'ACTIVE',
+    input: structuredClone(comparison.input),
+    metadata: {
+      schema: 'werewolf-action-sample-v1',
+      inputHash: comparison.inputHash,
+      source: { gameId: 'g', actionKey: 'a' },
+      feedback: { category: 'fact', note: '事后已知狼身份，不可进入玩家输入' },
+    },
+    sourceTraceId: null,
+    sourceObservationId: null,
+    mediaReferences: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+it('已有样本直接复用，两个运行关联同一条目且人工意见不进入模型请求', async () => {
+  const remote = platform();
+  const requests: unknown[] = [];
+  const item = savedSample();
+  const fetch = jest.fn(async (_url, init) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return new Response(
+      JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '结果' } }] }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+  });
+  const results = await runPromptExperiment({
+    client: remote.client,
+    comparison,
+    access,
+    source: { gameId: 'g', actionKey: 'a' },
+    datasetItem: item,
+    port: openaiModelPort({ fetch }),
+    onResult: async () => {},
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(remote.client.api.datasets.create).not.toHaveBeenCalled();
+  expect(remote.client.dataset.createItem).not.toHaveBeenCalled();
+  expect(remote.run.mock.calls.map(([call]) => call.data[0])).toMatchObject([
+    { id: 'sample-1' },
+    { id: 'sample-1' },
+  ]);
+  expect(results.map((result) => result.datasetName)).toEqual([
+    'werewolf/action-samples',
+    'werewolf/action-samples',
+  ]);
+  expect(JSON.stringify(requests)).not.toContain('事后已知狼身份');
+  expect(remote.run.mock.calls.every(([call]) => !call.evaluators)).toBe(true);
+});
+
+it.each(['归档', '输入修改', '来源错误'])(
+  '已有样本%s时在写入实验与调用模型前失败',
+  async (reason) => {
+    const remote = platform();
+    const item = savedSample();
+    if (reason === '归档') item.status = 'ARCHIVED';
+    if (reason === '输入修改') item.input = { ...comparison.input, future: '不可见信息' };
+    if (reason === '来源错误')
+      item.metadata = { ...sampleMetadata(item), source: { gameId: 'other', actionKey: 'a' } };
+    const port = { generate: jest.fn() };
+    await expect(
+      runPromptExperiment({
+        client: remote.client,
+        comparison,
+        access,
+        source: { gameId: 'g', actionKey: 'a' },
+        datasetItem: item,
+        port,
+        onResult: async () => {},
+      }),
+    ).rejects.toThrow();
+    expect(port.generate).not.toHaveBeenCalled();
+    expect(remote.run).not.toHaveBeenCalled();
+    expect(remote.client.api.datasets.create).not.toHaveBeenCalled();
+  },
+);

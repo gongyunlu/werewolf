@@ -40,6 +40,21 @@ function canonical(item: unknown): unknown {
   return item;
 }
 
+export function comparisonInput(
+  snapshot: DecisionSnapshot,
+  tool?: ModelTool,
+): PromptComparison['input'] {
+  if ((snapshot.schema !== null) !== (tool !== undefined))
+    throw new Error('原行动的工具定义与结构约束不一致');
+  return structuredClone({
+    context: snapshot.context,
+    schema: snapshot.schema,
+    model: snapshot.model,
+    capability: snapshot.capability,
+    ...(tool ? { tool } : {}),
+  });
+}
+
 /** 只读取原行动快照中的玩家输入，不读取终局、后续台账或复盘结果。 */
 export async function preparePromptComparison(
   snapshot: DecisionSnapshot,
@@ -55,8 +70,7 @@ export async function preparePromptComparison(
     selection.baseline === selection.candidate
   )
     throw new Error('必须选择两个不同的正整数版本');
-  if ((snapshot.schema !== null) !== (tool !== undefined))
-    throw new Error('原行动的工具定义与结构约束不一致');
+  const input = comparisonInput(snapshot, tool);
 
   const companionName = names.find((name) => name !== selection.name)!;
   const recorded = snapshot.prompts.find((prompt) => prompt.template === companionName);
@@ -75,13 +89,6 @@ export async function preparePromptComparison(
     load(selection.name, selection.baseline),
     load(selection.name, selection.candidate),
   ]);
-  const input = structuredClone({
-    context: snapshot.context,
-    schema: snapshot.schema,
-    model: snapshot.model,
-    capability: snapshot.capability,
-    ...(tool ? { tool } : {}),
-  });
   const variants: PromptComparison['variants'] = [];
   for (const [index, selected] of [baseline, candidate].entries()) {
     const templates = names.map((name) => (name === selection.name ? selected : companion));
