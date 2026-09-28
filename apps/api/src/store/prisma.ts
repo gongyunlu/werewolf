@@ -25,6 +25,7 @@ import type { GameStores } from './stores';
 import { prismaObservations } from './prisma-observations';
 import { prismaExperiences } from './prisma-experiences';
 import { prismaKnowledge } from './prisma-knowledge';
+import { prismaKnowledgeImports } from './prisma-knowledge-imports';
 
 /** 连上对局库。调用方用完自己关。 */
 export function openPrismaClient(connectionString: string): PrismaClient {
@@ -37,6 +38,7 @@ export function prismaStores(client: PrismaClient): GameStores {
     agents: prismaAgents(client),
     experiences: prismaExperiences(client),
     knowledge: prismaKnowledge(client),
+    knowledgeImports: prismaKnowledgeImports(client),
     events: prismaEvents(client),
     actions: prismaActions(client),
     steps: prismaSteps(client),
@@ -432,6 +434,23 @@ export function prismaSteps(client: PrismaClient): StepStore {
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
   return {
+    async captureCalls(captureId) {
+      return KnowledgeCallsSchema.parse({
+        calls: await client.askedPrompt.findMany({
+          where: { knowledgeCaptureId: captureId },
+          orderBy: { id: 'asc' },
+          select: {
+            callId: true,
+            model: true,
+            status: true,
+            attempts: {
+              orderBy: { attemptNo: 'asc' },
+              select: { attemptNo: true, status: true, dispatched: true, usage: true },
+            },
+          },
+        }),
+      });
+    },
     async knowledgeCalls(versionId) {
       return KnowledgeCallsSchema.parse({
         calls: await client.askedPrompt.findMany({
@@ -492,11 +511,12 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
       });
     },
     async append(gameId, asked) {
-      assertAskedScope(gameId, asked.knowledgeVersionId);
+      assertAskedScope(gameId, asked.knowledgeVersionId, asked.knowledgeCaptureId);
       const row = await client.askedPrompt.create({
         data: {
           gameId,
           knowledgeVersionId: asked.knowledgeVersionId,
+          knowledgeCaptureId: asked.knowledgeCaptureId,
           actionKey: asked.actionKey,
           model: asked.model,
           system: asked.system,

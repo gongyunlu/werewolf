@@ -140,7 +140,13 @@ export function callSpan(
   if (!sdk) return undefined;
   return telemetry(() =>
     propagateAttributes(
-      { sessionId: gameId ?? `knowledge/${String(metadata.knowledgeVersionId)}` },
+      {
+        sessionId:
+          gameId ??
+          (metadata.knowledgeCaptureId
+            ? `knowledge-import/${String(metadata.knowledgeCaptureId)}`
+            : `knowledge/${String(metadata.knowledgeVersionId)}`),
+      },
       () => startObservation('model.call', { ...deployment, metadata }),
     ),
   );
@@ -177,7 +183,9 @@ export function requestSpan(
         {
           sessionId:
             metadata.gameId == null
-              ? `knowledge/${String(metadata.knowledgeVersionId)}`
+              ? metadata.knowledgeCaptureId
+                ? `knowledge-import/${String(metadata.knowledgeCaptureId)}`
+                : `knowledge/${String(metadata.knowledgeVersionId)}`
               : String(metadata.gameId),
         },
         () =>

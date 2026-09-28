@@ -61,6 +61,7 @@ export function recordingModelPort(
     actionKey: string | null;
     summaryKey?: string;
     knowledgeVersionId?: string;
+    knowledgeCaptureId?: string;
   },
 ): ModelPort {
   return {

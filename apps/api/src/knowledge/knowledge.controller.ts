@@ -1,6 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import {
-  BadRequestException,
   Body,
   ConflictException,
   Controller,
@@ -21,14 +20,14 @@ import {
   KnowledgeSaveSchema,
 } from '@werewolf/shared';
 import type { Queue } from 'bullmq';
-import { ALL_BOARDS, type BoardId } from '../boards/boards';
+import { validateKnowledgeContent, validateKnowledgeSources } from './content-validation';
 import { AdminTokenGuard } from '../common/guards/admin-token.guard';
 import { parseBody } from '../common/parse-body';
 import { embeddingKey, embeddingRuntime } from '../llm/embedding';
 import { KnowledgeConflictError, type KnowledgeRecord } from '../store/knowledge';
 import type { GameStores } from '../store/stores';
 import { GAME_STORES } from '../store/stores.provider';
-import { prepareKnowledgeIndex } from './indexing';
+import { enqueueKnowledgeIndex } from './indexing';
 import { KNOWLEDGE_QUEUE, type KnowledgeJob } from './knowledge-queue';
 
 export function knowledgeView(row: KnowledgeRecord) {
@@ -76,11 +75,8 @@ export class KnowledgeController {
   @UseGuards(AdminTokenGuard)
   async save(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
     const { revision, content } = parseBody(KnowledgeSaveSchema, body);
-    for (const boardId of content.boardIds) {
-      const board = ALL_BOARDS[boardId as BoardId];
-      if (!board || content.roles.some((role) => !(role in board.roles)))
-        throw new BadRequestException('板子不存在或不包含所选角色，请分别整理适用范围');
-    }
+    validateKnowledgeContent(content);
+    await validateKnowledgeSources(this.stores, content);
     return knowledgeView(
       await conflict(() => this.stores.knowledge.saveDraft(id, revision, content)),
     );
@@ -112,17 +108,7 @@ export class KnowledgeController {
   async index(@Param('id', ParseUUIDPipe) id: string) {
     const row = await this.stores.knowledge.version(id);
     if (!row) throw new NotFoundException('没有这个版本');
-    let job = await this.queue.getJob(id);
-    if (job && ['active', 'waiting', 'delayed'].includes(await job.getState()))
-      return this.read(row.id);
-    await conflict(() => prepareKnowledgeIndex(this.stores, row, embeddingRuntime()));
-    if ((await this.stores.knowledge.version(id))!.state.status === 'ready')
-      return this.read(row.id);
-    if (job) {
-      await job.remove();
-      job = undefined;
-    }
-    await this.queue.add('index', { versionId: id }, { jobId: id, attempts: 1 });
+    await conflict(() => enqueueKnowledgeIndex(this.stores, this.queue, row));
     return this.read(row.id);
   }
 }

@@ -5,6 +5,7 @@ import type { ExperienceCallInput, KnowledgeCallInput, KnowledgeCalls } from '@w
 /** 落下来的一份提问：问出去的题面，以及它属于哪一次行动。 */
 export interface StoredAskedPrompt extends AskedPrompt {
   knowledgeVersionId?: string;
+  knowledgeCaptureId?: string;
   /** 这一问属于哪次行动，按它跟行动记录对上；折摘要那一问不在行动里，为 null。 */
   actionKey: string | null;
   summaryKey?: string;
@@ -13,6 +14,7 @@ export interface StoredAskedPrompt extends AskedPrompt {
 export interface AskedPromptStore {
   knowledgeInputs(gameId: string, actionKey: string): Promise<KnowledgeCallInput[]>;
   knowledgeCalls(versionId: string): Promise<KnowledgeCalls>;
+  captureCalls(captureId: string): Promise<KnowledgeCalls>;
   experienceInputs(gameId: string, actionKey: string): Promise<ExperienceCallInput[]>;
   /**
    * 落一份。
@@ -23,7 +25,15 @@ export interface AskedPromptStore {
   finishCall(callId: string, result: CallCompletion): Promise<void>;
 }
 
-export function assertAskedScope(gameId: string | null, knowledgeVersionId?: string): void {
-  if ((gameId !== null) === (knowledgeVersionId !== undefined))
-    throw new Error('调用必须且只能归属对局或独立知识版本');
+export function assertAskedScope(
+  gameId: string | null,
+  knowledgeVersionId?: string,
+  knowledgeCaptureId?: string,
+): void {
+  if (
+    [gameId !== null, knowledgeVersionId !== undefined, knowledgeCaptureId !== undefined].filter(
+      Boolean,
+    ).length !== 1
+  )
+    throw new Error('调用必须且只能归属对局、独立知识版本或采集整理任务');
 }

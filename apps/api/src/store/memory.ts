@@ -22,6 +22,7 @@ import type { StepStore } from './steps';
 import type { GameStores } from './stores';
 import { memoryExperiences } from './memory-experiences';
 import { memoryKnowledge } from './memory-knowledge';
+import { memoryKnowledgeImports } from './memory-knowledge-imports';
 
 /**
  * 整局跑在内存里的那几份存储：进程一结束就没了。
@@ -31,11 +32,13 @@ export function memoryStores(): GameStores {
   const games = memoryGames();
   const actions = memoryActions();
   const calls: CallRow[] = [];
+  const knowledge = memoryKnowledge();
   return {
     games,
     agents: memoryAgents(),
     experiences: memoryExperiences(),
-    knowledge: memoryKnowledge(),
+    knowledge,
+    knowledgeImports: memoryKnowledgeImports(knowledge),
     events: memoryEvents(),
     actions,
     steps: memorySteps(),
@@ -228,6 +231,9 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
   const inputs = new Map<number, readonly ExperienceSnapshot[]>();
   const knowledgeInputs = new Map<number, readonly KnowledgeSnapshot[]>();
   return {
+    async captureCalls(captureId) {
+      return { calls: structuredClone(rows.filter((row) => row.knowledgeCaptureId === captureId)) };
+    },
     async knowledgeCalls(versionId) {
       return { calls: structuredClone(rows.filter((row) => row.knowledgeVersionId === versionId)) };
     },
@@ -266,7 +272,7 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
       if (row.status === 'started') finishCallRow(row, result);
     },
     async append(gameId, asked) {
-      assertAskedScope(gameId, asked.knowledgeVersionId);
+      assertAskedScope(gameId, asked.knowledgeVersionId, asked.knowledgeCaptureId);
       if (asked.observation && rows.some((row) => row.callId === asked.observation?.callId)) {
         throw new Error('调用编号重复');
       }
@@ -280,6 +286,7 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
       );
       rows.push(row);
       row.knowledgeVersionId = asked.knowledgeVersionId;
+      row.knowledgeCaptureId = asked.knowledgeCaptureId;
       if (asked.knowledge) knowledgeInputs.set(row.id, structuredClone(asked.knowledge));
       if (asked.experiences) inputs.set(row.id, structuredClone(asked.experiences));
       if (!asked.observation) return;

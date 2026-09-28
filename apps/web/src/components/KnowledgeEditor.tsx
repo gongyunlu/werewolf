@@ -29,6 +29,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/http';
 import { saveKnowledge } from '@/lib/knowledge-api';
 import { actionTypeName, roleName } from '@/lib/labels';
+import { KnowledgeChanges } from './KnowledgeChanges';
 
 const ROLES = [
   'villager',
@@ -140,15 +141,22 @@ export function KnowledgeEditor({
   boards,
   onClose,
   onSaved,
+  review,
 }: {
   item: KnowledgeItem | null;
   boards: BoardSummary[];
   onClose: () => void;
   onSaved: (row: KnowledgeItem) => void;
+  review?: {
+    content: KnowledgeContent;
+    before: KnowledgeContent | null;
+    onConfirm: (content: KnowledgeContent) => Promise<void>;
+    onRefresh: () => Promise<void>;
+  };
 }) {
   const [id] = useState(() => item?.id ?? crypto.randomUUID());
   const [content, setContent] = useState(() =>
-    structuredClone(item?.versions.at(-1)?.content ?? emptyContent()),
+    structuredClone(review?.content ?? item?.versions.at(-1)?.content ?? emptyContent()),
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,7 +175,8 @@ export function KnowledgeEditor({
     setSaving(true);
     setError(null);
     try {
-      onSaved(await saveKnowledge(id, item?.revision ?? 0, parsed.data));
+      if (review) await review.onConfirm(parsed.data);
+      else onSaved(await saveKnowledge(id, item?.revision ?? 0, parsed.data));
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -183,12 +192,32 @@ export function KnowledgeEditor({
     >
       <DialogContent className="max-h-[90dvh] max-w-3xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{item ? '编辑知识' : '新建知识'}</DialogTitle>
+          <DialogTitle>{review ? '核对采集草稿' : item ? '编辑知识' : '新建知识'}</DialogTitle>
           <DialogDescription>
             保存草稿不会调用模型。已开始索引的版本保留原文，修改后产生新版本，需另行索引并启用。
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={(event) => void submit(event)} className="flex flex-col gap-5">
+          {review?.before ? (
+            <>
+              <KnowledgeChanges before={review.before} after={content} />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={saving}
+                onClick={() => {
+                  setSaving(true);
+                  void review
+                    .onRefresh()
+                    .then(() => setError(null))
+                    .catch((failure) => setError(errorMessage(failure)))
+                    .finally(() => setSaving(false));
+                }}
+              >
+                读取最新知识重新核对（保留当前草稿）
+              </Button>
+            </>
+          ) : null}
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="knowledge-kind">内容类型</FieldLabel>
@@ -372,7 +401,7 @@ export function KnowledgeEditor({
               取消
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? '保存中…' : '保存草稿'}
+              {saving ? '保存中…' : review ? '确认并保存草稿' : '保存草稿'}
             </Button>
           </div>
         </form>

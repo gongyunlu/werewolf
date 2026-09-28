@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { KnowledgeCard } from '@/components/KnowledgeCard';
 import { KnowledgeEditor } from '@/components/KnowledgeEditor';
+import { KnowledgeImportPanel } from '@/components/KnowledgeImportPanel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
@@ -86,6 +87,7 @@ export function KnowledgePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [imports, setImports] = useState(false);
   const [editor, setEditor] = useState<{ item: KnowledgeItem | null } | null>(null);
   const [search, setSearch] = useState('');
   const [kind, setKind] = useState('all');
@@ -186,6 +188,9 @@ export function KnowledgePage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" disabled={loading} onClick={() => setImports((v) => !v)}>
+            {imports ? '收起网页采集' : '网页采集'}
+          </Button>
           <Button variant="outline" disabled={busy} onClick={() => void act(load)}>
             刷新
           </Button>
@@ -197,6 +202,9 @@ export function KnowledgePage() {
       <p className="text-sm text-muted-foreground">
         规则参考与案例仅供查阅。策略索引完成后仍需启用；资料不能覆盖当前规则、合法操作和实际证据。
       </p>
+      {imports ? (
+        <KnowledgeImportPanel boards={boards} items={items} onKnowledgeChanged={load} />
+      ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

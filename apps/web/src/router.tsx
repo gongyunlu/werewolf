@@ -5,6 +5,7 @@ import { GamePage } from '@/pages/GamePage';
 import { GamesPage } from '@/pages/GamesPage';
 import { HomePage } from '@/pages/HomePage';
 import { KnowledgePage } from '@/pages/KnowledgePage';
+import { KnowledgeSourcePage } from '@/pages/KnowledgeSourcePage';
 
 export const router = createBrowserRouter([
   {
@@ -21,6 +22,7 @@ export const router = createBrowserRouter([
       },
       { path: 'agents', element: <AgentsPage /> },
       { path: 'knowledge', element: <KnowledgePage /> },
+      { path: 'knowledge/sources/:id', element: <KnowledgeSourcePage /> },
     ],
   },
 ]);

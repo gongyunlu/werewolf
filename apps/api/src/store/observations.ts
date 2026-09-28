@@ -19,6 +19,7 @@ export interface CallRow {
   id: number;
   gameId: string | null;
   knowledgeVersionId?: string;
+  knowledgeCaptureId?: string;
   actionKey: string | null;
   summaryKey: string | null;
   model: string;

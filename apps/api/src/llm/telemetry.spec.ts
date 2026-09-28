@@ -5,6 +5,7 @@ import { loadEnv } from '../config/env';
 import { memoryStores } from '../store/memory';
 import { openaiModelPort } from './openai-model-port';
 import { recordingModelPort } from './recording-model-port';
+import { access, controlledPort } from '../experience/testing';
 import { retryingModelPort } from './retrying-model-port';
 import { callSpan, promptAttributes, startTelemetry, stopTelemetry } from './telemetry';
 
@@ -129,6 +130,39 @@ describe('遥测只记录真实请求', () => {
     expect(JSON.stringify(mockSpans.map((span) => span.attributes))).not.toMatch(
       /private-api-key|offline.invalid/,
     );
+    const importStores = memoryStores();
+    const [capture] = await importStores.knowledgeImports.open(randomUUID(), [
+      'https://example.org/guide',
+    ]);
+    const scope = { gameId: null, actionKey: null, knowledgeCaptureId: capture!.id };
+    const port = recordingModelPort(
+      controlledPort('草稿'),
+      (asked) => importStores.asked.append(null, { ...asked, ...scope }),
+      scope,
+    );
+    const response = await port.generate({ system: '仅测试', prompt: '采集正文' }, access, {
+      identity: {
+        callId: randomUUID(),
+        executionId: capture!.id,
+        step: 'knowledge_organize',
+        formatAttempt: 1,
+      },
+    });
+    await response.completeObservation?.('accepted');
+    const importSpans = mockSpans.slice(-2);
+    expect(importSpans.map((s) => s.name)).toEqual(
+      expect.arrayContaining(['model.call', 'model.request.knowledge_organize']),
+    );
+    for (const span of importSpans) expect(JSON.stringify(span.attributes)).toContain(capture!.id);
+    await expect(
+      importStores.asked.append('other-game', {
+        model: '测试',
+        system: '',
+        prompt: '',
+        actionKey: null,
+        knowledgeCaptureId: capture!.id,
+      }),
+    ).rejects.toThrow('只能归属');
     const processor = jest.mocked(LangfuseSpanProcessor).mock.results[0].value;
     processor.onEnd = () => {
       throw new Error('遥测故障');

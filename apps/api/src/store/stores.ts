@@ -8,6 +8,7 @@ import type { StepStore } from './steps';
 import type { ObservationStore } from './observations';
 import type { ExperienceStore } from './experiences';
 import type { KnowledgeStore } from './knowledge';
+import type { KnowledgeImportStore } from './knowledge-imports';
 
 /** 一局要用到的那几份存储，成对交给行动提供者。 */
 export interface GameStores {
@@ -17,6 +18,7 @@ export interface GameStores {
   agents: AgentStore;
   experiences: ExperienceStore;
   knowledge: KnowledgeStore;
+  knowledgeImports: KnowledgeImportStore;
   events: EventStore;
   actions: ActionStore;
   steps: StepStore;

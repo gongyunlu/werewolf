@@ -50,6 +50,42 @@ const scopeWhere = (scope: KnowledgeScope): Prisma.KnowledgeVersionWhereInput =>
   ...(scope.day === 1 ? {} : { firstDayOnly: false }),
 });
 
+/** 单条编辑与采集确认复用同一事务写入，确认结果不能落在事务之外。 */
+export async function saveKnowledgeDraft(
+  tx: Prisma.TransactionClient,
+  id: string,
+  revision: number,
+  content: import('@werewolf/shared').KnowledgeContent,
+) {
+  await tx.knowledgeItem.upsert({ where: { id }, create: { id }, update: {} });
+  await tx.$queryRaw`SELECT id FROM knowledge_items WHERE id = ${id}::uuid FOR UPDATE`;
+  const row = await tx.knowledgeItem.findUniqueOrThrow({ where: { id }, include });
+  const latest = row.versions.at(-1);
+  const hash = knowledgeHash(content);
+  if (latest?.contentHash === hash) return recordOf(row);
+  if (row.revision !== revision) throw new KnowledgeConflictError('知识已被修改，请刷新后重试');
+  const data = {
+    content: json(content),
+    contentHash: hash,
+    kind: content.kind,
+    boardIds: content.boardIds,
+    roles: content.roles,
+    actionTypes: content.actionTypes,
+    firstDayOnly: content.firstDayOnly,
+    minDay: content.minDay,
+    state: json({ status: 'draft', failure: null }),
+  };
+  if (latest && (latest.state as unknown as KnowledgeIndexState).status === 'draft')
+    await tx.knowledgeVersion.update({ where: { id: latest.id }, data });
+  else
+    await tx.knowledgeVersion.create({
+      data: { ...data, id: randomUUID(), itemId: id, version: (latest?.version ?? 0) + 1 },
+    });
+  return recordOf(
+    await tx.knowledgeItem.update({ where: { id }, data: { revision: { increment: 1 } }, include }),
+  );
+}
+
 export function prismaKnowledge(client: PrismaClient): KnowledgeStore {
   return {
     async list() {
@@ -69,46 +105,7 @@ export function prismaKnowledge(client: PrismaClient): KnowledgeStore {
       return row ? versionOf(row) : null;
     },
     saveDraft(id, revision, content) {
-      return client.$transaction(async (tx) => {
-        await tx.knowledgeItem.upsert({ where: { id }, create: { id }, update: {} });
-        // 编辑和首次索引共用条目锁，不能在索引固定正文的同时改写草稿。
-        await tx.$queryRaw`SELECT id FROM knowledge_items WHERE id = ${id}::uuid FOR UPDATE`;
-        const row = await tx.knowledgeItem.findUniqueOrThrow({ where: { id }, include });
-        const latest = row.versions.at(-1);
-        const hash = knowledgeHash(content);
-        if (latest?.contentHash === hash) return recordOf(row);
-        if (row.revision !== revision)
-          throw new KnowledgeConflictError('知识已被修改，请刷新后重试');
-        const data = {
-          content: json(content),
-          contentHash: hash,
-          kind: content.kind,
-          boardIds: content.boardIds,
-          roles: content.roles,
-          actionTypes: content.actionTypes,
-          firstDayOnly: content.firstDayOnly,
-          minDay: content.minDay,
-          state: json({ status: 'draft', failure: null }),
-        };
-        if (latest && (latest.state as unknown as KnowledgeIndexState).status === 'draft')
-          await tx.knowledgeVersion.update({ where: { id: latest.id }, data });
-        else
-          await tx.knowledgeVersion.create({
-            data: {
-              ...data,
-              id: randomUUID(),
-              itemId: id,
-              version: (latest?.version ?? 0) + 1,
-            },
-          });
-        return recordOf(
-          await tx.knowledgeItem.update({
-            where: { id },
-            data: { revision: { increment: 1 } },
-            include,
-          }),
-        );
-      });
+      return client.$transaction((tx) => saveKnowledgeDraft(tx, id, revision, content));
     },
     async activate(id, revision, versionId, key) {
       await client.$transaction(async (tx) => {

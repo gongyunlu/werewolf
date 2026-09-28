@@ -27,6 +27,13 @@ export const KNOWLEDGE_ACTION_TYPES = [
   ACTION_TYPES.SHERIFF_DECIDE_ORDER,
 ] as const;
 export const KnowledgeSourceSchema = z.object({
+  sourceId: z.uuid().optional(),
+  captureId: z.uuid().optional(),
+  paragraphIds: z
+    .array(z.string().regex(/^P\d+$/))
+    .min(1)
+    .max(10)
+    .optional(),
   title: z.string().trim().min(1).max(160),
   url: z
     .url()

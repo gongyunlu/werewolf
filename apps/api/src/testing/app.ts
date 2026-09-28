@@ -10,6 +10,8 @@ import { EXPERIENCE_QUEUE } from '../experience/experience-queue';
 import { ExperienceWorker } from '../experience/experience-worker';
 import { KNOWLEDGE_QUEUE } from '../knowledge/knowledge-queue';
 import { KnowledgeWorker } from '../knowledge/knowledge-worker';
+import { KNOWLEDGE_IMPORT_QUEUE } from '../knowledge/import-queue';
+import { KnowledgeImportWorker } from '../knowledge/import-worker';
 import type { GameStores } from '../store/stores';
 import { GAME_STORES, PRISMA_CLIENT } from '../store/stores.provider';
 import { FakeRedis } from './stream';
@@ -30,6 +32,10 @@ export function testAppModule(stores: GameStores) {
     .overrideProvider(getQueueToken(KNOWLEDGE_QUEUE))
     .useValue({})
     .overrideProvider(KnowledgeWorker)
+    .useValue({})
+    .overrideProvider(getQueueToken(KNOWLEDGE_IMPORT_QUEUE))
+    .useValue({})
+    .overrideProvider(KnowledgeImportWorker)
     .useValue({})
     .overrideProvider(REDIS_PUB)
     .useValue(new FakeRedis())

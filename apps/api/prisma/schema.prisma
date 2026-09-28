@@ -84,6 +84,31 @@ model AgentExperience {
   @@map("agent_experiences")
 }
 
+// 同一个请求 URL 的多次采集共用来源身份。
+model KnowledgeSource {
+  id       String             @id @db.Uuid
+  url      String             @unique @db.VarChar(600)
+  captures KnowledgeCapture[]
+
+  @@map("knowledge_sources")
+}
+
+// 采集成功后正文固定；整理答复和逐项确认结果保存在同一记录中。
+model KnowledgeCapture {
+  id        String          @id @db.Uuid
+  batchId   String          @map("batch_id") @db.Uuid
+  sourceId  String          @map("source_id") @db.Uuid
+  revision  Int             @default(0)
+  state     Json            @db.JsonB
+  createdAt DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  source    KnowledgeSource @relation(fields: [sourceId], references: [id])
+  calls     AskedPrompt[]
+
+  @@unique([batchId, sourceId])
+  @@index([sourceId, createdAt])
+  @@map("knowledge_captures")
+}
+
 // 外部知识条目与当前启用版本。索引开始后，正文和来源固定在版本中。
 model KnowledgeItem {
   id              String             @id @db.Uuid
@@ -237,6 +262,7 @@ model AskedPrompt {
   id                 Int     @id @default(autoincrement())
   gameId             String? @map("game_id") @db.VarChar(64)
   knowledgeVersionId String? @map("knowledge_version_id") @db.Uuid
+  knowledgeCaptureId String? @map("knowledge_capture_id") @db.Uuid
   // 这一问属于哪次行动，按它跟行动记录对上；折摘要那一问不在行动里，为空。
   actionKey          String? @map("action_key") @db.VarChar(200)
   model              String  @db.VarChar(64)
@@ -266,10 +292,12 @@ model AskedPrompt {
 
   game             Game?             @relation(fields: [gameId], references: [id], onDelete: Cascade)
   knowledgeVersion KnowledgeVersion? @relation(fields: [knowledgeVersionId], references: [id])
+  knowledgeCapture KnowledgeCapture? @relation(fields: [knowledgeCaptureId], references: [id])
   attempts         ModelAttempt[]
 
   @@index([actionKey])
   @@index([knowledgeVersionId])
+  @@index([knowledgeCaptureId])
   @@index([gameId, id])
   @@map("asked_prompts")
 }

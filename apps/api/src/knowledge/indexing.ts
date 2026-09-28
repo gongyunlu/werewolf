@@ -2,7 +2,23 @@ import { KNOWLEDGE_CHARACTERS, KnowledgeSnapshotSchema } from '@werewolf/shared'
 import { embedTask, newEmbeddingTask } from '../experience/embedding-task';
 import { embeddingKey, embeddingRuntime, type EmbeddingRuntime } from '../llm/embedding';
 import { KnowledgeConflictError, type KnowledgeRevision } from '../store/knowledge';
+import type { Queue } from 'bullmq';
+import type { KnowledgeJob } from './knowledge-queue';
 import type { GameStores } from '../store/stores';
+
+export async function enqueueKnowledgeIndex(
+  stores: GameStores,
+  queue: Queue<KnowledgeJob>,
+  row: KnowledgeRevision,
+) {
+  const id = row.versionId;
+  const job = await queue.getJob(id);
+  if (job && ['active', 'waiting', 'delayed'].includes(await job.getState())) return;
+  await prepareKnowledgeIndex(stores, row, embeddingRuntime());
+  if ((await stores.knowledge.version(id))!.state.status === 'ready') return;
+  if (job) await job.remove();
+  await queue.add('index', { versionId: id }, { jobId: id, attempts: 1 });
+}
 
 /** 入队前固定正文；后续编辑创建新版本，不影响排队中的索引。 */
 export async function prepareKnowledgeIndex(

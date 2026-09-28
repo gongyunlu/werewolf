@@ -8,7 +8,7 @@ export function KnowledgeCard({
   knowledge,
   link = false,
 }: {
-  knowledge: KnowledgeSnapshot;
+  knowledge: Pick<KnowledgeSnapshot, 'content'> & Partial<Omit<KnowledgeSnapshot, 'content'>>;
   link?: boolean;
 }) {
   const c = knowledge.content;
@@ -18,7 +18,8 @@ export function KnowledgeCard({
         <CardTitle>
           {c.title}{' '}
           <Badge variant="secondary">
-            {KNOWLEDGE_KINDS[c.kind]} · v{knowledge.version}
+            {KNOWLEDGE_KINDS[c.kind]}
+            {knowledge.version ? ` · v${knowledge.version}` : ' · 待确认'}
           </Badge>
         </CardTitle>
       </CardHeader>
@@ -40,6 +41,16 @@ export function KnowledgeCard({
               <a href={source.url} target="_blank" rel="noreferrer" className="underline">
                 {source.title}
               </a>
+              {source.captureId ? (
+                <Link
+                  className="ml-2 underline"
+                  to={`/knowledge/sources/${source.captureId}#${source.paragraphIds?.[0] ?? ''}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  采集时正文
+                </Link>
+              ) : null}
               <span>
                 {' '}
                 · {source.publisher}
@@ -51,7 +62,7 @@ export function KnowledgeCard({
             </li>
           ))}
         </ul>
-        {link ? (
+        {link && knowledge.id && knowledge.versionId ? (
           <Link
             to={`/knowledge?id=${knowledge.id}&version=${knowledge.versionId}`}
             className="text-xs underline"
