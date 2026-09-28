@@ -11,11 +11,116 @@ import { fixture, result, access, promptSource, controlledPort } from './testing
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
 import { vectorRuntime } from './testing';
+import * as embeddings from '../llm/embedding';
+import { indexExperienceVersion } from './maintenance';
 
 describe('个人经验接口', () => {
   let app: INestApplication;
   afterEach(async () => {
     await app?.close();
+    jest.restoreAllMocks();
+  });
+  it('编辑归档接口鉴权、字段校验和冲突明确；读取与保存不调用模型，索引完成后才能启用', async () => {
+    const f = await fixture();
+    await runExperience(f.stores, f.row.id, {
+      port: controlledPort(JSON.stringify(result)),
+      access,
+      promptSource,
+      prepare: f.prepare,
+    });
+    const runtime = vectorRuntime();
+    jest.spyOn(embeddings, 'embeddingRuntime').mockReturnValue(runtime);
+    const queue = { getJob: jest.fn(async () => undefined), add: jest.fn() };
+    const module = await testAppModule(f.stores)
+      .overrideProvider(getQueueToken(EXPERIENCE_QUEUE))
+      .useValue(queue)
+      .compile();
+    app = module.createNestApplication();
+    app.setGlobalPrefix('api');
+    await app.init();
+    process.env.ADMIN_TOKEN = 'test-admin-token';
+    const item = (await f.stores.experiences.list(f.agent.id))[0]!;
+    const url = `/api/agents/${f.agent.id}/experiences/${item.id}`;
+    const content = { title: '新标题', body: '只使用当时可见材料', conditions: '核对时序时' };
+    await request(app.getHttpServer())
+      .put(`${url}/content`)
+      .send({ revision: 0, content })
+      .expect(401);
+    await request(app.getHttpServer())
+      .patch(`${url}/archive`)
+      .send({ revision: 0, archived: true })
+      .expect(401);
+    await request(app.getHttpServer()).post(`${url}/index`).send({ version: 2 }).expect(401);
+    for (const invalid of [
+      { ...content, body: ' ' },
+      { ...content, sourceIds: ['伪造来源'] },
+      { ...content, agentId: '其他归属' },
+    ])
+      await request(app.getHttpServer())
+        .put(`${url}/content`)
+        .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+        .send({ revision: 0, content: invalid })
+        .expect(400);
+    const edited = await request(app.getHttpServer())
+      .put(`${url}/content`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ revision: 0, content })
+      .expect(200);
+    expect(edited.body.experiences[0]).toMatchObject({
+      version: 2,
+      enabled: false,
+      indexStatus: 'draft',
+    });
+    expect(runtime.port.generate).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    await request(app.getHttpServer())
+      .put(`${url}/content`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ revision: 0, content })
+      .expect(409);
+    await request(app.getHttpServer())
+      .patch(url)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ enabled: true, revision: 1 })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`${url}/index`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ version: 1 })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`${url}/index`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ version: 2 })
+      .expect(201);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    await indexExperienceVersion(f.stores, item.id, 2, runtime);
+    await request(app.getHttpServer())
+      .patch(url)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ enabled: true, revision: 1 })
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`${url}/archive`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ archived: true, revision: 2 })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post(`${url}/index`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ version: 2 })
+      .expect(409);
+    const restored = await request(app.getHttpServer())
+      .patch(`${url}/archive`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ archived: false, revision: 3 })
+      .expect(200);
+    expect(restored.body.experiences[0]).toMatchObject({
+      enabled: false,
+      archived: false,
+      version: 2,
+      revision: 4,
+    });
   });
   it('已提炼的旧任务能明确补建索引，查看不发请求，完成后重复提交不再入队', async () => {
     const f = await fixture();

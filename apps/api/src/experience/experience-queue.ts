@@ -1,4 +1,6 @@
 export const EXPERIENCE_QUEUE = 'personal-experiences';
-export interface ExperienceJob {
-  generationId: string;
-}
+export type ExperienceJob =
+  | {
+      generationId: string;
+    }
+  | { experienceId: string; version: number };

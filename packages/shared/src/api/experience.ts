@@ -25,10 +25,41 @@ export const ExperienceSnapshotSchema = ExperienceContentSchema.extend({
 export const AgentExperienceSchema = ExperienceSnapshotSchema.extend({
   enabled: z.boolean(),
   indexed: z.boolean().optional(),
+  archived: z.boolean().optional(),
+  revision: z.number().int().nonnegative().optional(),
+  history: z.array(ExperienceSnapshotSchema).optional(),
+  indexStatus: z.enum(['draft', 'pending', 'ready', 'failed', 'unknown']).optional(),
+  indexFailure: z.string().nullable().optional(),
+  indexModel: z.string().nullable().optional(),
+  indexCalls: z.array(z.object({ callId: z.string(), status: z.string() })).optional(),
   createdAt: z.string(),
 });
 export const ExperienceListSchema = z.object({ experiences: z.array(AgentExperienceSchema) });
-export const ExperienceToggleSchema = z.object({ enabled: z.boolean() });
+export const ExperienceToggleSchema = z
+  .object({
+    enabled: z.boolean(),
+    revision: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export const ExperienceEditableSchema = ExperienceContentSchema.pick({
+  title: true,
+  body: true,
+  conditions: true,
+}).strict();
+export const ExperienceEditSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    content: ExperienceEditableSchema,
+  })
+  .strict();
+export const ExperienceArchiveSchema = z
+  .object({
+    revision: z.number().int().nonnegative(),
+    archived: z.boolean(),
+  })
+  .strict();
+export const ExperienceIndexSchema = z.object({ version: z.number().int().positive() }).strict();
+export type ExperienceEditable = z.infer<typeof ExperienceEditableSchema>;
 export const ExperienceSourceSchema = ReviewSourceSchema.extend({
   perspective: z.enum(['at_action', 'post_game']),
 });

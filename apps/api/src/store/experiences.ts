@@ -1,4 +1,10 @@
-import type { AgentExperience, ExperienceResult, ExperienceSource } from '@werewolf/shared';
+import {
+  ExperienceSnapshotSchema,
+  type AgentExperience,
+  type ExperienceEditable,
+  type ExperienceResult,
+  type ExperienceSource,
+} from '@werewolf/shared';
 import type { EmbeddingTask } from '../experience/embedding-task';
 import type { ModelResponse } from '../llm/model-port';
 import type { PromptTemplate } from '../llm/prompt-template';
@@ -44,6 +50,19 @@ export interface ExperienceGeneration {
 }
 export interface ExperienceStore {
   list(agentId: string): Promise<AgentExperience[]>;
+  find(id: string): Promise<ExperienceRecord | null>;
+  edit(
+    agentId: string,
+    id: string,
+    revision: number,
+    content: ExperienceEditable,
+  ): Promise<boolean>;
+  archive(agentId: string, id: string, revision: number, archived: boolean): Promise<boolean>;
+  saveIndex(
+    previous: ExperienceRecord,
+    state: ExperienceIndexState,
+    vector?: number[],
+  ): Promise<void>;
   hasCandidates(scope: ExperienceScope): Promise<boolean>;
   search(
     scope: ExperienceScope,
@@ -52,7 +71,13 @@ export interface ExperienceStore {
     limit: number,
   ): Promise<SimilarExperience[]>;
   writeVectors(key: string, rows: Array<{ id: string; vector: number[] }>): Promise<void>;
-  toggle(agentId: string, id: string, enabled: boolean): Promise<boolean>;
+  toggle(
+    agentId: string,
+    id: string,
+    enabled: boolean,
+    revision?: number,
+    key?: string,
+  ): Promise<boolean>;
   findSource(
     gameId: string,
     playerId: string,
@@ -64,6 +89,60 @@ export interface ExperienceStore {
   save(row: ExperienceGeneration, next: ExperienceState): Promise<void>;
   /** 结果与产物同一事务提交；零条产物也算完成。 */
   complete(row: ExperienceGeneration, result: ExperienceResult): Promise<void>;
+}
+
+export class ExperienceConflictError extends Error {}
+export interface ExperienceIndexState {
+  status: 'draft' | 'pending' | 'ready' | 'failed' | 'unknown';
+  failure: string | null;
+  task?: EmbeddingTask;
+}
+export interface ExperienceRecord {
+  item: AgentExperience;
+  state: ExperienceIndexState | null;
+  embeddingKey: string | null;
+}
+export function checkExperienceRevision(item: AgentExperience, revision: number | undefined) {
+  if (revision !== undefined && (item.revision ?? 0) !== revision)
+    throw new ExperienceConflictError('经验已被修改，请刷新后重试');
+}
+export function editedExperience(
+  item: AgentExperience,
+  content: ExperienceEditable,
+): AgentExperience {
+  if (item.archived) throw new ExperienceConflictError('请先恢复归档经验，再编辑');
+  if (
+    item.title === content.title &&
+    item.body === content.body &&
+    item.conditions === content.conditions
+  )
+    return item;
+  return {
+    ...item,
+    ...content,
+    version: item.version + 1,
+    revision: (item.revision ?? 0) + 1,
+    history: [...(item.history ?? []), ExperienceSnapshotSchema.parse(item)],
+    enabled: false,
+    indexed: false,
+  };
+}
+export function checkExperienceEnable(row: ExperienceRecord, enabled: boolean, key?: string) {
+  if (row.item.archived) throw new ExperienceConflictError('归档经验不能启停，请先恢复');
+  if (
+    enabled &&
+    row.item.version > 1 &&
+    (row.state?.status !== 'ready' || !row.item.indexed || !key || row.embeddingKey !== key)
+  )
+    throw new ExperienceConflictError('请先完成此版本在当前向量接入下的索引，再启用');
+}
+export function experienceIndexView(state: ExperienceIndexState | null, indexed: boolean) {
+  return {
+    indexStatus: state?.status ?? (indexed ? 'ready' : 'draft'),
+    indexFailure: state?.failure ?? null,
+    indexModel: state?.task?.model ?? null,
+    indexCalls: state?.task?.attempts.map(({ callId, status }) => ({ callId, status })) ?? [],
+  };
 }
 
 export interface ExperienceScope {
@@ -101,6 +180,9 @@ export function experienceRows(
     boardId: input.boardId,
     role: input.role,
     enabled: true,
+    archived: false,
+    revision: 0,
+    history: [],
     createdAt: new Date().toISOString(),
   }));
 }

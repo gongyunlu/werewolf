@@ -6,6 +6,7 @@ import { GAME_STORES } from '../store/stores.provider';
 import { EXPERIENCE_QUEUE, type ExperienceJob } from './experience-queue';
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
+import { indexExperienceVersion } from './maintenance';
 
 @Processor(EXPERIENCE_QUEUE, { concurrency: 1 })
 export class ExperienceWorker extends WorkerHost {
@@ -13,6 +14,10 @@ export class ExperienceWorker extends WorkerHost {
     super();
   }
   async process(job: Job<ExperienceJob>) {
+    if ('experienceId' in job.data) {
+      await indexExperienceVersion(this.stores, job.data.experienceId, job.data.version);
+      return;
+    }
     await runExperience(this.stores, job.data.generationId);
     await indexExperience(this.stores, job.data.generationId);
   }

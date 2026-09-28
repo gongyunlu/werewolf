@@ -2,6 +2,12 @@ import type { AgentExperience } from '@werewolf/shared';
 import { cosine } from '../llm/embedding';
 import {
   experienceRows,
+  checkExperienceEnable,
+  checkExperienceRevision,
+  editedExperience,
+  experienceIndexView,
+  ExperienceConflictError,
+  type ExperienceIndexState,
   initialExperienceState,
   type ExperienceGeneration,
   type ExperienceStore,
@@ -12,6 +18,12 @@ export function memoryExperiences(): ExperienceStore {
   const generations = new Map<string, ExperienceGeneration>();
   const experiences = new Map<string, AgentExperience>();
   const vectors = new Map<string, { key: string; vector: number[] }>();
+  const indexes = new Map<string, ExperienceIndexState>();
+  const record = (item: AgentExperience) => ({
+    item: { ...item, ...experienceIndexView(indexes.get(item.id) ?? null, !!item.indexed) },
+    state: indexes.get(item.id) ?? null,
+    embeddingKey: vectors.get(item.id)?.key ?? null,
+  });
   const source = (gameId: string, playerId: string, reviewVersion: string) =>
     [...generations.values()].find(
       (row) =>
@@ -26,6 +38,7 @@ export function memoryExperiences(): ExperienceStore {
       return [...experiences.values()].some(
         (row) =>
           row.enabled &&
+          !row.archived &&
           row.boardId === boardId &&
           row.role === role &&
           row.sourceGameId !== gameId,
@@ -37,6 +50,7 @@ export function memoryExperiences(): ExperienceStore {
           .filter(
             (row) =>
               row.enabled &&
+              !row.archived &&
               row.boardId === boardId &&
               row.role === role &&
               row.sourceGameId !== gameId &&
@@ -56,17 +70,67 @@ export function memoryExperiences(): ExperienceStore {
       for (const { id, vector } of rows) {
         const row = experiences.get(id);
         if (!row) throw new Error('经验不存在');
+        // 提炼任务只写原始 v1 的向量，编辑后的版本由独立索引任务处理。
+        if (row.version !== 1) continue;
         vectors.set(id, copy({ key, vector }));
         experiences.set(id, { ...row, indexed: true });
       }
     },
     async list(agentId) {
-      return copy([...experiences.values()].filter((row) => row.agentId === agentId).toReversed());
+      return copy(
+        [...experiences.values()]
+          .filter((row) => row.agentId === agentId)
+          .toReversed()
+          .map((item) => record(item).item),
+      );
     },
-    async toggle(agentId, id, enabled) {
+    async find(id) {
+      const item = experiences.get(id);
+      return item ? copy(record(item)) : null;
+    },
+    async edit(agentId, id, revision, content) {
+      const item = experiences.get(id);
+      if (!item || item.agentId !== agentId) return false;
+      checkExperienceRevision(item, revision);
+      const next = editedExperience(item, content);
+      if (next !== item) {
+        experiences.set(id, copy(next));
+        vectors.delete(id);
+        indexes.set(id, { status: 'draft', failure: null });
+      }
+      return true;
+    },
+    async archive(agentId, id, revision, archived) {
+      const item = experiences.get(id);
+      if (!item || item.agentId !== agentId) return false;
+      checkExperienceRevision(item, revision);
+      experiences.set(id, { ...item, archived, enabled: false, revision: revision + 1 });
+      return true;
+    },
+    async saveIndex(previous, state, vector) {
+      const item = experiences.get(previous.item.id);
+      if (
+        !item ||
+        item.version !== previous.item.version ||
+        (previous.state?.status === 'ready' && state.status === 'pending' && item.enabled) ||
+        JSON.stringify(indexes.get(item.id) ?? null) !== JSON.stringify(previous.state)
+      )
+        throw new ExperienceConflictError('经验版本或索引状态已变化，请刷新后重试');
+      indexes.set(item.id, copy(state));
+      if (vector) {
+        vectors.set(item.id, copy({ key: state.task!.key, vector }));
+        experiences.set(item.id, { ...item, indexed: true });
+      } else if (state.status !== 'ready') {
+        vectors.delete(item.id);
+        experiences.set(item.id, { ...item, indexed: false });
+      }
+    },
+    async toggle(agentId, id, enabled, revision, key) {
       const row = experiences.get(id);
       if (!row || row.agentId !== agentId) return false;
-      experiences.set(id, { ...row, enabled });
+      checkExperienceRevision(row, revision);
+      checkExperienceEnable(record(row), enabled, key);
+      experiences.set(id, { ...row, enabled, revision: (row.revision ?? 0) + 1 });
       return true;
     },
     async findSource(...args) {

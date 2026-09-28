@@ -57,7 +57,7 @@ model ExperienceGeneration {
   @@map("experience_generations")
 }
 
-// 正文不可变；启停影响后续行动的检索，不改已保存的输入。
+// 修改时保存旧正文，版本递增并清空向量；不改已保存的行动输入。
 model AgentExperience {
   id           String               @id @db.Uuid
   agentId      String               @map("agent_id") @db.Uuid
@@ -66,6 +66,11 @@ model AgentExperience {
   boardId      String               @map("board_id") @db.VarChar(64)
   role         String               @db.VarChar(32)
   content      Json                 @db.JsonB
+  version      Int                  @default(1)
+  revision     Int                  @default(0)
+  history      Json                 @default("[]") @db.JsonB
+  archived     Boolean              @default(false)
+  indexState   Json?                @map("index_state") @db.JsonB
   enabled      Boolean              @default(true)
   embedding    Float[]              @default([])
   embeddingKey String?              @map("embedding_key") @db.VarChar(64)

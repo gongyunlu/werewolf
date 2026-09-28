@@ -5,6 +5,8 @@ import { fixture, result, access, promptSource, controlledPort, vectorRuntime } 
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
 import { initialRetrieval, retrieveExperiences } from './retrieval';
+import { indexExperienceVersion, prepareExperienceIndex } from './maintenance';
+import { embeddingKey } from '../llm/embedding';
 
 const databaseUrl = process.env.OBSERVATION_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -99,13 +101,90 @@ integration('Postgres 个人经验持久恢复', () => {
       expect(await resumed.asked.experienceInputs(nextId, actionKey)).toEqual([
         { callId, step: 'generate', dispatched: true, experiences: selected.selected },
       ]);
+      const sourceBefore = await resumed.experiences.findGeneration(f.row.id);
+      const content = {
+        title: '核对可见时序',
+        body: '只以行动当时可见证据核对先后。',
+        conditions: '有人解释先前行动时',
+      };
+      const itemId = items[0]!.id;
+      const before = (await resumed.experiences.find(itemId))!;
+      const edits = await Promise.allSettled([
+        resumed.experiences.edit(f.agent.id, itemId, before.item.revision!, content),
+        resumed.experiences.edit(f.agent.id, itemId, before.item.revision!, {
+          ...content,
+          title: '并发编辑',
+        }),
+      ]);
+      expect(edits.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const edited = (await resumed.experiences.find(itemId))!;
+      expect(edited.item).toMatchObject({ version: 2, indexed: false, enabled: false });
+      expect(edited.item.history![0]).toMatchObject({ version: 1, body: items[0]!.body });
+      await resumed.experiences.writeVectors(embeddingKey(embedding), [
+        { id: itemId, vector: [1, 0] },
+      ]);
+      expect((await resumed.experiences.find(itemId))!.item.indexed).toBe(false);
+      await prepareExperienceIndex(resumed, edited, embedding);
+      const saveIndex = resumed.experiences.saveIndex.bind(resumed.experiences);
+      jest
+        .spyOn(resumed.experiences, 'saveIndex')
+        .mockImplementation(async (row, state, vector) => {
+          if (vector) throw new Error('模拟新版索引写入失败');
+          await saveIndex(row, state, vector);
+        });
+      await expect(indexExperienceVersion(resumed, itemId, 2, embedding)).rejects.toThrow(
+        '模拟新版',
+      );
+      const requests = jest.mocked(embedding.port.generate).mock.calls.length;
+      await client.$disconnect();
+      client = openPrismaClient(databaseUrl!);
+      const maintained = prismaStores(client);
+      const failed = (await maintained.experiences.find(itemId))!;
+      expect(failed.item.indexStatus).toBe('failed');
+      await prepareExperienceIndex(maintained, failed, embedding);
+      await indexExperienceVersion(maintained, itemId, 2, embedding);
+      expect(embedding.port.generate).toHaveBeenCalledTimes(requests);
+      await maintained.experiences.toggle(
+        f.agent.id,
+        itemId,
+        true,
+        failed.item.revision,
+        embeddingKey(embedding),
+      );
       expect(
         (
-          await resumed.experiences.search(retrieval.scope, selected.embedding!.key, [1, 0], 20)
+          await maintained.experiences.search(retrieval.scope, embeddingKey(embedding), [1, 0], 20)
+        )[0]!.experience.version,
+      ).toBe(2);
+      const active = (await maintained.experiences.find(itemId))!;
+      await maintained.experiences.archive(f.agent.id, itemId, active.item.revision!, true);
+      expect(
+        (
+          await maintained.experiences.search(retrieval.scope, embeddingKey(embedding), [1, 0], 20)
+        ).some((hit) => hit.experience.id === itemId),
+      ).toBe(false);
+      expect(await maintained.experiences.findGeneration(f.row.id)).toEqual(sourceBefore);
+      expect((await maintained.actions.find(actionKey))!.experienceRetrieval).toEqual(selected);
+      expect(await maintained.asked.experienceInputs(nextId, actionKey)).toEqual([
+        { callId, step: 'generate', dispatched: true, experiences: selected.selected },
+      ]);
+      expect(await retrieveExperiences(maintained, actionKey, selected, embedding)).toEqual(
+        selected,
+      );
+      expect(embedding.port.generate).toHaveBeenCalledTimes(requests);
+      const archived = (await maintained.experiences.find(itemId))!;
+      await maintained.experiences.archive(f.agent.id, itemId, archived.item.revision!, false);
+      expect((await maintained.experiences.find(itemId))!.item).toMatchObject({
+        archived: false,
+        enabled: false,
+      });
+      expect(
+        (
+          await maintained.experiences.search(retrieval.scope, selected.embedding!.key, [1, 0], 20)
         ).some((hit) => hit.experience.id === items[0]!.id),
       ).toBe(false);
-      const calls = (await resumed.observations.read(f.gameId))!.calls;
-      expect(calls).toHaveLength(2);
+      const calls = (await maintained.observations.read(f.gameId))!.calls;
+      expect(calls).toHaveLength(3);
       expect(calls.every((call) => call.status === 'accepted')).toBe(true);
       expect(
         calls.find((call) => call.step === 'experience_embedding')!.attempts[0]!.usage,

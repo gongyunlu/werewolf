@@ -1,7 +1,17 @@
-import type { AgentExperience } from '@werewolf/shared';
+import {
+  ExperienceSnapshotSchema,
+  type AgentExperience,
+  type ExperienceSnapshot,
+} from '@werewolf/shared';
 import { Prisma, type PrismaClient } from '../generated/prisma/client';
 import {
   experienceRows,
+  checkExperienceEnable,
+  checkExperienceRevision,
+  editedExperience,
+  experienceIndexView,
+  ExperienceConflictError,
+  type ExperienceIndexState,
   initialExperienceState,
   type ExperienceGeneration,
   type ExperienceState,
@@ -16,8 +26,21 @@ const generation = (row: Prisma.ExperienceGenerationModel): ExperienceGeneration
 const experience = (row: Prisma.AgentExperienceModel): AgentExperience => ({
   ...(row.content as unknown as AgentExperience),
   enabled: row.enabled,
+  version: row.version,
+  archived: row.archived,
+  revision: row.revision,
+  history: row.history as unknown as ExperienceSnapshot[],
+  ...experienceIndexView(
+    row.indexState as unknown as ExperienceIndexState | null,
+    row.embedding.length > 0,
+  ),
   indexed: row.embedding.length > 0,
   createdAt: row.createdAt.toISOString(),
+});
+const record = (row: Prisma.AgentExperienceModel) => ({
+  item: experience(row),
+  state: row.indexState as unknown as ExperienceIndexState | null,
+  embeddingKey: row.embeddingKey,
 });
 
 export function prismaExperiences(client: PrismaClient): ExperienceStore {
@@ -29,6 +52,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
             boardId,
             role,
             enabled: true,
+            archived: false,
             generation: { gameId: { not: gameId } },
           },
         })) > 0
@@ -42,7 +66,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
            FROM unnest(e.embedding) WITH ORDINALITY AS v(x, i)
            JOIN unnest(${vector}::double precision[]) WITH ORDINALITY AS q(x, i) USING (i)) AS similarity
         FROM agent_experiences e JOIN experience_generations g ON g.id = e.generation_id
-        WHERE e.enabled = true AND e.board_id = ${boardId} AND e.role = ${role}
+        WHERE e.enabled = true AND e.archived = false AND e.board_id = ${boardId} AND e.role = ${role}
           AND g.game_id <> ${gameId} AND e.embedding_key = ${key}
           AND cardinality(e.embedding) = ${vector.length}
         ORDER BY similarity DESC, e.id ASC LIMIT ${limit}
@@ -55,8 +79,8 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
     async writeVectors(key, rows) {
       await client.$transaction(
         rows.map((row) =>
-          client.agentExperience.update({
-            where: { id: row.id },
+          client.agentExperience.updateMany({
+            where: { id: row.id, version: 1 },
             data: { embedding: row.vector, embeddingKey: key },
           }),
         ),
@@ -70,11 +94,83 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
         })
       ).map(experience);
     },
-    async toggle(agentId, id, enabled) {
-      return (
-        (await client.agentExperience.updateMany({ where: { id, agentId }, data: { enabled } }))
-          .count === 1
-      );
+    async find(id) {
+      const row = await client.agentExperience.findUnique({ where: { id } });
+      return row ? record(row) : null;
+    },
+    async edit(agentId, id, revision, content) {
+      return client.$transaction(async (tx) => {
+        const row = await tx.agentExperience.findFirst({ where: { id, agentId } });
+        if (!row) return false;
+        const item = experience(row);
+        checkExperienceRevision(item, revision);
+        const next = editedExperience(item, content);
+        if (next === item) return true;
+        const saved = await tx.agentExperience.updateMany({
+          where: { id, agentId, revision },
+          data: {
+            content: json(ExperienceSnapshotSchema.parse(next)),
+            version: next.version,
+            revision: { increment: 1 },
+            history: json(next.history),
+            enabled: false,
+            embedding: [],
+            embeddingKey: null,
+            indexState: json({ status: 'draft', failure: null }),
+          },
+        });
+        if (saved.count !== 1) throw new ExperienceConflictError('经验已被修改，请刷新后重试');
+        return true;
+      });
+    },
+    async archive(agentId, id, revision, archived) {
+      const saved = await client.agentExperience.updateMany({
+        where: { id, agentId, revision },
+        data: { archived, enabled: false, revision: { increment: 1 } },
+      });
+      if (saved.count === 1) return true;
+      if (await client.agentExperience.findFirst({ where: { id, agentId } }))
+        throw new ExperienceConflictError('经验已被修改，请刷新后重试');
+      return false;
+    },
+    async saveIndex(previous, state, vector) {
+      const saved = await client.agentExperience.updateMany({
+        where: {
+          id: previous.item.id,
+          version: previous.item.version,
+          ...(previous.state?.status === 'ready' && state.status === 'pending'
+            ? { enabled: false }
+            : {}),
+          indexState: { equals: previous.state === null ? Prisma.DbNull : json(previous.state) },
+        },
+        data: {
+          indexState: json(state),
+          ...(vector
+            ? { embedding: vector, embeddingKey: state.task!.key }
+            : state.status !== 'ready'
+              ? { embedding: [], embeddingKey: null }
+              : {}),
+        },
+      });
+      if (saved.count !== 1)
+        throw new ExperienceConflictError('经验版本或索引状态已变化，请刷新后重试');
+    },
+    async toggle(agentId, id, enabled, revision, key) {
+      const row = await client.agentExperience.findFirst({ where: { id, agentId } });
+      if (!row) return false;
+      checkExperienceRevision(experience(row), revision);
+      checkExperienceEnable(record(row), enabled, key);
+      const saved = await client.agentExperience.updateMany({
+        where: {
+          id,
+          agentId,
+          revision: row.revision,
+          indexState: { equals: row.indexState === null ? Prisma.DbNull : json(row.indexState) },
+        },
+        data: { enabled, revision: { increment: 1 } },
+      });
+      if (saved.count !== 1) throw new ExperienceConflictError('经验或索引已变化，请刷新后重试');
+      return true;
     },
     async findSource(gameId, playerId, reviewVersion) {
       const row = await client.experienceGeneration.findUnique({

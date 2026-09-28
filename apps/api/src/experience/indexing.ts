@@ -1,6 +1,6 @@
 import { embeddingRuntime, type EmbeddingRuntime } from '../llm/embedding';
 import type { GameStores } from '../store/stores';
-import type { ExperienceState } from '../store/experiences';
+import { experienceRows, type ExperienceState } from '../store/experiences';
 import { embedTask, newEmbeddingTask } from './embedding-task';
 
 export function indexCompleted(state: ExperienceState): boolean {
@@ -26,14 +26,12 @@ export async function indexExperience(
   try {
     const runtime = provided ?? embeddingRuntime();
     if (!row.state.indexing?.tasks.length) {
-      const items = (await stores.experiences.list(row.agentId)).filter(
-        (item) => item.generationId === id,
-      );
+      const items = experienceRows(row, row.state.result!);
       await save({
         completed: false,
         failure: null,
         tasks: items.map((item) => ({
-          ...newEmbeddingTask(`${item.title}\n适用条件：${item.conditions}\n${item.body}`, runtime),
+          ...newEmbeddingTask(experienceText(item), runtime),
           experienceId: item.id,
         })),
       });
@@ -69,4 +67,8 @@ export async function indexExperience(
     });
     throw error;
   }
+}
+
+export function experienceText(item: { title: string; conditions: string; body: string }) {
+  return `${item.title}\n适用条件：${item.conditions}\n${item.body}`;
 }

@@ -1,10 +1,11 @@
 import type { AgentExperience, AgentSummary } from '@werewolf/shared';
 import { useEffect, useState } from 'react';
-import { ExperienceCard } from './ExperienceCard';
-import { Badge } from './ui/badge';
+import { ExperienceMaintenanceCard } from './ExperienceMaintenanceCard';
+import { Checkbox } from './ui/checkbox';
+import { Field, FieldLabel } from './ui/field';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
-import { fetchExperiences, toggleExperience } from '@/lib/experience-api';
+import { fetchExperiences } from '@/lib/experience-api';
 import { errorMessage } from '@/lib/http';
 
 export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onClose: () => void }) {
@@ -12,6 +13,7 @@ export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onCl
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
+  const [showArchived, setShowArchived] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     void fetchExperiences(agent.id, controller.signal)
@@ -29,17 +31,20 @@ export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onCl
     // 手动刷新需要重新读取启停状态。
     // oxlint-disable-next-line react/exhaustive-effect-dependencies
   }, [agent.id, revision]);
-  const toggle = async (item: AgentExperience) => {
+  const change = async (work: () => Promise<{ experiences: AgentExperience[] }>) => {
     setBusy(true);
     try {
-      setItems((await toggleExperience(agent.id, item.id, !item.enabled)).experiences);
+      setItems((await work()).experiences);
       setError(null);
+      return true;
     } catch (failure) {
       setError(errorMessage(failure));
+      return false;
     } finally {
       setBusy(false);
     }
   };
+  const visible = items?.filter((item) => showArchived || !item.archived);
   return (
     <Dialog
       open
@@ -51,9 +56,17 @@ export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onCl
         <DialogHeader>
           <DialogTitle>{agent.name} · 个人历史经验</DialogTitle>
           <DialogDescription>
-            由已完成复盘及原始证据提炼，与人工人设、策略分开保存。启用后其他参赛者也可检索参考；启停影响后续尚未开始的行动，已保存的行动输入保持不变。
+            由已完成复盘及原始证据提炼，与人工人设、策略分开保存。启用后其他参赛者也可检索参考；编辑和归档只影响后续新行动，已保存的行动输入保持不变。停用仍可编辑；归档后隐藏并排除检索，恢复后保持停用。
           </DialogDescription>
         </DialogHeader>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="show-archived-experiences"
+            checked={showArchived}
+            onCheckedChange={setShowArchived}
+          />
+          <FieldLabel htmlFor="show-archived-experiences">显示已归档经验</FieldLabel>
+        </Field>
         {error ? (
           <p role="alert" className="text-destructive">
             {error}
@@ -63,18 +76,19 @@ export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onCl
           <p>正在读取经验…</p>
         ) : items.length === 0 ? (
           <p className="text-muted-foreground">还没有个人经验。可从已完成的玩家复盘手动生成。</p>
-        ) : (
-          items.map((item) => (
-            <ExperienceCard key={item.id} experience={item}>
-              <Badge variant={item.enabled ? 'secondary' : 'outline'}>
-                {item.enabled ? '已启用' : '已停用'}
-              </Badge>
-              <Badge variant="outline">{item.indexed ? '可向量检索' : '待建立向量索引'}</Badge>
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void toggle(item)}>
-                {item.enabled ? '停用经验' : '重新启用'}
-              </Button>
-            </ExperienceCard>
+        ) : visible?.length ? (
+          visible.map((item) => (
+            <ExperienceMaintenanceCard
+              key={`${item.id}/${item.version}`}
+              item={item}
+              busy={busy}
+              change={change}
+            />
           ))
+        ) : (
+          <p className="text-muted-foreground">
+            当前没有未归档经验，可勾选「显示已归档经验」查看。
+          </p>
         )}
         <Button variant="outline" disabled={busy} onClick={() => setRevision((value) => value + 1)}>
           刷新经验
