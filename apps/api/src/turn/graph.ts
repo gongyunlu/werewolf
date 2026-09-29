@@ -8,7 +8,7 @@ import {
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 import { randomUUID } from 'node:crypto';
-import type { ActionStep } from '@werewolf/shared';
+import { ACTION_TYPES, type ActionStep } from '@werewolf/shared';
 import { z } from 'zod';
 import type { ModelAccess, ModelPort, ModelTool, StreamDelta } from '../llm/model-port';
 import { InvalidOutputError, ModelCallError } from '../llm/model-port';
@@ -777,6 +777,9 @@ export async function runActionGraph(
   request: ActionRequest,
   options: ActionGraphOptions = {},
 ): Promise<TurnOutcome> {
+  if (request.actionType === ACTION_TYPES.DAY_END_JUDGMENT) {
+    runtime = { ...runtime, preview: undefined };
+  }
   const { saver, resume } = options;
   const graph = actionGraphOf(saver);
   const config = {

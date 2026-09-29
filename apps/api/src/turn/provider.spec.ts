@@ -1,4 +1,4 @@
-import { ACTION_TYPES, ROLES, type PreviewChunk } from '@werewolf/shared';
+import { ACTION_TYPES, DEATH_CAUSES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import type { Ballot } from '../core/vote';
 import { actionKey, phaseInstanceId } from '../core/identity';
 import { patchPlayer, type GameState } from '../core/state';
@@ -99,6 +99,39 @@ function packState() {
 }
 
 describe('模型行动提供者', () => {
+  it('遗言进入公开台账和日终判断，死者仍只看到自己的信息', async () => {
+    const state = patchPlayer(
+      { ...sixPlayerState(), phaseInstanceId: phaseInstanceId(3, 'deathSkills') },
+      'p4',
+      { isAlive: false, deathDay: 1, deathCause: DEATH_CAUSES.WITCH_POISON, checkedIds: ['p1'] },
+    );
+    const words = '我查验过1号是狼人，请大家重新判断。';
+    const { actions, stores, model } = await withActions(state, [
+      ...quality(words),
+      ...Array.from({ length: 5 }, () =>
+        JSON.stringify({ assessment: '考虑4号的遗言。', changes: '' }),
+      ),
+    ]);
+    await actions.speak('last_words', 'p4', ['p4']);
+    expect(model.calls[0].prompt).toContain('你验过 1 号，是狼人');
+    expect(model.calls[0].prompt).not.toContain('中毒');
+    expect(model.calls[0].prompt).not.toContain('witch_poison');
+    expect(await stores.events.list('g1')).toEqual([
+      expect.objectContaining({
+        text: `4 号遗言：${words}`,
+        kind: 'public_speech',
+        audience: state.players.map((player) => player.id),
+      }),
+    ]);
+    const end = { ...state, phaseInstanceId: phaseInstanceId(4, 'dayEnd') };
+    await actions.recordStage({ state: end, phaseInstanceId: end.phaseInstanceId, input: {} });
+    await actions.judgeDayEnd();
+    for (const call of model.calls.slice(2)) {
+      expect(call.prompt).toContain(`4 号遗言：${words}`);
+      expect(call.prompt).not.toContain('你验过 1 号');
+    }
+  });
+
   describe('两态类', () => {
     it('上警问的是做不做，答案是布尔', async () => {
       const { model, actions } = await withActions(sixPlayerState(), ['true']);

@@ -39,7 +39,7 @@ export interface DayResult {
  * 常规白天：警徽处理 → 自爆窗口 → 发言 → 投票 → 平票 PK → 放逐。
  *
  * 死讯公布和出局技能的结算不在这里：它们每走一步都可能分出胜负，得让外层在中间停下来判。
- * 放逐触发的技能同理，放逐执行完就交回外层。遗言还没有。
+ * 放逐触发的技能与遗言同理，放逐执行完就交回外层。
  */
 export async function runDay(input: DayInput): Promise<DayResult> {
   const { actions, minute, observe, onBallot, onFlow } = input;

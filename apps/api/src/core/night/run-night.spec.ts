@@ -21,6 +21,46 @@ function noLottery(): never {
 }
 
 describe('走完一夜', () => {
+  it.each(['中刀', '中毒'])('预言家当夜%s仍能完成查验', async (cause) => {
+    const check = jest.fn(async () => 'p1');
+    const result = await runNight({
+      state: board(),
+      random: noLottery,
+      actions: stubActions({
+        wolfProposal: async () => (cause === '中刀' ? 'p4' : 'p5'),
+        guardProtect: async () => null,
+        witchDecision: async () =>
+          cause === '中毒' ? { kind: 'poison', targetId: 'p4' } : { kind: 'none' },
+        seerCheck: check,
+      }),
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(result.check).toEqual({ targetId: 'p1', result: SEER_CHECK_RESULTS.WEREWOLF });
+    expect(result.deaths).toContainEqual({
+      playerId: 'p4',
+      cause: cause === '中刀' ? DEATH_CAUSES.NIGHT_KILL : DEATH_CAUSES.WITCH_POISON,
+    });
+  });
+  it.each(['p5', 'p6'])('同夜中刀和中毒都不影响查验目标 %s', async (targetId) => {
+    const check = jest.fn(async (_id: string, candidates: readonly string[]) => {
+      expect(candidates).toEqual(expect.arrayContaining(['p5', 'p6']));
+      return targetId;
+    });
+    const result = await runNight({
+      state: board(),
+      random: noLottery,
+      actions: stubActions({
+        wolfProposal: async () => 'p5',
+        guardProtect: async () => null,
+        witchDecision: async () => ({ kind: 'poison', targetId: 'p6' }),
+        seerCheck: check,
+      }),
+    });
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(result.check).toEqual({ targetId, result: SEER_CHECK_RESULTS.GOOD });
+    expect(result.deaths.map((death) => death.playerId).toSorted()).toEqual(['p5', 'p6']);
+    expect(playerOf(result.state, 'p4').checkedIds).toContain(targetId);
+  });
   it('先睁眼再行动，结果只给对应角色，闭眼播报不透露角色是否存活', async () => {
     const events: FlowEvent[] = [];
     const actions = stubActions({

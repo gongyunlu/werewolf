@@ -42,7 +42,7 @@ function boundaryRun(state: GameState, actions: ActionProvider, input: unknown =
 }
 
 describe('日终结算边界', () => {
-  it('放逐技能连锁与警徽全部处理后才整理，下一夜尚未开始', async () => {
+  it('放逐技能连锁、警徽和遗言全部处理后才整理，下一夜尚未开始', async () => {
     let state = stateAt('exileSkills');
     state = patchPlayer({ ...state, sheriffId: 'p1' }, 'p1', {
       isAlive: false,
@@ -65,11 +65,18 @@ describe('日终结算边界', () => {
           order.push('警徽');
           return { kind: 'transfer', toId: 'p5' };
         },
+        speak: async (round, id, speakers) => {
+          expect(round).toBe('last_words');
+          expect(id).toBe('p1');
+          expect(speakers).toEqual(['p1']);
+          order.push('遗言');
+          return '我的遗言。';
+        },
       }),
       { deaths: [{ playerId: 'p1', cause: DEATH_CAUSES.EXECUTION }] },
     );
     await expect(runGame(config)).rejects.toThrow('到下一夜为止');
-    expect(order).toEqual(['狼王', '猎人', '警徽']);
+    expect(order).toEqual(['狼王', '猎人', '警徽', '遗言']);
     expect(judgments).toHaveLength(1);
     expect(judgments[0].day).toBe(1);
     expect(judgments[0].sheriffId).toBe('p5');

@@ -4,14 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { CreateGameDialog } from '@/components/CreateGameDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { fetchBoards, fetchGames, runGame } from '@/lib/api-client';
 import { errorMessage, isCanceled } from '@/lib/http';
 import { factionName, statusName } from '@/lib/labels';
@@ -94,12 +87,12 @@ export function GamesPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
-      <div className="flex items-end justify-between gap-4">
+      <div className="flex items-center justify-between gap-4 px-4">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">对局列表</h1>
           <p className="text-sm text-muted-foreground">观看正在进行的对局，回看已经结束的比赛。</p>
         </div>
-        <Button disabled={boards.length === 0} onClick={() => setOpening(true)}>
+        <Button className="w-20" disabled={boards.length === 0} onClick={() => setOpening(true)}>
           开一局
         </Button>
       </div>
@@ -118,15 +111,15 @@ export function GamesPage() {
               className="gap-3 sm:grid sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
             >
               <CardHeader>
-                <CardTitle className="font-mono text-sm">{game.gameId}</CardTitle>
-                <CardDescription>{boardName(game.boardId)}</CardDescription>
-                <CardAction>
+                <div className="flex flex-wrap items-center gap-2">
+                  <CardTitle className="font-mono text-sm break-all">{game.gameId}</CardTitle>
                   <Badge
                     variant={game.status === GAME_STATUSES.FAILED ? 'destructive' : 'secondary'}
                   >
                     {statusName(game.status)}
                   </Badge>
-                </CardAction>
+                </div>
+                <CardDescription>{boardName(game.boardId)}</CardDescription>
               </CardHeader>
 
               <CardContent className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground sm:col-start-1 sm:row-start-2">
@@ -137,12 +130,12 @@ export function GamesPage() {
                 </span>
               </CardContent>
 
-              <CardContent className="flex justify-end gap-2 sm:col-start-2 sm:row-span-2 sm:row-start-1">
+              <CardContent className="flex items-center justify-end gap-2 sm:col-start-2 sm:row-span-2 sm:row-start-1">
                 {/* 没分出胜负的才谈得上接着跑：分完了那局后端也不收 */}
                 {game.status === GAME_STATUSES.FAILED ? (
                   <Button
-                    variant="ghost"
-                    size="sm"
+                    className="w-20"
+                    variant="outline"
                     disabled={resuming === game.gameId}
                     onClick={() => void resume(game.gameId)}
                   >
@@ -150,7 +143,7 @@ export function GamesPage() {
                   </Button>
                 ) : null}
                 <Link
-                  className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                  className={buttonVariants({ variant: 'outline', className: 'w-20' })}
                   to={`/games/${game.gameId}`}
                 >
                   观战

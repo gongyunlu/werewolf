@@ -19,7 +19,7 @@ export function SceneRow({
 }) {
   // 台账正文用于模型上下文，观战把系统添加的说话人前缀移到气泡标题。
   const speech = ['public_speech', 'wolf_speech'].includes(event.kind)
-    ? /^(\d+) 号(?:商议)?发言：([\s\S]*)$/.exec(event.text)
+    ? /^(\d+) 号((?:商议)?发言|遗言)：([\s\S]*)$/.exec(event.text)
     : null;
   if (event.kind === 'system')
     return (
@@ -44,7 +44,7 @@ export function SceneRow({
             <SpeakerLabel
               seatNo={Number(speech[1])}
               name={speakerName}
-              action={eventKindName(event.kind)}
+              action={speech[2] === '遗言' ? '遗言' : eventKindName(event.kind)}
             />
           ) : (
             eventKindName(event.kind)
@@ -53,7 +53,7 @@ export function SceneRow({
         {children}
         <Bubble variant="secondary" className="max-w-full">
           <BubbleContent className="whitespace-pre-wrap wrap-anywhere">
-            {speech ? speech[2] : event.text}
+            {speech ? speech[3] : event.text}
           </BubbleContent>
         </Bubble>
       </MessageContent>

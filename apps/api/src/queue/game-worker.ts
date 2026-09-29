@@ -44,7 +44,6 @@ export class GameWorker extends WorkerHost implements OnModuleDestroy {
       events: {
         ...stores.events,
         append: async (gameId, event) => {
-          this.logger.log(`${gameId}｜${event.day} 天｜${event.text}`);
           await append(gameId, event);
           // 推不出去不算这一局出错：台账是事实的那一份，看的人重连时从台账补齐。
           // 撂在这儿只会把一局跑了半天的对局带走。

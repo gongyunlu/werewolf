@@ -4,6 +4,23 @@ import { ActionRow } from './ActionRow';
 import { SceneRow } from './SceneRow';
 
 describe('行动正文与过程', () => {
+  it('遗言使用玩家标题并只显示一次正文', () => {
+    render(
+      <SceneRow
+        event={{
+          seq: 2,
+          day: 1,
+          kind: 'public_speech',
+          text: '2 号遗言：请重新核对票型。',
+          audience: ['p1', 'p2'],
+        }}
+        speakerName="二号玩家"
+      />,
+    );
+    expect(screen.getByText('二号玩家 · 2 号 · 遗言')).toBeInTheDocument();
+    expect(screen.getAllByText('请重新核对票型。')).toHaveLength(1);
+    expect(screen.queryByText(/2 号遗言：/)).toBeNull();
+  });
   it('先显示身份和计时展开栏，再显示唯一的正式正文', () => {
     render(
       <SceneRow

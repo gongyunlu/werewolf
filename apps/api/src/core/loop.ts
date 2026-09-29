@@ -6,6 +6,7 @@ import { runDawn } from './day/dawn';
 import { settleBadgeAfterDeaths } from './day/badge';
 import type { BallotObserver } from './vote';
 import { runDay } from './day/run-day';
+import { speakInOrder } from './day/speech';
 import { triggerDeathSkills } from './deaths';
 import { nextPhaseInstanceId, nodeNameOf, type PhaseInstanceId } from './identity';
 import { runNight } from './night/run-night';
@@ -175,6 +176,9 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
       state = await settleBadgeAfterDeaths(woken, actions);
       observe?.(state);
       aborted = skillInput.aborted === true;
+      if (state.day === 1 && !aborted) {
+        await lastWords(state, skillInput.deaths, actions, onFlow);
+      }
     }
 
     if (from <= 3 && !aborted) {
@@ -219,6 +223,8 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
       state = await settleBadgeAfterDeaths(woken, actions);
       const badgeWinner = checkWin(state);
       if (badgeWinner !== null) return { state, winner: badgeWinner };
+      observe?.(state);
+      await lastWords(state, exileDeaths, actions, onFlow);
     }
 
     const nextDay = state.day + 1;
@@ -233,6 +239,26 @@ export async function runGame(input: GameLoopInput): Promise<GameLoopResult> {
     resuming = false;
     state = { ...state, day: nextDay };
   }
+}
+
+/** 仅由首夜死讯和投票放逐入口调用，技能连锁带走的人没有遗言。 */
+async function lastWords(
+  state: GameState,
+  deaths: readonly NightDeath[],
+  actions: ActionProvider,
+  onFlow?: FlowObserver,
+): Promise<void> {
+  const ids = new Set(deaths.map((death) => death.playerId));
+  const seats = state.players
+    .filter((player) => ids.has(player.id))
+    .map((player) => player.seatNo)
+    .toSorted((a, b) => a - b);
+  if (seats.length === 0) return;
+  await onFlow?.(state, {
+    key: 'last-words',
+    text: `请 ${seats.map((seat) => `${seat} 号`).join('、')} 依次发表遗言。`,
+  });
+  await speakInOrder('last_words', seats, state.players, actions);
 }
 
 /** 按节点取回锚点输入，不能拿别的阶段的数据恢复。 */

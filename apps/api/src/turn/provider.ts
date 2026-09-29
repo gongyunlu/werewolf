@@ -86,6 +86,8 @@ const SPEECH_TASKS: Readonly<Record<SpeechTurn, string>> = {
   campaign_pk: '警上平票，轮到你做一轮 PK 发言。',
   day: '轮到你发言。',
   exile_pk: '放逐平票，轮到你做一轮 PK 发言。',
+  last_words:
+    '你已出局，轮到你发表遗言。这是最后一次公开发言，可以说明判断和建议；不能再投票、执行夜间行动或要求其他玩家立即回应。',
 };
 
 /** 各轮投票要选什么。 */
@@ -573,7 +575,7 @@ export function modelActions(
         fact: (content) =>
           publicFact(
             EVENT_KINDS.PUBLIC_SPEECH,
-            `${seatNoOf(playerId)} 号发言：${oneLine(content)}`,
+            `${seatNoOf(playerId)} 号${round === 'last_words' ? '遗言' : '发言'}：${oneLine(content)}`,
           ),
       });
     },

@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, NotFoundException, Param, Query } from '@nestjs/common';
 import {
+  ACTION_TYPES,
   ActionLogResponseSchema,
   ActionSummaryResponseSchema,
   ActionDetailResponseSchema,
@@ -46,9 +47,10 @@ export class ActionsController {
       this.stores.actions.summaries(gameId),
       this.stores.events.positions(gameId),
     ]);
+    const visible = rows.filter((row) => row.actionType !== ACTION_TYPES.DAY_END_JUDGMENT);
     const eventSeqs = new Map(events.map((event) => [event.eventKey, event.seq]));
     return ActionSummaryResponseSchema.parse({
-      actions: rows
+      actions: visible
         .filter((row) => row.status === 'done')
         .map((row) => {
           const { reasoning: _reasoning, ...entry } = logEntry(row);
@@ -60,7 +62,7 @@ export class ActionsController {
             eventSeq: eventSeqs.get(row.actionKey) ?? null,
           };
         }),
-      pending: rows
+      pending: visible
         .filter((row) => row.status === 'running')
         .map((row) => ({
           actionKey: row.actionKey,
@@ -75,7 +77,8 @@ export class ActionsController {
   @Get(':gameId/actions/detail')
   async detail(@Param('gameId') gameId: string, @Query('actionKey') key: string) {
     const row = await this.stores.actions.find(key);
-    if (!row || row.gameId !== gameId) throw new NotFoundException('没有这条行动记录');
+    if (!row || row.gameId !== gameId || row.actionType === ACTION_TYPES.DAY_END_JUDGMENT)
+      throw new NotFoundException('没有这条行动记录');
     const [steps, experienceInputs, knowledgeInputs] = await Promise.all([
       actionSteps(this.stores.checkpoints, key),
       this.stores.asked.experienceInputs(gameId, key),
@@ -101,7 +104,9 @@ export class ActionsController {
 
     // 走一遍共享契约，别让实现悄悄偏离约定
     return ActionLogResponseSchema.parse({
-      actions: rows.filter((row) => row.status === 'done').map(logEntry),
+      actions: rows
+        .filter((row) => row.status === 'done' && row.actionType !== ACTION_TYPES.DAY_END_JUDGMENT)
+        .map(logEntry),
     });
   }
 }

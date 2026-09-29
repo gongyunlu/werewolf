@@ -1,8 +1,8 @@
 import type { SpeechSide } from './speech-order';
 import type { BlastWindow } from './day/self-destruct';
 
-/** 发言轮次：campaign 警上，campaign_pk 警上平票 PK，day 白天常规，exile_pk 放逐平票 PK。 */
-export type SpeechTurn = 'campaign' | 'campaign_pk' | 'day' | 'exile_pk';
+/** 发言轮次：警上、警上 PK、白天常规、放逐 PK、遗言。 */
+export type SpeechTurn = 'campaign' | 'campaign_pk' | 'day' | 'exile_pk' | 'last_words';
 
 /** 狼队最多商议两轮；第一轮明确刀口与必要分工后可以结束。 */
 export const WOLF_DISCUSSION_ROUNDS = [1, 2] as const;

@@ -1,4 +1,4 @@
-import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
+import { ACTION_TYPES, DEATH_CAUSES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import { ActionsController } from '../actions/actions.controller';
 import { phaseInstanceId } from '../core/identity';
 import type { StageAnchor } from '../core/loop';
@@ -14,10 +14,11 @@ import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 import type { TurnOutcome } from './graph';
 
-function actionsFor(stores: GameStores, port: ModelPort) {
+function actionsFor(stores: GameStores, port: ModelPort, preview?: (chunk: PreviewChunk) => void) {
   return modelActions(
     {
       port,
+      preview,
       accessFor: (seatNo) => ({
         baseUrl: 'https://model.example.test/v1',
         model: `玩家${seatNo}`,
@@ -82,10 +83,27 @@ function judgingModel(prefix = '旧判断', changes = '') {
 }
 
 describe('日终个人判断链路', () => {
+  it('进行中的日终判断也不返回前端', async () => {
+    const stores = memoryStores();
+    await stores.actions.begin({
+      actionKey: '进行中的判断',
+      gameId: 'g1',
+      phaseInstanceId: phaseInstanceId(5, 'dayEnd'),
+      actionType: ACTION_TYPES.DAY_END_JUDGMENT,
+      actorId: 'p1',
+      actionOrdinal: 0,
+      ledgerSeq: 0,
+    });
+    const api = new ActionsController(stores);
+    expect(await api.summaries('g1')).toEqual({ actions: [], pending: [] });
+    expect(await api.list('g1')).toEqual({ actions: [] });
+    await expect(api.detail('g1', '进行中的判断')).rejects.toThrow('没有这条行动记录');
+  });
   it('只整理存活玩家的可见材料，私有结果不写入任何发言频道，并保留调用来源', async () => {
     const { stores, anchor } = await fixture();
     const model = judgingModel();
-    const actions = actionsFor(stores, model);
+    const preview = jest.fn();
+    const actions = actionsFor(stores, model, preview);
     await actions.recordStage(anchor);
     await actions.judgeDayEnd();
     expect(model.calls).toHaveLength(5);
@@ -123,16 +141,10 @@ describe('日终个人判断链路', () => {
     }
     const api = new ActionsController(stores);
     const history = await api.summaries('g1');
-    expect(history.actions).toHaveLength(5);
-    expect(history.actions[0]).toMatchObject({
-      phase: 'dayEnd',
-      day: 1,
-      ledgerSeq: 3,
-      eventSeq: null,
-    });
-    expect(
-      (await api.detail('g1', rows[0].actionKey)).steps.some((step) => step.name === 'generate'),
-    ).toBe(true);
+    expect(history).toEqual({ actions: [], pending: [] });
+    expect(await api.list('g1')).toEqual({ actions: [] });
+    expect(preview).not.toHaveBeenCalled();
+    await expect(api.detail('g1', rows[0].actionKey)).rejects.toThrow('没有这条行动记录');
     await expect(api.detail('另一局', rows[0].actionKey)).rejects.toThrow('没有这条行动记录');
   });
 

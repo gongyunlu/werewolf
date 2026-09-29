@@ -73,6 +73,48 @@ function countingStatuses(stores: GameStores): string[] {
 }
 
 describe('留得住的对局', () => {
+  it.each(['deathSkills', 'exileSkills'])(
+    '%s 遗言保存后中断，恢复复用结果且只记一条公开遗言',
+    async (stage) => {
+      const stores = memoryStores();
+      const finish = stores.actions.finish.bind(stores.actions);
+      let savedKey: string | undefined;
+      stores.actions.finish = async (key, outcome) => {
+        await finish(key, outcome);
+        const snapshot = (outcome as { snapshot: { context: { task: string } } }).snapshot;
+        if (!savedKey && key.includes(`/${stage}`) && snapshot.context.task.includes('发表遗言')) {
+          savedKey = key;
+          throw new Error('遗言保存后中断');
+        }
+      };
+      const model = answeringModel((request) =>
+        request.prompt.includes('这次要你做的事：决定今晚守护谁。')
+          ? 'null'
+          : playerAnswer(request),
+      );
+      await expect(play(stores, { model })).rejects.toThrow('遗言保存后中断');
+      expect(savedKey).toBeDefined();
+      const saved = await stores.actions.find(savedKey!);
+      const calls = (await stores.observations.read('g1'))!.calls.filter(
+        (call) => call.actionKey === savedKey,
+      );
+      stores.actions.finish = finish;
+      await play(stores);
+      expect(await stores.actions.find(savedKey!)).toEqual(saved);
+      expect(
+        (await stores.observations.read('g1'))!.calls.filter((call) => call.actionKey === savedKey),
+      ).toEqual(calls);
+      expect(
+        (await stores.events.list('g1')).filter((event) => event.eventKey === savedKey),
+      ).toEqual([
+        expect.objectContaining({
+          kind: 'public_speech',
+          text: expect.stringContaining('号遗言：'),
+        }),
+      ]);
+    },
+  );
+
   it('日终中断标记失败，恢复只补该日缺失玩家并继续完成正常对局', async () => {
     const stores = memoryStores();
     let failedSeat: string | undefined;
