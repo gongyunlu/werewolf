@@ -167,8 +167,41 @@ export const GameDetailSchema = GameSummarySchema.extend({
 
 export type GameDetail = z.infer<typeof GameDetailSchema>;
 
+/** 只展示执行元数据，私有判断和模型输入输出不随轮询返回。 */
+export const GameExecutionSchema = z.object({
+  checkedAt: z.iso.datetime(),
+  workerActive: z.boolean(),
+  phase: z.string(),
+  completed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  requestTimeoutMs: z.number().positive(),
+  maxAttempts: z.number().int().positive(),
+  pending: z.array(
+    z.object({
+      actionKey: z.string(),
+      actorId: z.string(),
+      actionType: z.string(),
+      step: z.string().nullable(),
+      callStatus: z.string().nullable(),
+      failureCode: z.string().nullable(),
+      attempt: z
+        .object({
+          number: z.number().int().positive(),
+          status: z.string(),
+          startedAt: z.iso.datetime(),
+          finishedAt: z.iso.datetime().nullable(),
+          failureCode: z.string().nullable(),
+        })
+        .nullable(),
+    }),
+  ),
+});
+
+export type GameExecution = z.infer<typeof GameExecutionSchema>;
+
 export const GameDetailResponseSchema = z.object({
   game: GameDetailSchema,
+  execution: GameExecutionSchema.nullable().optional(),
 });
 
 export type GameDetailResponse = z.infer<typeof GameDetailResponseSchema>;

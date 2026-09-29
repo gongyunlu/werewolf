@@ -23,6 +23,7 @@ import {
   type CreateGameResponse,
   type GameDetailResponse,
   type GameListResponse,
+  type GameExecution,
   type GameRosterSeat,
   type GameSummary,
 } from '@werewolf/shared';
@@ -33,6 +34,8 @@ import { ALL_BOARDS, BOARD_IDS, handOf, type BoardId } from '../boards/boards';
 import { shuffled } from '../boards/deal';
 import { AdminTokenGuard } from '../common/guards/admin-token.guard';
 import { parseBody } from '../common/parse-body';
+import { loadEnv } from '../config/env';
+import { nodeNameOf } from '../core/identity';
 import type { GameState, PlayerState } from '../core/state';
 import { GameEventHub } from '../queue/game-event-hub';
 import { GAME_QUEUE, type GameJob } from '../queue/game-queue';
@@ -120,12 +123,67 @@ export class GamesController {
     const state = row.finalState ?? (await this.stores.steps.last(gameId))?.state ?? null;
 
     return GameDetailResponseSchema.parse({
+      execution: await this.executionOf(row, state),
       game: {
         ...summaryOf(row, state),
         players: state?.players.map((p) => playerOf(p, state.sheriffId)) ?? [],
         roster: row.roster.map(seatOf),
       },
     });
+  }
+
+  private async executionOf(
+    row: StoredGame,
+    state: GameState | null,
+  ): Promise<GameExecution | null> {
+    if (!state || (row.status !== GAME_STATUSES.RUNNING && row.status !== GAME_STATUSES.FAILED))
+      return null;
+
+    const [rows, workerActive] = await Promise.all([
+      this.stores.observations.progress(row.gameId, state.phaseInstanceId),
+      this.workerActive(row.gameId, row.status),
+    ]);
+    const env = loadEnv();
+    const phase = nodeNameOf(state.phaseInstanceId);
+    return {
+      checkedAt: new Date().toISOString(),
+      workerActive,
+      phase,
+      completed: rows.filter((action) => action.status === 'done').length,
+      total:
+        phase === 'dayEnd' ? state.players.filter((player) => player.isAlive).length : rows.length,
+      requestTimeoutMs: env.MODEL_REQUEST_TIMEOUT_MS,
+      maxAttempts: env.MODEL_MAX_ATTEMPTS,
+      pending: rows
+        .filter((action) => action.status === 'running')
+        .map((action) => ({
+          actionKey: action.actionKey,
+          actorId: action.actorId,
+          actionType: action.actionType,
+          step: action.step,
+          callStatus: action.callStatus,
+          failureCode: action.failureCode,
+          attempt:
+            action.attemptNo === null
+              ? null
+              : {
+                  number: action.attemptNo,
+                  status: action.attemptStatus!,
+                  startedAt: action.startedAt!.toISOString(),
+                  finishedAt: action.finishedAt?.toISOString() ?? null,
+                  failureCode: action.attemptFailureCode,
+                },
+        })),
+    };
+  }
+
+  private async workerActive(gameId: string, status: StoredGame['status']): Promise<boolean> {
+    if (status !== GAME_STATUSES.RUNNING) return false;
+    const job = await this.queue.getJob(gameId);
+    if (!job || !(await job.isActive())) return false;
+    // running 存档可能来自已退出的进程；锁仍有效才说明执行端最近还在续约。
+    const redis = await this.queue.getBackend().client;
+    return (await redis.get(this.queue.toKey(`${gameId}:lock`))) !== null;
   }
 
   /**

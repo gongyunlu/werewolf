@@ -44,6 +44,32 @@ export function memoryStores(): GameStores {
     steps: memorySteps(),
     asked: memoryAsked(calls),
     observations: {
+      async progress(gameId, phaseInstanceId) {
+        const rows = (await actions.list(gameId)).filter(
+          (row) => row.phaseInstanceId === phaseInstanceId,
+        );
+        return rows.map((row) => {
+          const call =
+            row.status === 'running'
+              ? calls.findLast((item) => item.gameId === gameId && item.actionKey === row.actionKey)
+              : undefined;
+          const attempt = call?.attempts.at(-1);
+          return {
+            actionKey: row.actionKey,
+            actorId: row.actorId,
+            actionType: row.actionType,
+            status: row.status,
+            step: call?.step ?? null,
+            callStatus: call?.status ?? null,
+            failureCode: call?.failureCode ?? null,
+            attemptNo: attempt?.attemptNo ?? null,
+            attemptStatus: attempt?.status ?? null,
+            startedAt: attempt?.startedAt ?? null,
+            finishedAt: attempt?.finishedAt ?? null,
+            attemptFailureCode: attempt?.failureCode ?? null,
+          };
+        });
+      },
       async read(gameId) {
         const game = await games.find(gameId);
         if (!game) return null;

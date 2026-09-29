@@ -1,9 +1,29 @@
 import { Prisma, type PrismaClient } from '../generated/prisma/client';
 import { usageObject } from '../llm/observation';
-import type { ObservationData, ObservationStore } from './observations';
+import type { ExecutionRow, ObservationData, ObservationStore } from './observations';
 
 export function prismaObservations(client: PrismaClient): ObservationStore {
   return {
+    progress(gameId, phaseInstanceId) {
+      return client.$queryRaw<ExecutionRow[]>(Prisma.sql`
+        SELECT a.action_key AS "actionKey", a.actor_id AS "actorId", a.action_type AS "actionType", a.status,
+          c.step, c.status AS "callStatus", c.failure_code AS "failureCode",
+          m.attempt_no AS "attemptNo", m.status AS "attemptStatus", m.started_at AS "startedAt",
+          m.finished_at AS "finishedAt", m.failure_code AS "attemptFailureCode"
+        FROM action_records a
+        LEFT JOIN LATERAL (
+          SELECT id, step, status, failure_code FROM asked_prompts
+          WHERE game_id = a.game_id AND action_key = a.action_key AND a.status = 'running'
+          ORDER BY id DESC LIMIT 1
+        ) c ON true
+        LEFT JOIN LATERAL (
+          SELECT attempt_no, status, started_at, finished_at, failure_code FROM model_attempts
+          WHERE asked_prompt_id = c.id ORDER BY attempt_no DESC LIMIT 1
+        ) m ON true
+        WHERE a.game_id = ${gameId} AND a.phase_instance_id = ${phaseInstanceId}
+        ORDER BY a.created_at, a.action_key
+      `);
+    },
     read(gameId) {
       return client.$transaction(
         async (tx) => {

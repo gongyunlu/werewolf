@@ -5,6 +5,7 @@ import {
   type ActionSummary,
   type BoardSummary,
   type GameDetail,
+  type GameExecution,
   type GameEvent,
   type PendingAction,
 } from '@werewolf/shared';
@@ -15,6 +16,7 @@ import { GameReview } from '@/components/game-review/GameReview';
 import { ActionRow, LiveActionRow } from '@/components/game-watch/ActionRow';
 import { PlayerCard } from '@/components/game-watch/PlayerCard';
 import { SceneRow } from '@/components/game-watch/SceneRow';
+import { ExecutionStatus } from '@/components/game-watch/ExecutionStatus';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Marker, MarkerContent } from '@/components/ui/marker';
@@ -133,6 +135,8 @@ export function GamePage() {
 function GameWatch({ gameId }: { gameId: string }) {
   const [searchParams] = useSearchParams();
   const [game, setGame] = useState<GameDetail | null>(null);
+  const [execution, setExecution] = useState<GameExecution | null>(null);
+  const [receivedAt, setReceivedAt] = useState<number | null>(null);
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [events, setEvents] = useState<GameEvent[]>([]);
   const [actions, setActions] = useState<ActionSummary[]>([]);
@@ -172,7 +176,11 @@ function GameWatch({ gameId }: { gameId: string }) {
     const load = async () => {
       const [detail, initialHistory] = await Promise.allSettled([
         fetchGameDetail(gameId, controller.signal).then((loaded) => {
-          if (alive) setGame(loaded.game);
+          if (alive) {
+            setGame(loaded.game);
+            setExecution(loaded.execution ?? null);
+            setReceivedAt(Date.now());
+          }
           return loaded;
         }),
         fetchActionSummaries(gameId, controller.signal),
@@ -426,6 +434,18 @@ function GameWatch({ gameId }: { gameId: string }) {
                       : '连接中'}
               </span>
             </div>
+            {game ? (
+              <ExecutionStatus
+                execution={execution}
+                status={game.status}
+                day={game.day}
+                receivedAt={receivedAt}
+                unavailable={requestsStopped || error !== null || !stream.connected}
+                showPlayers={perspective === PERSPECTIVES.GOD}
+                players={players}
+                roster={game.roster}
+              />
+            ) : null}
             <MessageScrollerProvider autoScroll defaultScrollPosition="end">
               <MessageScroller>
                 <MessageScrollerViewport aria-label="对局消息滚动区域">

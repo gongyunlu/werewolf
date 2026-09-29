@@ -1,12 +1,12 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { INestApplication } from '@nestjs/common';
-import { DEATH_CAUSES, GAME_STATUSES, type PreviewChunk } from '@werewolf/shared';
+import { ACTION_TYPES, DEATH_CAUSES, GAME_STATUSES, type PreviewChunk } from '@werewolf/shared';
 import request from 'supertest';
 import { testAppModule } from '../testing/app';
 import { createGameSetup } from '../boards/setup';
 import type { BoardId } from '../boards/boards';
 import { ADMIN_TOKEN_HEADER } from '../common/guards/admin-token.guard';
-import { nextPhaseInstanceId } from '../core/identity';
+import { nextPhaseInstanceId, phaseInstanceId } from '../core/identity';
 import { createGameState, patchPlayer, type GameState } from '../core/state';
 import { PREVIEW_CHANNEL, REDIS_SUB } from '../queue/game-event-hub';
 import { GAME_QUEUE, type GameJob } from '../queue/game-queue';
@@ -39,6 +39,7 @@ let sub: FakeRedis;
 let app: INestApplication;
 /** 队列里挂着的那一份，续跑那一头要看它一眼。用例按需要摆一个上去。 */
 let hanging: { active: boolean; removed: boolean } | undefined;
+let lockPresent = false;
 
 /** 立一局档，顺带落一份锚点：详情里那张牌桌是从锚点读的。 */
 async function open(gameId: string, boardId: BoardId = '6p_white_wolf') {
@@ -110,6 +111,10 @@ describe('对局接口', () => {
     const moduleRef = await testAppModule(stores)
       .overrideProvider(getQueueToken(GAME_QUEUE))
       .useValue({
+        getBackend: () => ({
+          client: Promise.resolve({ get: async () => (lockPresent ? 'lock' : null) }),
+        }),
+        toKey: (key: string) => `bull:games:${key}`,
         add: async (name: string, data: GameJob, opts: Enqueued['opts']) => {
           added.push({ name, data, opts });
         },
@@ -137,6 +142,82 @@ describe('对局接口', () => {
 
   afterAll(async () => {
     await app.close();
+  });
+
+  it('日终执行摘要包含完成数和重试时间，不包含私有判断正文', async () => {
+    const gameId = 'g-execution';
+    await open(gameId);
+    await stores.games.setStatus(gameId, GAME_STATUSES.RUNNING);
+    const state = {
+      ...makeState(5),
+      gameId,
+      phaseInstanceId: phaseInstanceId(17, 'dayEnd'),
+      day: 3,
+    };
+    await stores.steps.append(gameId, { phaseInstanceId: state.phaseInstanceId, state, input: {} });
+    for (let seat = 1; seat <= 5; seat++) {
+      await stores.actions.begin({
+        actionKey: `execution-${seat}`,
+        gameId,
+        phaseInstanceId: state.phaseInstanceId,
+        actorId: `p${seat}`,
+        actionType: ACTION_TYPES.DAY_END_JUDGMENT,
+        actionOrdinal: 0,
+        ledgerSeq: 107,
+      });
+      if (seat !== 4) await stores.actions.finish(`execution-${seat}`, { private: '私有判断正文' });
+    }
+    const recording = await stores.asked.append(gameId, {
+      actionKey: 'execution-4',
+      model: '模型',
+      system: '私有提示词',
+      prompt: '私有输入',
+      observation: {
+        callId: 'call-progress',
+        executionId: 'execution',
+        step: 'generate',
+        formatAttempt: 1,
+        endpointKey: 'endpoint',
+      },
+    });
+    if (!recording) throw new Error('缺少调用记录');
+    await recording.startAttempt(1);
+    await recording.startAttempt(2);
+    hanging = { active: true, removed: false };
+    lockPresent = true;
+    try {
+      const { body } = await request(app.getHttpServer()).get(`/api/games/${gameId}`).expect(200);
+      expect(body.execution).toMatchObject({
+        phase: 'dayEnd',
+        completed: 4,
+        total: 5,
+        workerActive: true,
+        pending: [
+          {
+            actorId: 'p4',
+            actionType: 'day_end_judgment',
+            step: 'generate',
+            callStatus: 'started',
+            attempt: {
+              number: 2,
+              status: 'started',
+              startedAt: expect.any(String),
+              finishedAt: null,
+            },
+          },
+        ],
+      });
+      expect(JSON.stringify(body)).not.toMatch(/私有判断正文|私有提示词|私有输入/);
+      lockPresent = false;
+      const stale = await request(app.getHttpServer()).get(`/api/games/${gameId}`).expect(200);
+      expect(stale.body.execution.workerActive).toBe(false);
+      await stores.games.finish(gameId, 'good', state);
+      const finished = await request(app.getHttpServer()).get(`/api/games/${gameId}`).expect(200);
+      expect(finished.body.execution).toBeNull();
+    } finally {
+      hanging = undefined;
+      lockPresent = false;
+    }
   });
 
   it('列表把档案那几项摊出来，新开的在前', async () => {

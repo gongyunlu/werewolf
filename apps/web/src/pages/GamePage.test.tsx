@@ -473,6 +473,28 @@ describe('GamePage', () => {
     expect(screen.getByText('法官宣布天黑请闭眼')).toBeInTheDocument();
   });
 
+  it.each(['上帝视角', '闭眼视角'])(
+    '%s的票型只显示一个标题，保留完整投票结果',
+    async (perspective) => {
+      vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+      renderPage();
+      await screen.findByText('预言家');
+      await userEvent.click(screen.getByRole('tab', { name: perspective }));
+      const text = '放逐投票：1 号投给 2 号、2 号投给 1 号；平票。';
+      await act(async () => {
+        inbox.at(-1)!(
+          new MessageEvent('message', {
+            data: JSON.stringify({ seq: 1, day: 1, kind: 'ballot', text, audience: ['p1', 'p2'] }),
+            lastEventId: '1',
+          }),
+        );
+      });
+      expect(screen.getAllByText('票型')).toHaveLength(1);
+      expect(screen.getByRole('heading', { name: '票型' })).toBeInTheDocument();
+      expect(screen.getAllByText(text)).toHaveLength(1);
+    },
+  );
+
   it('事实按顺序显示，不显示内部受众名单', async () => {
     vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
 

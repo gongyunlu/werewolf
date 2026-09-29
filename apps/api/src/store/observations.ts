@@ -53,8 +53,25 @@ export interface ObservationData {
 }
 
 export interface ObservationStore {
+  /** 当前阶段的行动与最近一次尝试，一次读取，不加载正文。 */
+  progress(gameId: string, phaseInstanceId: string): Promise<ExecutionRow[]>;
   /** 同一读快照内取元数据，不加载题面、完整结果或检查点。 */
   read(gameId: string): Promise<ObservationData | null>;
+}
+
+export interface ExecutionRow {
+  actionKey: string;
+  actorId: string;
+  actionType: string;
+  status: string;
+  step: string | null;
+  callStatus: string | null;
+  failureCode: string | null;
+  attemptNo: number | null;
+  attemptStatus: string | null;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  attemptFailureCode: string | null;
 }
 
 export function newCallRow(

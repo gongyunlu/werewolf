@@ -39,17 +39,19 @@ export function SceneRow({
   return (
     <Message>
       <MessageContent>
-        <MessageHeader>
-          {speech ? (
-            <SpeakerLabel
-              seatNo={Number(speech[1])}
-              name={speakerName}
-              action={speech[2] === '遗言' ? '遗言' : eventKindName(event.kind)}
-            />
-          ) : (
-            eventKindName(event.kind)
-          )}
-        </MessageHeader>
+        {event.kind !== 'ballot' ? (
+          <MessageHeader>
+            {speech ? (
+              <SpeakerLabel
+                seatNo={Number(speech[1])}
+                name={speakerName}
+                action={speech[2] === '遗言' ? '遗言' : eventKindName(event.kind)}
+              />
+            ) : (
+              eventKindName(event.kind)
+            )}
+          </MessageHeader>
+        ) : null}
         {children}
         <Bubble variant="secondary" className="max-w-full">
           <BubbleContent className="whitespace-pre-wrap wrap-anywhere">
