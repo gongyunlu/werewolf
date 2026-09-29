@@ -15,6 +15,7 @@ import {
 import { reviewPreview, reviewResponse } from '@/test/review-fixture';
 import { SceneRow } from '@/components/game-watch/SceneRow';
 import { GamePage } from './GamePage';
+import type { UseEventStreamOptions } from '@/hooks/useEventStream';
 
 vi.mock('@/lib/api-client', () => ({
   fetchGameDetail: vi.fn(),
@@ -37,11 +38,17 @@ vi.mock('@/components/game-watch/SceneRow', async (importOriginal) => {
 const inbox: ((message: MessageEvent<string>) => void)[] = [];
 
 /** 连接那边的状态，用例按需摆：错误得摆到页面上，不能只留在 hook 里。 */
-let streamState: { connected: boolean; error: unknown } = { connected: true, error: null };
+let streamState = { connected: true, error: null as unknown, retry: vi.fn() };
+let streamOptions: UseEventStreamOptions = {};
 
 vi.mock('@/hooks/useEventStream', () => ({
-  useEventStream: (_url: string, onMessage: (message: MessageEvent<string>) => void) => {
+  useEventStream: (
+    _url: string,
+    onMessage: (message: MessageEvent<string>) => void,
+    options: UseEventStreamOptions = {},
+  ) => {
     inbox.push(onMessage);
+    streamOptions = options;
 
     return streamState;
   },
@@ -136,6 +143,83 @@ function renderPage() {
 }
 
 describe('GamePage', () => {
+  it.each(['详情', '摘要'])('%s连续失败五次后停止所有自动请求，手动重连后恢复', async (kind) => {
+    vi.useFakeTimers();
+    vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+    if (kind === '详情') vi.mocked(fetchGameDetail).mockRejectedValue(new Error('后端离线'));
+    else vi.mocked(fetchActionSummaries).mockRejectedValue(new Error('摘要不可用'));
+    const view = renderPage();
+    try {
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      for (const [index, delay] of [1000, 2000, 4000, 8000].entries()) {
+        await act(() => vi.advanceTimersByTimeAsync(delay - 1));
+        expect(fetchGameDetail).toHaveBeenCalledTimes(index + 1);
+        await act(() => vi.advanceTimersByTimeAsync(1));
+        expect(fetchGameDetail).toHaveBeenCalledTimes(index + 2);
+      }
+      expect(screen.getByRole('button', { name: '重新连接' })).toBeInTheDocument();
+      expect(streamOptions.enabled).toBe(false);
+      await act(() => vi.advanceTimersByTimeAsync(600000));
+      expect(fetchGameDetail).toHaveBeenCalledTimes(5);
+      expect(fetchActionSummaries).toHaveBeenCalledTimes(5);
+      vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+      vi.mocked(fetchActionSummaries).mockResolvedValue({ actions: [], pending: [] });
+      await act(async () => screen.getByRole('button', { name: '重新连接' }).click());
+      expect(fetchGameDetail).toHaveBeenCalledTimes(6);
+      expect(streamOptions.enabled).toBe(true);
+      expect(screen.queryByRole('button', { name: '重新连接' })).toBeNull();
+      expect(screen.getByLabelText('左侧座位')).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('事件流耗尽重试次数时取消在途读取，页面不再轮询', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    vi.mocked(fetchGameDetail).mockImplementation((_gameId, next) => {
+      signal = next;
+      return new Promise((_resolve, reject) =>
+        next?.addEventListener('abort', () => reject(new Error('读取取消')), { once: true }),
+      );
+    });
+    const view = renderPage();
+    try {
+      await act(async () => streamOptions.onExhausted?.());
+      expect(signal?.aborted).toBe(true);
+      expect(streamOptions.enabled).toBe(false);
+      expect(screen.getByRole('button', { name: '重新连接' })).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(600000));
+      expect(fetchGameDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('轮询恢复成功后清零失败次数，之后断线从一秒重新退避', async () => {
+    vi.useFakeTimers();
+    vi.mocked(fetchGameDetail)
+      .mockRejectedValueOnce(new Error('离线'))
+      .mockRejectedValueOnce(new Error('离线'))
+      .mockResolvedValueOnce({ game: detail() })
+      .mockRejectedValue(new Error('再次离线'));
+    const view = renderPage();
+    try {
+      await act(() => vi.advanceTimersByTimeAsync(3000));
+      expect(fetchGameDetail).toHaveBeenCalledTimes(3);
+      await act(() => vi.advanceTimersByTimeAsync(3000));
+      expect(fetchGameDetail).toHaveBeenCalledTimes(4);
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(fetchGameDetail).toHaveBeenCalledTimes(5);
+      expect(screen.queryByRole('button', { name: '重新连接' })).toBeNull();
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it('日终判断在上帝视角展示玩家、截止位置及变化，闭眼视角隐藏', async () => {
     vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
     vi.mocked(fetchActionSummaries).mockResolvedValue({
@@ -340,7 +424,8 @@ describe('GamePage', () => {
     inbox.length = 0;
     vi.mocked(fetchBoards).mockResolvedValue({ boards: [] });
     vi.mocked(fetchActionSummaries).mockReset().mockResolvedValue({ actions: [], pending: [] });
-    streamState = { connected: true, error: null };
+    streamState = { connected: true, error: null, retry: vi.fn() };
+    streamOptions = {};
     // jsdom 里没有滚动这回事，页面跟到底那一下得先给它一个实现。
     Element.prototype.scrollIntoView = vi.fn();
   });
@@ -457,6 +542,38 @@ describe('GamePage', () => {
     expect(await screen.findByText('还没发牌。')).toBeInTheDocument();
     expect(screen.queryByLabelText('左侧座位')).toBeNull();
     expect(screen.queryByLabelText('右侧座位')).toBeNull();
+  });
+
+  it('收到开局播报后立即刷新座位，不等下一轮轮询', async () => {
+    vi.mocked(fetchGameDetail)
+      .mockResolvedValueOnce({ game: detail({ players: [], aliveCount: null, day: null }) })
+      .mockResolvedValue({ game: detail() });
+    renderPage();
+    await screen.findByText('还没发牌。');
+
+    push(1, '天黑了，请所有玩家闭眼。', ['p1', 'p2']);
+
+    expect(await screen.findByLabelText('左侧座位')).toBeInTheDocument();
+    expect(screen.getByLabelText('右侧座位')).toBeInTheDocument();
+    expect(fetchGameDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('行动摘要尚未返回时，已取得的玩家资料立即显示', async () => {
+    vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+    let release!: (value: Awaited<ReturnType<typeof fetchActionSummaries>>) => void;
+    vi.mocked(fetchActionSummaries).mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    renderPage();
+
+    try {
+      expect(await screen.findByLabelText('左侧座位')).toBeInTheDocument();
+      expect(screen.getByLabelText('右侧座位')).toBeInTheDocument();
+    } finally {
+      await act(async () => release({ actions: [], pending: [] }));
+    }
   });
 
   it('法官播报保留昼夜分隔，闭眼视角看不到查验结果', async () => {
@@ -759,7 +876,7 @@ describe('GamePage', () => {
 
   it('流断了要说出来：一直写「连接中」看不出要不要刷新', async () => {
     vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
-    streamState = { connected: false, error: new Error('事件流连接失败：500') };
+    streamState = { connected: false, error: new Error('事件流连接失败：500'), retry: vi.fn() };
 
     renderPage();
 

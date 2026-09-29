@@ -1,8 +1,16 @@
 import { GAME_STATUSES } from '@werewolf/shared';
-import type { Job } from 'bullmq';
+import { Test } from '@nestjs/testing';
+import { getQueueToken } from '@nestjs/bullmq';
+import type { Job, Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { ModelCapability } from '../llm/model-capability';
-import type { ModelAccess, ModelPort } from '../llm/model-port';
+import {
+  ModelCallError,
+  type ModelAccess,
+  type ModelCallOptions,
+  type ModelPort,
+} from '../llm/model-port';
+import * as embeddings from '../llm/embedding';
 import { EVENT_KINDS, type StoredEvent } from '../store/events';
 import type { RosterSeat } from '../store/games';
 import { memoryStores } from '../store/memory';
@@ -13,6 +21,9 @@ import { FakeRedis } from '../testing/stream';
 import { GameEventHub, PREVIEW_CHANNEL } from './game-event-hub';
 import type { GameJob } from './game-queue';
 import { GameWorker } from './game-worker';
+import { GamesController } from '../games/games.controller';
+import { GAME_STORES } from '../store/stores.provider';
+import { GAME_QUEUE } from './game-queue';
 
 // 起跑那一头按环境变量拼模型端口，用例里没有密钥。整份替掉，才能从 worker 这一头穿进阵容那条路。
 jest.mock('../llm/from-env');
@@ -102,6 +113,115 @@ function workerOn(stores: ReturnType<typeof memoryStores>): GameWorker {
 }
 
 describe('队列上跑对局的那一头', () => {
+  it.each(['对话', '向量'])('退出时取消%s请求，保存中断后才关闭推送连接', async (kind) => {
+    const stores = memoryStores();
+    await stores.games.open({ gameId: 'g-stop', boardId: '6p_white_wolf', roster: [] });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let rejectRequest!: (error: Error) => void;
+    let call: ModelCallOptions | undefined;
+    const port: ModelPort = {
+      generate: jest.fn(
+        (_request, _access, options) =>
+          new Promise((_resolve, reject) => {
+            call = options;
+            rejectRequest = reject;
+            options?.onDelta?.({ channel: 'content', text: '尚未完成' });
+            options?.signal?.addEventListener(
+              'abort',
+              () => reject(new ModelCallError('deadline', '服务停止')),
+              { once: true },
+            );
+            entered();
+          }),
+      ),
+    };
+    fromEnv.modelRuntimeOf.mockReturnValue({ port, access: FALLBACK });
+    fromEnv.promptSourceOf.mockReturnValue({
+      load: () => Promise.reject(new Error('使用本地提示词')),
+    });
+    const previousModel = process.env.EMBEDDING_MODEL;
+    process.env.EMBEDDING_MODEL = '用例向量模型';
+    const embedding = jest
+      .spyOn(embeddings, 'embeddingRuntime')
+      .mockReturnValue({ port, access: FALLBACK, dimensions: 2 });
+    jest.spyOn(stores.knowledge, 'hasCandidates').mockResolvedValue(kind === '向量');
+    const pub = new FakeRedis();
+    const sub = new FakeRedis();
+    const hub = new GameEventHub(pub as unknown as Redis, sub as unknown as Redis);
+    const worker = new GameWorker(stores, hub);
+    const running = worker.process(jobOf('g-stop')).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const close = jest.fn(async () => {
+      await running;
+    });
+    jest.spyOn(worker, 'worker', 'get').mockReturnValue({ close } as unknown as Worker);
+    const quit = jest.spyOn(pub, 'quit').mockImplementation(async () => {
+      expect((await stores.games.find('g-stop'))?.status).toBe(GAME_STATUSES.FAILED);
+      return 'OK';
+    });
+    const watching = hub.attach('g-stop');
+    const completed = jest.fn();
+    watching.live.subscribe({ complete: completed });
+    const module = await Test.createTestingModule({
+      controllers: [GamesController],
+      providers: [
+        { provide: GAME_STORES, useValue: stores },
+        { provide: getQueueToken(GAME_QUEUE), useValue: {} },
+        { provide: GameWorker, useValue: worker },
+        { provide: GameEventHub, useValue: hub },
+      ],
+    }).compile();
+    const app = module.createNestApplication({ logger: false });
+    app.setGlobalPrefix('api');
+    await app.listen(0, '127.0.0.1');
+    const connection = new AbortController();
+    let closed = false;
+    try {
+      await started;
+      const response = await fetch(`${await app.getUrl()}/api/games/g-stop/events`, {
+        signal: connection.signal,
+        headers: { Connection: 'close' },
+      });
+      const stream = response.text();
+      await app.close();
+      closed = true;
+      expect(await stream).toContain('data:');
+      expect(call?.signal?.aborted).toBe(true);
+      expect(await running).toBeInstanceOf(ModelCallError);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(quit).toHaveBeenCalledTimes(1);
+      expect(completed).toHaveBeenCalledTimes(1);
+      const anchor = await stores.steps.last('g-stop');
+      expect(anchor).not.toBeNull();
+      const count = pub.published.length;
+      call?.onDelta?.({ channel: 'content', text: '停止后迟到的片段' });
+      expect(pub.published).toHaveLength(count);
+      expect(port.generate).toHaveBeenCalledTimes(1);
+      if (kind === '对话') {
+        fromEnv.modelRuntimeOf.mockReturnValue({ port: answeringPlayer(), access: FALLBACK });
+        await workerOn(stores).process(jobOf('g-stop'));
+        const resumed = await stores.games.find('g-stop');
+        expect(resumed?.status).toBe(GAME_STATUSES.FINISHED);
+        expect(resumed?.finalState?.players.map((player) => player.role)).toEqual(
+          anchor!.state.players.map((player) => player.role),
+        );
+      }
+    } finally {
+      connection.abort();
+      rejectRequest(new ModelCallError('deadline', '清理用例'));
+      await running;
+      if (!closed) await app.close();
+      embedding.mockRestore();
+      if (previousModel === undefined) delete process.env.EMBEDDING_MODEL;
+      else process.env.EMBEDDING_MODEL = previousModel;
+    }
+  });
+
   it('跑不起来的那一局要标出来：不能一直挂在「排队中」', async () => {
     const stores = memoryStores();
     await stores.games.open({ gameId: 'g1', boardId: '9p_never', roster: [] });

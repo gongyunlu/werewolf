@@ -42,8 +42,11 @@ export async function startReview(gameId: string) {
   });
 }
 
-export async function fetchActionSummaries(gameId: string) {
-  return http.get(`/games/${gameId}/actions/summaries`, { schema: ActionSummaryResponseSchema });
+export async function fetchActionSummaries(gameId: string, signal?: AbortSignal) {
+  return http.get(`/games/${gameId}/actions/summaries`, {
+    schema: ActionSummaryResponseSchema,
+    signal,
+  });
 }
 
 export async function fetchActionDetail(gameId: string, actionKey: string) {
@@ -88,8 +91,11 @@ export async function runGame(gameId: string): Promise<CreateGameResponse> {
   });
 }
 
-export async function fetchGameDetail(gameId: string): Promise<GameDetailResponse> {
-  return http.get(`/games/${gameId}`, { schema: GameDetailResponseSchema });
+export async function fetchGameDetail(
+  gameId: string,
+  signal?: AbortSignal,
+): Promise<GameDetailResponse> {
+  return http.get(`/games/${gameId}`, { schema: GameDetailResponseSchema, signal });
 }
 
 /** 管理页要把停用的也列出来。 */

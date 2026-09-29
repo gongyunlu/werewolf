@@ -543,6 +543,18 @@ describe('对局接口', () => {
     ]);
   });
 
+  it.each([
+    { header: undefined, cursor: '1', expected: 2 },
+    { header: '2', cursor: '1', expected: 3 },
+    { header: undefined, cursor: '-1', expected: 1 },
+    { header: undefined, cursor: '1.5', expected: 1 },
+  ])('重建事件流通过查询参数续接，原生断点头优先：%j', async ({ header, cursor, expected }) => {
+    const gameId = `g-cursor-${header}-${cursor}`;
+    for (const seq of [1, 2, 3]) await stores.events.append(gameId, event(seq));
+    const messages = await take(app.get(GamesController).events(gameId, header, cursor), 1);
+    expect(messages[0]?.id).toBe(String(expected));
+  });
+
   it('正在生成的那一段另起一个事件名，带的是事实走到哪一条', async () => {
     const gameId = 'g-preview';
     const messages = take(app.get(GamesController).events(gameId, undefined), 2);

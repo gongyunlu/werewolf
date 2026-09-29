@@ -27,6 +27,19 @@ function write(sub: FakeRedis, gameId: string, text: string): void {
 }
 
 describe('实时事件的中转', () => {
+  it('退出期间结束现有订阅，并拒绝新订阅以免阻塞 HTTP 关闭', async () => {
+    const hub = hubOn(new FakeRedis(), new FakeRedis());
+    const watching = hub.attach('g1');
+    const complete = jest.fn();
+    watching.live.subscribe({ complete });
+    watching.preview.subscribe({ complete });
+    watching.resubscribed.subscribe({ complete });
+    const closing = hub.beforeApplicationShutdown();
+    expect(() => hub.attach('g2')).toThrow('服务正在停止');
+    await closing;
+    expect(complete).toHaveBeenCalledTimes(3);
+  });
+
   it('频道上一条认不出的消息只丢掉，不能把进程带走', async () => {
     const sub = new FakeRedis();
     hubOn(new FakeRedis(), sub);

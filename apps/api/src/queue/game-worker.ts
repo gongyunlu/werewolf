@@ -1,11 +1,14 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { GAME_STATUSES } from '@werewolf/shared';
 import type { Job } from 'bullmq';
 import { BOARD_IDS, type BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
 import { loadEnv } from '../config/env';
 import { modelRuntimeOf, promptSourceOf } from '../llm/from-env';
+import { embeddingRuntime } from '../llm/embedding';
+import { cancellableModelPort } from '../llm/cancellable-model-port';
+import { ModelCallError } from '../llm/model-port';
 import { gameSkills } from '../skills/game-skills';
 import { seatContextOf } from '../agents/seat-context';
 import type { GameStores } from '../store/stores';
@@ -22,9 +25,10 @@ const CONCURRENCY = 1;
  * 跟接口同进程：跑的是同一份存储、同一个事件中转，中间不用再跨一次进程。
  */
 @Processor(GAME_QUEUE, { concurrency: CONCURRENCY })
-export class GameWorker extends WorkerHost {
+export class GameWorker extends WorkerHost implements OnModuleDestroy {
   private readonly logger = new Logger(GameWorker.name);
   private readonly stores: GameStores;
+  private readonly stopping = new AbortController();
 
   constructor(
     @Inject(GAME_STORES) stores: GameStores,
@@ -52,7 +56,14 @@ export class GameWorker extends WorkerHost {
     };
   }
 
+  async onModuleDestroy(): Promise<void> {
+    this.stopping.abort(new ModelCallError('deadline', '服务停止，对局已中断'));
+    // 先取消请求并等存档写完，事件连接和数据库在后续退出钩子里关闭。
+    await this.worker.close();
+  }
+
   async process(job: Job<GameJob>): Promise<void> {
+    this.stopping.signal.throwIfAborted();
     const { gameId } = job.data;
     const stored = await this.stores.games.find(gameId);
     if (!stored) throw new Error(`队列里这一局没有档案：${gameId}`);
@@ -63,6 +74,7 @@ export class GameWorker extends WorkerHost {
 
     const env = loadEnv();
     const { port, access } = modelRuntimeOf(env);
+    const embedding = env.EMBEDDING_MODEL ? embeddingRuntime(env) : undefined;
     const setup = createGameSetup({ gameId, boardId: boardId as BoardId, random: Math.random });
 
     // 谁在答就用谁那份接入与人设：开局那份阵容里排了人的格子各有各的，没排人的共用环境变量那份。
@@ -77,11 +89,15 @@ export class GameWorker extends WorkerHost {
       setup,
       playerIds: setup.seats.map((seat) => `p${seat.seatNo}`),
       runtime: {
-        port,
+        port: cancellableModelPort(port, this.stopping.signal),
+        embedding: embedding
+          ? { ...embedding, port: cancellableModelPort(embedding.port, this.stopping.signal) }
+          : undefined,
         ...seatContext,
         skills: gameSkills(boardId as BoardId),
         // 推不出去不算这一局出错，跟落库那条一个道理：预览是过程，丢了只是观战那头少看一段。
         preview: (chunk) => {
+          if (this.stopping.signal.aborted) return;
           void this.hub.publishPreview(gameId, chunk).catch((error: unknown) => {
             this.logger.error(`推预览失败：${gameId}`, error);
           });
@@ -98,7 +114,13 @@ export class GameWorker extends WorkerHost {
 
   @OnWorkerEvent('failed')
   async onFailed(job: Job<GameJob> | undefined, error: Error): Promise<void> {
-    this.logger.error(`对局任务失败：${job?.data.gameId ?? '任务已移除'}`, error.stack);
+    if (
+      this.stopping.signal.aborted &&
+      error instanceof ModelCallError &&
+      error.code === 'deadline'
+    )
+      this.logger.log(`服务停止，对局已中断：${job?.data.gameId ?? '任务已移除'}`);
+    else this.logger.error(`对局任务失败：${job?.data.gameId ?? '任务已移除'}`, error.stack);
     if (!job) return;
 
     // 失锁次数超限时 BullMQ 不会调用 process，也要把档案标成中断。

@@ -30,6 +30,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useEventStream } from '@/hooks/useEventStream';
 import { fetchActionSummaries, fetchBoards, fetchGameDetail, runGame } from '@/lib/api-client';
 import { errorMessage } from '@/lib/http';
+import { connectionRetryDelay } from '@/lib/connection-retry';
 import {
   factionName,
   PERSPECTIVE_NAMES,
@@ -141,6 +142,8 @@ function GameWatch({ gameId }: { gameId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
   const [polling, setPolling] = useState(true);
+  const [requestsStopped, setRequestsStopped] = useState(false);
+  const hasEvents = events.length > 0;
   const ended = game?.status === GAME_STATUSES.FINISHED || game?.status === GAME_STATUSES.FAILED;
   const reviewing =
     game?.status === GAME_STATUSES.FINISHED && searchParams.get('view') === 'review';
@@ -161,23 +164,27 @@ function GameWatch({ gameId }: { gameId: string }) {
   }, []);
 
   useEffect(() => {
-    if (!polling) return;
+    if (!polling || requestsStopped) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    const controller = new AbortController();
     const load = async () => {
       const [detail, initialHistory] = await Promise.allSettled([
-        fetchGameDetail(gameId),
-        fetchActionSummaries(gameId),
+        fetchGameDetail(gameId, controller.signal).then((loaded) => {
+          if (alive) setGame(loaded.game);
+          return loaded;
+        }),
+        fetchActionSummaries(gameId, controller.signal),
       ]);
       if (!alive) return;
       const status = detail.status === 'fulfilled' ? detail.value.game.status : null;
       // 并行读取的摘要可能早于终局；确认终局后再取一次，成功后才能停。
       const [history] =
         status === GAME_STATUSES.FINISHED
-          ? await Promise.allSettled([fetchActionSummaries(gameId)])
+          ? await Promise.allSettled([fetchActionSummaries(gameId, controller.signal)])
           : [initialHistory];
       if (!alive) return;
-      if (detail.status === 'fulfilled') setGame(detail.value.game);
       if (history.status === 'fulfilled') {
         setActions(history.value.actions);
         setPending(history.value.pending);
@@ -190,33 +197,59 @@ function GameWatch({ gameId }: { gameId: string }) {
       }
       const failed = [detail, history].find((result) => result.status === 'rejected');
       setError(failed?.status === 'rejected' ? errorMessage(failed.reason) : null);
-      if (failed || status !== GAME_STATUSES.FINISHED) {
-        timer = setTimeout(() => void load(), status === GAME_STATUSES.FAILED ? 10000 : 3000);
+      if (failed) {
+        const delay = connectionRetryDelay(++failures);
+        if (delay === null) setRequestsStopped(true);
+        else timer = setTimeout(() => void load(), delay);
+        return;
+      }
+      failures = 0;
+      if (status !== GAME_STATUSES.FINISHED) {
+        timer = setTimeout(
+          () => void load(),
+          status === GAME_STATUSES.FAILED
+            ? 10000
+            : status === GAME_STATUSES.QUEUED && !hasEvents
+              ? 1000
+              : 3000,
+        );
       } else setPolling(false);
     };
     void load();
     return () => {
       alive = false;
       clearTimeout(timer);
+      controller.abort();
     };
-  }, [gameId, polling]);
+  }, [gameId, polling, hasEvents, requestsStopped]);
 
-  const stream = useEventStream(`/api/games/${gameId}/events`, (message) => {
-    if (message.type === 'preview') {
-      const chunk = parsed(PreviewChunkSchema, message.data);
-      if (chunk)
-        setLive((current) => ({
-          ...current,
-          [chunk.actionKey]: mergePreview(current[chunk.actionKey], chunk),
-        }));
-      return;
-    }
-    const event = parsed(GameEventSchema, message.data);
-    if (event)
-      setEvents((current) =>
-        current.some((seen) => seen.seq === event.seq) ? current : [...current, event],
-      );
-  });
+  const stream = useEventStream(
+    `/api/games/${gameId}/events`,
+    (message) => {
+      if (message.type === 'preview') {
+        const chunk = parsed(PreviewChunkSchema, message.data);
+        if (chunk)
+          setLive((current) => ({
+            ...current,
+            [chunk.actionKey]: mergePreview(current[chunk.actionKey], chunk),
+          }));
+        return;
+      }
+      const event = parsed(GameEventSchema, message.data);
+      if (event)
+        setEvents((current) =>
+          current.some((seen) => seen.seq === event.seq) ? current : [...current, event],
+        );
+    },
+    { enabled: !requestsStopped, onExhausted: () => setRequestsStopped(true) },
+  );
+
+  const reconnect = () => {
+    setError(null);
+    setRequestsStopped(false);
+    setPolling(true);
+    stream.retry();
+  };
 
   const players = useMemo(
     () => (game?.players ?? []).toSorted((a, b) => a.seatNo - b.seatNo),
@@ -338,6 +371,14 @@ function GameWatch({ gameId }: { gameId: string }) {
           {error}
         </p>
       ) : null}
+      {requestsStopped ? (
+        <p role="alert" className="flex items-center gap-3 px-6 pt-3 text-sm text-muted-foreground">
+          连续连接失败，已停止自动请求。后端恢复后可重新连接。
+          <Button variant="outline" size="sm" onClick={reconnect}>
+            重新连接
+          </Button>
+        </p>
+      ) : null}
       {game?.status === GAME_STATUSES.FAILED ? (
         <p className="px-6 pt-3 text-sm text-muted-foreground">
           对局已中断，已保存的记录仍可查看。
@@ -376,11 +417,13 @@ function GameWatch({ gameId }: { gameId: string }) {
             <div className="mb-3 flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>对局动态{perspective === PERSPECTIVES.CLOSED ? ' · 仅公开消息' : ''}</span>
               <span>
-                {stream.connected
-                  ? '已连上'
-                  : stream.error
-                    ? `已断开：${errorMessage(stream.error)}`
-                    : '连接中'}
+                {requestsStopped
+                  ? '连接已暂停'
+                  : stream.connected
+                    ? '已连上'
+                    : stream.error
+                      ? `已断开：${errorMessage(stream.error)}`
+                      : '连接中'}
               </span>
             </div>
             <MessageScrollerProvider autoScroll defaultScrollPosition="end">

@@ -9,6 +9,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Sse,
   UseGuards,
   type MessageEvent,
@@ -162,16 +163,17 @@ export class GamesController {
 
   /**
    * 这一局的事实流，给观战页面接着看。
-   * 断线重连靠 Last-Event-ID：浏览器把上次看到的 id 报回来，从它之后接着发。
+   * 原生重连使用 Last-Event-ID，前端重建连接时通过 after 传回断点。
    */
   @Sse(':gameId/events')
   events(
     @Param('gameId') gameId: string,
     @Headers('last-event-id') lastEventId?: string,
+    @Query('after') cursor?: string,
   ): Observable<MessageEvent> {
     // 报回来的不是个数就当没看过：从头发一遍总比重连之后再缺一段强。
-    const parsed = Number(lastEventId ?? 0);
-    const after = Number.isFinite(parsed) ? parsed : 0;
+    const parsed = Number(lastEventId ?? cursor ?? 0);
+    const after = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 
     return gameEvents({
       events: this.stores.events,

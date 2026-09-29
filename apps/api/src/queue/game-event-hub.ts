@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  type BeforeApplicationShutdown,
+} from '@nestjs/common';
 import type { GameEvent, PreviewChunk } from '@werewolf/shared';
 import type { Redis } from 'ioredis';
 import { Observable, ReplaySubject, Subject } from 'rxjs';
@@ -66,10 +72,11 @@ const BUFFER = 200;
  * 分进程也要走 Redis：跑局的、看局的各有各的连接，中间只有这一条路。
  */
 @Injectable()
-export class GameEventHub implements OnModuleDestroy {
+export class GameEventHub implements BeforeApplicationShutdown {
   private readonly logger = new Logger(GameEventHub.name);
   private readonly byGame = new Map<string, Watched>();
   private readonly resubscribed = new Subject<void>();
+  private closing = false;
 
   constructor(
     @Inject(REDIS_PUB) private readonly pub: Redis,
@@ -92,7 +99,15 @@ export class GameEventHub implements OnModuleDestroy {
     if (this.sub.status === 'ready') subscribe();
   }
 
-  async onModuleDestroy(): Promise<void> {
+  async beforeApplicationShutdown(): Promise<void> {
+    this.closing = true;
+    // 对局任务已收尾；先结束 SSE，再关闭 HTTP 服务，避免长连接拖住退出。
+    for (const watched of this.byGame.values()) {
+      watched.live.complete();
+      watched.preview.complete();
+    }
+    this.resubscribed.complete();
+    this.byGame.clear();
     await Promise.all([this.pub.quit(), this.sub.quit()]);
   }
 
@@ -121,6 +136,7 @@ export class GameEventHub implements OnModuleDestroy {
     resubscribed: Observable<void>;
     release: () => void;
   } {
+    if (this.closing) throw new ServiceUnavailableException('服务正在停止');
     const entry = this.byGame.get(gameId) ?? {
       live: new ReplaySubject<GameEvent>(BUFFER),
       preview: new Subject<PreviewChunk>(),
