@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { SeatAccess } from '../agents/seat-context';
 import { actionKey, type ActionScope } from '../core/identity';
 import type { ModelPort } from '../llm/model-port';
-import type { PromptSource } from '../llm/prompt-template';
+import type { PromptSource } from '../prompts/template';
 import type { GameSkills } from '../skills/game-skills';
 import type { ActionPresetName } from './presets';
 

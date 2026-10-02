@@ -1,7 +1,7 @@
 import type { GameSetup } from '../boards/setup';
 import { runGame, type GameLoopResult, type StageAnchor } from '../core/loop';
 import { createGameState } from '../core/state';
-import type { PromptSource } from '../llm/prompt-template';
+import type { PromptSource } from '../prompts/template';
 import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import type { TurnOutcome } from './graph';

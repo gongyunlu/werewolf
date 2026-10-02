@@ -1,19 +1,10 @@
+import { LOCAL_PROMPTS, PROMPT_CATALOG } from '../prompts/catalog';
 import type { LangfuseClient } from '@langfuse/client';
 import { z } from 'zod';
-import {
-  LOCAL_TURN_PROMPTS,
-  TURN_PROMPT_NAMES,
-  renderGenerate,
-  renderCritique,
-  renderRevise,
-  renderSummary,
-} from '../turn/prompt';
-import {
-  EXPERIENCE_PROMPTS,
-  LOCAL_EXPERIENCE_PROMPTS,
-  experiencePrompts,
-} from '../experience/prompt';
-import { renderTemplate, type PromptSource, type PromptTemplate } from './prompt-template';
+import { renderGenerate, renderCritique, renderRevise, renderSummary } from '../turn/prompt';
+import { experiencePrompts, experienceRequest } from '../experience/prompt';
+import { importPrompts, importRequest } from '../knowledge/import-prompt';
+import type { PromptSource, PromptTemplate } from '../prompts/template';
 
 type PromptApi = Pick<LangfuseClient['api'], 'prompts' | 'promptVersion'>;
 type PlatformPrompt = Awaited<ReturnType<PromptApi['prompts']['get']>>;
@@ -107,19 +98,78 @@ export async function applyPromptLabel(
 /** 使用真实渲染器检查占位变量；不调用模型，也不判定策略内容。 */
 export async function validateProjectPrompt(template: PromptTemplate): Promise<void> {
   const name = template.name;
-  const isTurn = Object.values(TURN_PROMPT_NAMES).some((value) => value === name);
-  const isExperience = Object.values(EXPERIENCE_PROMPTS).some((value) => value === name);
-  if (!isTurn && !isExperience) throw new Error('仅支持当前对局与经验模板');
+  if (!Object.keys(PROMPT_CATALOG).includes(name))
+    throw new Error('仅支持当前对局、经验与知识整理模板');
   const source: PromptSource = {
     strict: true,
-    load: async (requested) =>
-      requested === name
-        ? template
-        : (isTurn ? LOCAL_TURN_PROMPTS : LOCAL_EXPERIENCE_PROMPTS).load(requested),
+    load: async (requested) => (requested === name ? template : LOCAL_PROMPTS.load(requested)),
   };
-  if (isExperience) {
-    for (const item of await experiencePrompts(source))
-      renderTemplate(item, { identity: '', review: '', evidence: '' });
+  if (name.startsWith('experience/')) {
+    experienceRequest({
+      boardId: '6p_white_wolf',
+      role: 'villager',
+      seat: {
+        seatNo: 1,
+        agentId: '模板校验玩家',
+        name: '模板校验玩家',
+        modelName: '离线校验',
+        baseUrl: null,
+      },
+      review: { text: '结合当时可见信息核对行动时序。' },
+      sources: [
+        {
+          id: '模板校验来源',
+          origin: { seq: 1 },
+          value: '1 号发言：先听其他人的发言。',
+          perspective: 'at_action',
+        },
+      ],
+      prompts: await experiencePrompts(source),
+    });
+    return;
+  }
+  if (name.startsWith('knowledge/')) {
+    const sampleId = '00000000-0000-4000-8000-000000000001';
+    const capturedAt = '2026-09-28T00:00:00.000Z';
+    importRequest({
+      id: sampleId,
+      batchId: sampleId,
+      sourceId: sampleId,
+      url: 'https://example.org/guide',
+      revision: 1,
+      createdAt: capturedAt,
+      state: {
+        status: 'ready',
+        failure: null,
+        previousId: null,
+        candidates: [],
+        snapshot: {
+          url: 'https://example.org/guide',
+          title: '模板校验攻略',
+          publisher: 'example.org',
+          author: '',
+          publishedOn: null,
+          fetchedAt: capturedAt,
+          hash: '模板校验正文',
+          paragraphs: [{ id: 'P1', text: '判断玩家主张时，先核对其行动时点。' }],
+        },
+        organization: {
+          status: 'queued',
+          failure: null,
+          reason: null,
+          attempts: [],
+          input: {
+            boardIds: ['6p_white_wolf'],
+            paragraphIds: ['P1'],
+            targets: [],
+            prompts: await importPrompts(source),
+            model: '离线校验',
+            endpointKey: '离线校验',
+            rules: [{ id: '6p_white_wolf', text: '预言家每晚可查验一名玩家的阵营。' }],
+          },
+        },
+      },
+    });
     return;
   }
   const context = {

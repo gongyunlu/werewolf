@@ -7,7 +7,7 @@ import {
 } from '@werewolf/shared';
 import type { EmbeddingTask } from '../experience/embedding-task';
 import type { ModelResponse } from '../llm/model-port';
-import type { PromptTemplate } from '../llm/prompt-template';
+import type { PromptTemplate } from '../prompts/template';
 import type { RosterSeat } from './games';
 import { createHash } from 'node:crypto';
 

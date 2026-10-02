@@ -1,10 +1,10 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, ROLES } from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import { runExperience } from './workflow';
 import { fixture, result, access, promptSource, controlledPort, vectorRuntime } from './testing';
 import { EXPERIENCE_CHARACTERS } from './selection';
 import { modelActions } from '../turn/provider';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { initialRetrieval, retrieveExperiences, retrievalQuery } from './retrieval';
 import { indexExperience } from './indexing';
@@ -176,7 +176,7 @@ describe('逐行动语义检索', () => {
       accessFor: () => access,
       memoriesFor: () => [],
       skills: stubSkills(),
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       embedding,
     };
     const state = withRoles(

@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
 import { ACTION_TYPES } from '@werewolf/shared';
 import { z } from 'zod';
@@ -6,7 +7,6 @@ import type { ModelAccess } from '../llm/model-port';
 import { stubSkills } from '../testing/fixtures';
 import { scriptedModel } from '../testing/model';
 import { runActionGraph } from '../turn/graph';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { actionKeyOf, type ActionRequest, type TurnContext } from '../turn/request';
 import { Prisma, type PrismaClient } from '../generated/prisma/client';
 import { prismaCheckpoints } from './checkpoints';
@@ -34,7 +34,7 @@ const CONTEXT: TurnContext = {
 const DECIDED = JSON.stringify({ targetId: 'p2', reason: '他发言太稳了' });
 const ACCEPTED = JSON.stringify({ accept: true, issues: '' });
 
-/** 模型交回来的原话：走工具那一问的参数裹着壳（见 decisions 的 toolOf），脚本里写的是壳里那个值。 */
+/** 模型交回来的原话：走工具那一问的参数裹着壳（见 llm/structured-output 的 toolOf），脚本里写的是壳里那个值。 */
 const wrapped = (answer: string): string => `{"value":${answer}}`;
 
 function request(overrides: Partial<ActionRequest> = {}): ActionRequest {
@@ -58,7 +58,7 @@ function withModel(answers: readonly (string | Error)[]) {
       port: model,
       accessFor: () => ACCESS,
       memoriesFor: () => [],
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       skills: stubSkills(),
     },
   };

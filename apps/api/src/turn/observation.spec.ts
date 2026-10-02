@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES } from '@werewolf/shared';
 import { z } from 'zod';
 import { phaseInstanceId } from '../core/identity';
@@ -6,7 +7,6 @@ import { scriptedModel, type ScriptedStep } from '../testing/model';
 import { stubSkills } from '../testing/fixtures';
 import { memoryStores } from '../store/memory';
 import { runActionGraph } from './graph';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { actionKeyOf, type ActionRequest, type TurnRuntime } from './request';
 
 const request: ActionRequest = {
@@ -40,7 +40,7 @@ async function fixture() {
       capability: { reasoningOff: null },
     }),
     memoriesFor: () => [],
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     skills: stubSkills(),
   });
   const rows = async () => (await stores.observations.read('g'))!.calls;

@@ -1,5 +1,5 @@
 import { LangfuseClient } from '@langfuse/client';
-import type { PromptSource, PromptTemplate } from './prompt-template';
+import type { PromptSource, PromptTemplate } from './template';
 
 /** 平台接入信息。凭据由调用方从环境里取好传进来，这个模块不碰环境变量。 */
 export interface LangfusePromptConfig {

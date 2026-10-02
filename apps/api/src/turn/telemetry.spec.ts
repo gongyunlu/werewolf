@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { randomUUID } from 'node:crypto';
 import type { SpanContext } from '@opentelemetry/api';
 import { ROLES } from '@werewolf/shared';
@@ -21,7 +22,6 @@ import { observeOperation, startTelemetry, stopTelemetry } from '../llm/telemetr
 import { memoryStores } from '../store/memory';
 import type { StoredAskedPrompt } from '../store/asked';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 
 interface CapturedSpan {
@@ -180,7 +180,7 @@ async function fixture(answers: Array<string | number>) {
     port,
     accessFor: () => access,
     memoriesFor: () => [],
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     skills: stubSkills(),
     preview: () => {},
     embedding: { ...indexer, port },

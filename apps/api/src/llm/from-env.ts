@@ -1,17 +1,17 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import type { AppEnv } from '../config/env';
 import { openaiModelPort } from './openai-model-port';
 import { resolveModelCapability } from './model-capability';
 import type { ModelAccess, ModelPort } from './model-port';
 import { retryingModelPort } from './retrying-model-port';
-import type { PromptSource } from './prompt-template';
-import { langfusePromptSource } from './langfuse-prompt-source';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
+import type { PromptSource } from '../prompts/template';
+import { langfusePromptSource } from '../prompts/langfuse-source';
 
 /** 未配置 Langfuse 时直接使用本地提示词。 */
 export function promptSourceOf(env: AppEnv): PromptSource {
   const { LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY } = env;
   if (!LANGFUSE_PUBLIC_KEY || !LANGFUSE_SECRET_KEY) {
-    return LOCAL_TURN_PROMPTS;
+    return LOCAL_PROMPTS;
   }
 
   return langfusePromptSource({

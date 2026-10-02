@@ -1,12 +1,13 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import type { LangfuseClient } from '@langfuse/client';
-import { snapshotPromptSource, type PromptTemplate } from '../llm/prompt-template';
-import { experiencePrompts, LOCAL_EXPERIENCE_PROMPTS } from './prompt';
+import { snapshotPromptSource, type PromptTemplate } from '../prompts/template';
+import { experiencePrompts } from './prompt';
 
 type PromptApi = LangfuseClient['api']['prompts'];
 
 /** 只补齐缺失模板；已有 production 正文由平台维护，重复执行不新增版本。 */
 export async function setupExperiencePrompts(api: PromptApi): Promise<PromptTemplate[]> {
-  const templates = await experiencePrompts(LOCAL_EXPERIENCE_PROMPTS);
+  const templates = await experiencePrompts(LOCAL_PROMPTS);
   const saved: PromptTemplate[] = [];
   const read = async (name: string, label: string) => {
     try {

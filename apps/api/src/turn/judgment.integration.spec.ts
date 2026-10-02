@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, ROLES } from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import { phaseInstanceId } from '../core/identity';
@@ -6,7 +7,6 @@ import type { GameStores } from '../store/stores';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { scriptedModel } from '../testing/model';
 import type { TurnOutcome } from './graph';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 
 const databaseUrl = process.env.OBSERVATION_TEST_DATABASE_URL;
@@ -25,7 +25,7 @@ function actionsFor(stores: GameStores, port: ReturnType<typeof scriptedModel>) 
       }),
       memoriesFor: () => [],
       skills: stubSkills(),
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
     },
     stores,
   );

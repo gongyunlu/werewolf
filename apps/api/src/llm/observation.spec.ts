@@ -5,7 +5,8 @@ import { recordingModelPort } from './recording-model-port';
 import { retryingModelPort } from './retrying-model-port';
 import { tokenUsage } from './observation';
 import { memoryStores } from '../store/memory';
-import { ask, askParsed, parseStructured } from '../turn/graph';
+import { ask, askParsed } from '../turn/graph';
+import { parseStructured } from './structured-output';
 import { costOf } from '../games/statistics';
 import { z } from 'zod';
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { decisionShape, toolOf, type DecisionShape } from './decisions';
+import { decisionShape, type DecisionShape } from './decisions';
+import { toolOf } from '../llm/structured-output';
 
 /** 座位号换回玩家 id 的对照，用例里就是座位号加个前缀。 */
 const TO_ID = (seatNo: number): string => `p${seatNo}`;
@@ -138,22 +139,6 @@ describe('决定形状', () => {
 });
 
 describe('工具定义', () => {
-  it('形状裹进壳里发出去，顶层那份 $schema 剥掉', () => {
-    const tool = toolOf(z.object({ seatNo: z.number() }), '交这次的答案');
-
-    expect(tool.name).toBe('submit');
-    expect(tool.description).toBe('交这次的答案');
-    // 壳是必须的：工具参数只收 object 的 JSON Schema，形状本身不一定是。
-    expect(tool.parameters).toMatchObject({
-      type: 'object',
-      required: ['value'],
-      additionalProperties: false,
-    });
-    // $schema 是 JSON Schema 给自己写的版本声明，与这次要交的东西无关；留着它模型会连它一起抄回来交差。
-    expect(tool.parameters).not.toHaveProperty('$schema');
-    expect(tool.parameters).toMatchObject({ properties: { value: { type: 'object' } } });
-  });
-
   it('座位取值集照原样进参数，模型看到的候选就是 Core 给的那几个', () => {
     const schema = decisionShape('seat', { seatNos: [7, 3] }).schema as z.ZodType;
 

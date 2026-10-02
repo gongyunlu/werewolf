@@ -11,14 +11,14 @@ import {
   type ModelPort,
   type ModelResponse,
 } from '../llm/model-port';
-import type { PromptSource } from '../llm/prompt-template';
+import type { PromptSource } from '../prompts/template';
 import { recordingModelPort } from '../llm/recording-model-port';
 import { readReview, readReviewState } from '../review/workflow';
 import { REVIEW_VERSION } from '../review/contracts';
 import { finishedGame } from '../review/evidence';
 import type { ExperienceGeneration, ExperienceInput, ExperienceState } from '../store/experiences';
 import type { GameStores } from '../store/stores';
-import { parseStructured } from '../turn/graph';
+import { parseStructured } from '../llm/structured-output';
 import {
   experiencePrompts,
   experienceRequest,

@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS, TURN_PROMPT_NAMES } from '../prompts/catalog';
 import { MemorySaver } from '@langchain/langgraph';
 import type { Checkpoint, CheckpointMetadata, PendingWrite } from '@langchain/langgraph-checkpoint';
 import { ACTION_TYPES, type PreviewChunk } from '@werewolf/shared';
@@ -15,7 +16,6 @@ import {
 import { stubSkills } from '../testing/fixtures';
 import { responseOf, scriptedModel, type ScriptedStep } from '../testing/model';
 import { actionSteps, runActionGraph } from './graph';
-import { LOCAL_TURN_PROMPTS, TURN_PROMPT_NAMES } from './prompt';
 import {
   actionKeyOf,
   actionOrdinals,
@@ -52,7 +52,7 @@ const ACCEPTED = JSON.stringify({ accept: true, issues: '' });
 const REJECTED = JSON.stringify({ accept: false, issues: '目标不在候选里' });
 
 /**
- * 模型交回来的原话：走工具那一问的参数裹着壳（见 decisions 的 toolOf）。
+ * 模型交回来的原话：走工具那一问的参数裹着壳（见 llm/structured-output 的 toolOf）。
  * 脚本里写的是壳里那个值，快照里存的、质疑看到的是这一份。
  */
 function wrapped(answer: string): string {
@@ -82,7 +82,7 @@ function runtimeOf(port: ModelPort) {
       return ACCESS;
     },
     memoriesFor: () => [],
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     skills: stubSkills(),
   };
 
@@ -357,7 +357,7 @@ describe('单玩家行动图', () => {
       },
       accessFor: () => ACCESS,
       memoriesFor: () => [],
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       skills: stubSkills(),
     };
 

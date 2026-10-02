@@ -1,6 +1,10 @@
+import {
+  LOCAL_PROMPTS,
+  EXPERIENCE_PROMPTS,
+  IMPORT_PROMPTS,
+  PROMPT_CATALOG,
+} from '../prompts/catalog';
 import { applyPromptLabel, previewPromptLabel, validateProjectPrompt } from './prompt-label';
-import { LOCAL_TURN_PROMPTS, TURN_PROMPT_NAMES } from '../turn/prompt';
-import { EXPERIENCE_PROMPTS, LOCAL_EXPERIENCE_PROMPTS } from '../experience/prompt';
 
 const selection = { name: 'turn/generate-system', label: 'production', version: 2 };
 
@@ -130,23 +134,59 @@ it('拒绝维护 latest、非法版本和非文本模板', async () => {
   await expect(previewPromptLabel(p.api, selection)).rejects.toThrow('文本模板');
 });
 
-it.each([...Object.values(TURN_PROMPT_NAMES), ...Object.values(EXPERIENCE_PROMPTS)])(
-  '沿用真实渲染契约检查 %s',
+it.each(Object.keys(PROMPT_CATALOG))('沿用真实渲染契约检查 %s', async (name) => {
+  await expect(validateProjectPrompt(await LOCAL_PROMPTS.load(name))).resolves.toBeUndefined();
+});
+
+it.each(['rules', 'targets', 'source'])('知识整理模板不能缺少必需变量 %s', async (variable) => {
+  const template = await LOCAL_PROMPTS.load(IMPORT_PROMPTS.user);
+  await expect(
+    validateProjectPrompt({ ...template, text: template.text.replace(`{{${variable}}}`, '') }),
+  ).rejects.toThrow(`缺少必需变量: ${variable}`);
+});
+
+it.each(Object.values(IMPORT_PROMPTS))('知识模板 %s 的未知变量不能通过真实渲染', async (name) => {
+  const template = await LOCAL_PROMPTS.load(name);
+  await expect(
+    validateProjectPrompt({ ...template, text: `${template.text}\n{{future}}` }),
+  ).rejects.toThrow('缺少变量: future');
+});
+
+it.each(['other/prompt', 'toString', 'constructor', '__proto__'])(
+  '拒绝未注册的模板名称 %s',
   async (name) => {
-    const source = name.startsWith('turn/') ? LOCAL_TURN_PROMPTS : LOCAL_EXPERIENCE_PROMPTS;
-    await expect(validateProjectPrompt(await source.load(name))).resolves.toBeUndefined();
+    await expect(
+      validateProjectPrompt({ name, text: '', version: 3, source: 'platform' }),
+    ).rejects.toThrow('仅支持');
   },
 );
 
+it('指定版本只用传入正文，配套模板从本地读取', async () => {
+  const load = jest.spyOn(LOCAL_PROMPTS, 'load');
+  try {
+    await expect(
+      validateProjectPrompt({
+        name: IMPORT_PROMPTS.user,
+        text: '固定版本：{{rules}}\n{{targets}}\n{{source}}',
+        source: 'platform',
+        version: 9,
+      }),
+    ).resolves.toBeUndefined();
+    expect(load.mock.calls).toEqual([[IMPORT_PROMPTS.system]]);
+  } finally {
+    load.mockRestore();
+  }
+});
+
 it('缺少必需变量、未知变量与不支持的模板均失败', async () => {
-  const source = await LOCAL_TURN_PROMPTS.load('turn/generate-system');
+  const source = await LOCAL_PROMPTS.load('turn/generate-system');
   await expect(validateProjectPrompt({ ...source, text: '只有 {{seatNo}}' })).rejects.toThrow(
     '必需变量',
   );
   await expect(
     validateProjectPrompt({ ...source, text: `${source.text} {{future}}` }),
   ).rejects.toThrow('缺少变量');
-  const experience = await LOCAL_EXPERIENCE_PROMPTS.load(EXPERIENCE_PROMPTS.user);
+  const experience = await LOCAL_PROMPTS.load(EXPERIENCE_PROMPTS.user);
   await expect(
     validateProjectPrompt({ ...experience, text: `${experience.text} {{future}}` }),
   ).rejects.toThrow('缺少变量');

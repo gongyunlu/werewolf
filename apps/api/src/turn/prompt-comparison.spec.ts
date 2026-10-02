@@ -1,6 +1,7 @@
+import { LOCAL_PROMPTS, TURN_PROMPT_NAMES } from '../prompts/catalog';
 import { ACTION_TYPES } from '@werewolf/shared';
-import { snapshotPromptSource, type PromptSource } from '../llm/prompt-template';
-import { LOCAL_TURN_PROMPTS, renderGenerate, TURN_PROMPT_NAMES } from './prompt';
+import { snapshotPromptSource, type PromptSource } from '../prompts/template';
+import { renderGenerate } from './prompt';
 import { fingerprint, preparePromptComparison } from './prompt-comparison';
 import type { DecisionSnapshot } from './snapshot';
 
@@ -41,10 +42,10 @@ const selection = { name: TURN_PROMPT_NAMES.generateSystem, baseline: 1, candida
 function platform(): PromptSource {
   return {
     load: jest.fn(async (name: string, version?: number) => ({
-      ...(await LOCAL_TURN_PROMPTS.load(name)),
+      ...(await LOCAL_PROMPTS.load(name)),
       source: 'platform' as const,
       version: version ?? 100,
-      text: `${(await LOCAL_TURN_PROMPTS.load(name)).text}\n版本 ${version}`,
+      text: `${(await LOCAL_PROMPTS.load(name)).text}\n版本 ${version}`,
     })),
   };
 }
@@ -114,7 +115,7 @@ describe('固定玩家输入对照', () => {
         selection,
       ),
     ).rejects.toThrow('不存在');
-    await expect(preparePromptComparison(snapshot, LOCAL_TURN_PROMPTS, selection)).rejects.toThrow(
+    await expect(preparePromptComparison(snapshot, LOCAL_PROMPTS, selection)).rejects.toThrow(
       '指定版本',
     );
     const source = platform();

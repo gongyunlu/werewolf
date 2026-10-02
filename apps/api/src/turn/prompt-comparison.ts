@@ -1,11 +1,8 @@
+import { TURN_PROMPT_NAMES } from '../prompts/catalog';
 import { createHash } from 'node:crypto';
 import type { ModelRequest, ModelTool } from '../llm/model-port';
-import {
-  snapshotPromptSource,
-  type PromptSource,
-  type PromptTemplate,
-} from '../llm/prompt-template';
-import { renderGenerate, TURN_PROMPT_NAMES } from './prompt';
+import { snapshotPromptSource, type PromptSource, type PromptTemplate } from '../prompts/template';
+import { renderGenerate } from './prompt';
 import type { DecisionSnapshot } from './snapshot';
 
 export interface PromptComparison {

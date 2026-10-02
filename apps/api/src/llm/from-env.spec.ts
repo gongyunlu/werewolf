@@ -1,5 +1,5 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { loadEnv } from '../config/env';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { modelRuntimeOf, promptSourceOf } from './from-env';
 
 const ENDPOINT = 'https://model.example.test/v1';
@@ -53,13 +53,20 @@ describe('按环境变量接线', () => {
     it('凭据空着直接使用本地提示词', async () => {
       const source = promptSourceOf(BARE);
 
-      expect(source).toBe(LOCAL_TURN_PROMPTS);
+      expect(source).toBe(LOCAL_PROMPTS);
+      for (const name of ['experience/extract-system', 'knowledge/organize-user']) {
+        await expect(source.load(name)).resolves.toMatchObject({
+          name,
+          source: 'local',
+          version: null,
+        });
+      }
     });
 
     it('只配了一个 key 也按没配处理，不去拿半个身份试', async () => {
       const source = promptSourceOf(envOf({ LANGFUSE_PUBLIC_KEY: 'pk-用例' }));
 
-      expect(source).toBe(LOCAL_TURN_PROMPTS);
+      expect(source).toBe(LOCAL_PROMPTS);
     });
   });
 

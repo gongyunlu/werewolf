@@ -5,7 +5,7 @@ import type {
   WebSnapshot,
 } from '@werewolf/shared';
 import type { ModelResponse } from '../llm/model-port';
-import type { PromptTemplate } from '../llm/prompt-template';
+import type { PromptTemplate } from '../prompts/template';
 import { KnowledgeConflictError, type KnowledgeRecord } from './knowledge';
 
 export interface OrganizationInput {

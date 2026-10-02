@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { DEATH_CAUSES, ROLES } from '@werewolf/shared';
 import {
   ModelCallError,
@@ -11,7 +12,6 @@ import { retryingModelPort } from '../llm/retrying-model-port';
 import type { CallCompletion } from '../llm/observation';
 import { makeState, playerOf, stubSkills, withRoles } from '../testing/fixtures';
 import { responseOf } from '../testing/model';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 import type { TurnRuntime } from './request';
 
@@ -100,7 +100,7 @@ async function setup(honorAbort = true) {
       capability: { reasoningOff: null },
     }),
     memoriesFor: () => [],
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     skills: stubSkills(),
   };
   function actions() {

@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, DEATH_CAUSES, FACTIONS, ROLES } from '@werewolf/shared';
 import type { BoardId } from '../boards/boards';
 import { createGameSetup } from '../boards/setup';
@@ -13,7 +14,6 @@ import { stubSkills } from '../testing/fixtures';
 import { answeringModel, type RecordingModel } from '../testing/model';
 import { answeringPlayer, breakingPlayer, playerAnswer } from '../testing/player';
 import { ActionsController } from '../actions/actions.controller';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { runModelGame } from './run-model-game';
 
 const ACCESS: ModelAccess = {
@@ -55,7 +55,7 @@ async function playGame(
       memoriesFor: options.memoriesFor ?? (() => []),
       skills: stubSkills(),
     },
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     minuteOf: () => 0,
     stores,
     resume: options.resume,
@@ -149,7 +149,7 @@ describe('整局接入', () => {
       },
       playerIds: roles.map((_role, index) => `p${index + 1}`),
       runtime: { port, accessFor: () => ACCESS, memoriesFor: () => [], skills: stubSkills() },
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       minuteOf: () => 22,
       stores,
     });

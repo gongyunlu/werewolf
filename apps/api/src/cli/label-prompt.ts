@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { loadEnv } from '../config/env';
 import { loadEnvFiles } from '../config/env-files';
-import { applyPromptLabel, previewPromptLabel, validateProjectPrompt } from '../llm/prompt-label';
+import { applyPromptLabel, previewPromptLabel, validateProjectPrompt } from './prompt-label';
 
 async function main() {
   const { values } = parseArgs({

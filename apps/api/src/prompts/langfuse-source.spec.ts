@@ -1,5 +1,5 @@
 import { LangfuseClient } from '@langfuse/client';
-import { langfusePromptSource } from './langfuse-prompt-source';
+import { langfusePromptSource } from './langfuse-source';
 
 jest.mock('@langfuse/client', () => ({ LangfuseClient: jest.fn() }));
 

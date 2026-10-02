@@ -1,8 +1,8 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import type { ModelCapability } from '../llm/model-capability';
 import type { ModelAccess } from '../llm/model-port';
 import { stubSkills } from '../testing/fixtures';
 import { scriptedModel } from '../testing/model';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { summarize } from './summary';
 import type { TurnRuntime } from './request';
 
@@ -30,7 +30,7 @@ function runtimeWith(answers: readonly (string | Error)[]) {
       port: model,
       accessFor: () => ACCESS,
       memoriesFor: () => [],
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       skills: stubSkills(),
     } satisfies TurnRuntime,
   };

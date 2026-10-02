@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ExperienceResult } from '@werewolf/shared';
 import { memoryStores } from '../store/memory';
-import { localPromptSource } from '../llm/prompt-template';
+import { localPromptSource } from '../prompts/template';
 import type { ModelPort } from '../llm/model-port';
 import { responseOf } from '../testing/model';
 import { experiencePrompts } from './prompt';

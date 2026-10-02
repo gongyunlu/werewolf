@@ -1,11 +1,6 @@
-import type { PromptSource } from '../llm/prompt-template';
-import {
-  LOCAL_TURN_PROMPTS,
-  renderCritique,
-  renderGenerate,
-  renderRevise,
-  TURN_PROMPT_NAMES,
-} from './prompt';
+import { LOCAL_PROMPTS, TURN_PROMPT_NAMES } from '../prompts/catalog';
+import type { PromptSource } from '../prompts/template';
+import { renderCritique, renderGenerate, renderRevise, renderSummary } from './prompt';
 import type { TurnContext } from './request';
 
 const context: TurnContext = {
@@ -26,6 +21,22 @@ const SCHEMA_JSON = { type: 'object', properties: { targetId: { type: 'string' }
 const offline: PromptSource = { load: () => Promise.reject(new Error('平台连不上')) };
 
 describe('提示词渲染', () => {
+  it('生成、质疑、修订与摘要的完整文本和来源保持一致', async () => {
+    const draft = '第一段\n\n\n\n第二段';
+    expect({
+      generate: await renderGenerate(offline, context, SCHEMA_JSON),
+      critique: await renderCritique(offline, context, draft, SCHEMA_JSON),
+      revise: await renderRevise(offline, context, draft, '核对行动时点', SCHEMA_JSON),
+      summary: await renderSummary(offline, {
+        day: 2,
+        channel: '公开发言',
+        speeches: ['1 号发言：我是预言家。', '2 号发言：我先过。'],
+        count: 2,
+        schemaJson: SCHEMA_JSON,
+      }),
+    }).toMatchSnapshot();
+  });
+
   it('生成提示词带上身份、天数、已知事实和这次能选什么', async () => {
     const turn = await renderGenerate(offline, context, SCHEMA_JSON);
 
@@ -167,7 +178,7 @@ describe('提示词从哪来', () => {
   it('平台取得到就用平台那份，正文与版本都跟着走', async () => {
     const platform: PromptSource = {
       async load(name) {
-        const local = await LOCAL_TURN_PROMPTS.load(name);
+        const local = await LOCAL_PROMPTS.load(name);
         return { ...local, text: `${local.text}\n平台加的尾巴`, version: 7, source: 'platform' };
       },
     };
@@ -183,7 +194,7 @@ describe('提示词从哪来', () => {
     const half: PromptSource = {
       async load(name) {
         if (name === TURN_PROMPT_NAMES.critiqueUser) throw new Error('这条没了');
-        const local = await LOCAL_TURN_PROMPTS.load(name);
+        const local = await LOCAL_PROMPTS.load(name);
         return { ...local, version: 3, source: 'platform' };
       },
     };
@@ -203,7 +214,7 @@ describe('提示词从哪来', () => {
     const counting: PromptSource = {
       async load(name) {
         seen.push(name);
-        return LOCAL_TURN_PROMPTS.load(name);
+        return LOCAL_PROMPTS.load(name);
       },
     };
 

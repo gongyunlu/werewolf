@@ -1,5 +1,55 @@
-import { experienceRequest, experienceTool, resolveExperienceSources } from './prompt';
+import { EXPERIENCE_PROMPTS, LOCAL_PROMPTS } from '../prompts/catalog';
+import {
+  experiencePrompts,
+  experienceRequest,
+  experienceTool,
+  resolveExperienceSources,
+} from './prompt';
+import { snapshotPromptSource, type PromptSource } from '../prompts/template';
 import { fixture, result } from './testing';
+
+it('经验请求保留完整文本、短引用和模板来源', async () => {
+  const { input } = await fixture();
+  input.seat.agentId = '固定玩家';
+  expect(experienceRequest(input)).toMatchSnapshot();
+});
+
+describe('经验模板来源', () => {
+  it('普通源失败时回退本地，固定快照缺失时抛错', async () => {
+    const offline: PromptSource = {
+      async load() {
+        throw new Error('平台离线');
+      },
+    };
+    expect(await experiencePrompts(offline)).toEqual(await experiencePrompts(LOCAL_PROMPTS));
+    await expect(experiencePrompts(snapshotPromptSource([]))).rejects.toThrow('固定快照没有');
+  });
+
+  it('成功加载的模板缺少契约变量时不回退', async () => {
+    const broken: PromptSource = {
+      async load(name) {
+        const template = await LOCAL_PROMPTS.load(name);
+        return { ...template, text: '删除了全部变量', source: 'platform', version: 7 };
+      },
+    };
+    await expect(experiencePrompts(broken)).rejects.toThrow('缺少必需变量');
+  });
+
+  it('远端版本保留来源，新增未知变量在真实渲染时报错', async () => {
+    const { input } = await fixture();
+    const platform: PromptSource = {
+      async load(name) {
+        return { ...(await LOCAL_PROMPTS.load(name)), source: 'platform', version: 7 };
+      },
+    };
+    input.prompts = await experiencePrompts(platform);
+    expect(experienceRequest(input).prompts).toEqual(
+      Object.values(EXPERIENCE_PROMPTS).map((name) => ({ name, source: 'platform', version: 7 })),
+    );
+    input.prompts[0]!.text += '\n{{unknown}}';
+    expect(() => experienceRequest(input)).toThrow('缺少变量: unknown');
+  });
+});
 
 it('复盘只提供意见正文，不把评价 ID 和平台观测 ID 混入可引用证据', async () => {
   const { input } = await fixture();

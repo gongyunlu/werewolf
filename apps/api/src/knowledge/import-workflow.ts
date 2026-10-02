@@ -11,13 +11,13 @@ import {
   type ModelPort,
   type ModelResponse,
 } from '../llm/model-port';
-import type { PromptSource } from '../llm/prompt-template';
+import type { PromptSource } from '../prompts/template';
 import { recordingModelPort } from '../llm/recording-model-port';
 import { gameSkills } from '../skills/game-skills';
 import { KnowledgeConflictError } from '../store/knowledge';
 import type { CaptureRecord, CaptureState, OrganizationState } from '../store/knowledge-imports';
 import type { GameStores } from '../store/stores';
-import { parseStructured } from '../turn/graph';
+import { parseStructured } from '../llm/structured-output';
 import {
   importPrompts,
   importRequest,

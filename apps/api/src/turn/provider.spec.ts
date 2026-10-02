@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, DEATH_CAUSES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import type { Ballot } from '../core/vote';
 import { actionKey, phaseInstanceId } from '../core/identity';
@@ -10,7 +11,6 @@ import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { scriptedModel, type RecordingModel } from '../testing/model';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 import type { TurnRuntime } from './request';
 
@@ -43,7 +43,7 @@ async function withActions(
       port: model,
       accessFor: () => ACCESS,
       memoriesFor: () => [],
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       skills: stubSkills(),
       ...(preview ? { preview } : {}),
     },
@@ -193,7 +193,7 @@ describe('模型行动提供者', () => {
           skills,
           promptSource: {
             load: async (name) => ({
-              ...(await LOCAL_TURN_PROMPTS.load(name)),
+              ...(await LOCAL_PROMPTS.load(name)),
               source: 'platform',
               version: 7,
             }),
@@ -663,7 +663,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -703,7 +703,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -738,7 +738,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -762,7 +762,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -804,7 +804,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -827,7 +827,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -853,7 +853,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -876,7 +876,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -901,7 +901,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -925,7 +925,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         stores,
@@ -1032,7 +1032,7 @@ describe('模型行动提供者', () => {
           port: model,
           accessFor: () => ACCESS,
           memoriesFor: () => [],
-          promptSource: LOCAL_TURN_PROMPTS,
+          promptSource: LOCAL_PROMPTS,
           skills: stubSkills(),
         },
         memoryStores(),

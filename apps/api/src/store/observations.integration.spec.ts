@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES } from '@werewolf/shared';
 import { Queue, Worker } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -8,7 +9,6 @@ import { openaiModelPort } from '../llm/openai-model-port';
 import { retryingModelPort } from '../llm/retrying-model-port';
 import { stubSkills } from '../testing/fixtures';
 import { actionKeyOf, type ActionRequest, type TurnRuntime } from '../turn/request';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { runActionGraph } from '../turn/graph';
 import { openPrismaClient, prismaStores } from './prisma';
 
@@ -113,7 +113,7 @@ integration('Postgres 与 Redis 的离线观测验收', () => {
               }),
               memoriesFor: () => [],
               skills: stubSkills(),
-              promptSource: LOCAL_TURN_PROMPTS,
+              promptSource: LOCAL_PROMPTS,
             };
             const resume = !first;
             first = false;

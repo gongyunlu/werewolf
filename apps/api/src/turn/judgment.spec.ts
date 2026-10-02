@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, DEATH_CAUSES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import { ActionsController } from '../actions/actions.controller';
 import { phaseInstanceId } from '../core/identity';
@@ -10,7 +11,6 @@ import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { answeringModel, scriptedModel } from '../testing/model';
 import { playerAnswer } from '../testing/player';
 import { latestJudgment, type PersonalJudgment } from './judgment';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { modelActions } from './provider';
 import type { TurnOutcome } from './graph';
 
@@ -28,7 +28,7 @@ function actionsFor(stores: GameStores, port: ModelPort, preview?: (chunk: Previ
       memoriesFor: (seatNo) => [`${seatNo}号的人设`],
       promptSource: {
         load: async (name) => ({
-          ...(await LOCAL_TURN_PROMPTS.load(name)),
+          ...(await LOCAL_PROMPTS.load(name)),
           source: 'platform',
           version: 7,
         }),

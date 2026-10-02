@@ -1,4 +1,4 @@
-import { PromptContractError, renderTemplate, type PromptTemplate } from './prompt-template';
+import { PromptContractError, renderTemplate, type PromptTemplate } from './template';
 
 function template(text: string): PromptTemplate {
   return { name: 'test/one', text, version: null, source: 'local' };

@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { randomUUID } from 'node:crypto';
 import { KnowledgeContentSchema, KNOWLEDGE_CHARACTERS } from '@werewolf/shared';
 import { initialRetrieval, retrieveExperiences } from '../experience/retrieval';
@@ -16,7 +17,6 @@ import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { modelActions } from '../turn/provider';
-import { LOCAL_TURN_PROMPTS } from '../turn/prompt';
 import { INITIAL_KNOWLEDGE } from './initial-content';
 import { indexKnowledge, prepareKnowledgeIndex } from './indexing';
 
@@ -233,7 +233,7 @@ describe('知识版本与逐行动输入', () => {
       accessFor: () => access,
       memoriesFor: () => [],
       skills: stubSkills(),
-      promptSource: LOCAL_TURN_PROMPTS,
+      promptSource: LOCAL_PROMPTS,
       embedding: query,
     };
     const state = withRoles({ ...makeState(3, false), gameId: 'guard-game' }, { p1: 'guard' });

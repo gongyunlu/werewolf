@@ -1,3 +1,4 @@
+import { EXPERIENCE_PROMPTS, loadPrompt } from '../prompts/catalog';
 import { z } from 'zod';
 import {
   ExperienceContentSchema,
@@ -5,43 +6,13 @@ import {
   ReviewAnalysisSchema,
   type ExperienceResult,
 } from '@werewolf/shared';
-import {
-  assertTemplateContract,
-  localPromptSource,
-  renderTemplate,
-  type PromptSource,
-  type PromptTemplate,
-} from '../llm/prompt-template';
+import { renderTemplate, type PromptSource, type PromptTemplate } from '../prompts/template';
 import type { ExperienceInput } from '../store/experiences';
 import { InvalidOutputError } from '../llm/model-port';
-import { toolOf } from '../turn/decisions';
-
-export const EXPERIENCE_PROMPTS = {
-  system: 'experience/extract-system',
-  user: 'experience/extract-user',
-} as const;
-export const LOCAL_EXPERIENCE_PROMPTS = localPromptSource({
-  [EXPERIENCE_PROMPTS.system]: `你在赛后为一名持久身份的狼人杀玩家提炼个人经验。只提炼有原始证据支持、对未来有参考价值的经验，允许返回零条，不要凑数。复盘是可讨论的意见，不是权威事实，必须结合原始证据。
-区分行动当时实际可见的信息、出局后旁观和赛后才知道的信息。at_action 来源只证明对应行动时可见，不能倒推到更早的行动；post_game 来源是赛后材料，不证明玩家当时知道或出局后看见。没有旁观记录，不得虚构旁观经历。
-可以从赛后身份和结果学习，但不能把后见信息写成当时的依据。历史座位、身份、发言、关系仅是旧局背景，不能写成未来对局事实。经验正文应写可被新证据推翻的参考做法及适用条件，当前规则与证据始终优先。
-允许不同打法、判断偏差和改变立场，不打分、不按裁判偏好统一策略。硬约束只关注信息视角和底层规则、行动时序；不要发明技能、资格或结算规则。
-sourceIds 只能选择本次原始证据的 E 编号，每条至少引用一个原始来源。复盘正文中的 D 编号只是意见的阅读标记，不能作为经验来源；不要引用评价、追踪或其他内部 ID。使用中文，通过规定工具返回结果。`,
-  [EXPERIENCE_PROMPTS.user]: `来源身份、板子与角色（只属于历史对局）：\n{{identity}}\n玩家复盘（主观意见）：\n{{review}}\n原始证据及可知边界：\n{{evidence}}\n最多保存三条，每条说明适用条件。没有新经验时 experiences 返回空数组，reason 说明原因。`,
-});
+import { toolOf } from '../llm/structured-output';
 
 export async function experiencePrompts(source: PromptSource): Promise<PromptTemplate[]> {
-  return Promise.all(
-    Object.values(EXPERIENCE_PROMPTS).map(async (name) => {
-      const template = source.strict
-        ? await source.load(name)
-        : await source.load(name).catch(() => LOCAL_EXPERIENCE_PROMPTS.load(name));
-      assertTemplateContract(
-        template,
-        name === EXPERIENCE_PROMPTS.user ? ['identity', 'review', 'evidence'] : [],
-      );
-      return template;
-    }),
-  );
+  return Promise.all(Object.values(EXPERIENCE_PROMPTS).map((name) => loadPrompt(source, name)));
 }
 export function experienceRequest(input: ExperienceInput) {
   const variables = {

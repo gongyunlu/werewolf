@@ -1,6 +1,6 @@
 import type { ModelCapability } from './model-capability';
 import type { AttemptCompletion, CallCompletion, CallIdentity } from './observation';
-import type { PromptTemplate } from './prompt-template';
+import type { PromptTemplate } from '../prompts/template';
 import type { ExperienceSnapshot, KnowledgeSnapshot } from '@werewolf/shared';
 
 export type PromptReference = Pick<PromptTemplate, 'name' | 'version' | 'source'>;

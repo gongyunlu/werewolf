@@ -93,7 +93,8 @@ pnpm --filter @werewolf/api prompt:compare --sample <样本ID> --baseline 3 --ca
 
 ## Prompt 标签发布与回退
 
-`prompt:label` 使用 Langfuse 原生标签切换已有版本。支持当前 8 个对局模板和 2 个经验模板，
+`prompt:label` 使用 Langfuse 原生标签切换已有版本。支持当前 8 个对局模板、2 个经验模板和
+2 个知识整理模板（`knowledge/organize-system`、`knowledge/organize-user`），共 12 个运行时模板。
 移动前用项目渲染器检查必需变量和未知变量。该检查保证模板可以渲染，策略内容由使用者判断。
 
 ```powershell
@@ -111,6 +112,9 @@ pnpm --filter @werewolf/api prompt:label --prompt turn/generate-system --label p
 才移动标签；当前版本不符会停止，已在目标版本时不重复写入。只移动指定标签，不创建新版本，
 不移除其他标签；`latest` 由平台维护，不能使用该命令修改。
 
+知识整理模板需先在平台创建目标版本，代码校验不会自动创建或发布远端模板。创建远端模板、
+创建新版本与移动标签均属于独立发布操作；本地回退正文不会自动上传，经验初始化命令仍只处理 2 个经验模板。
+
 也可用 `--label staging` 管理候选版本，但应用仍按原有方式读取 production。标签切换后，
 新请求在 SDK 缓存刷新时取得新版本；当前缓存为 60 秒，已保存题面和快照保持原样。
 发布与回退本身不调用模型，不会自动把 A/B 的候选版本发布到 production。
@@ -118,5 +122,5 @@ pnpm --filter @werewolf/api prompt:label --prompt turn/generate-system --label p
 若结果为 `not_verified`，先用 `pnpm langfuse:read prompts get <名称> --label <标签>` 核查平台状态。
 写请求不自动重试或回退；核对与写入不是平台原子锁，同一模板应避免并发发布。
 
-相关检查：`pnpm --filter @werewolf/api test --runInBand prompt-label.spec.ts prompt-template.spec.ts langfuse-prompt-source.spec.ts`。
+相关检查：`pnpm --filter @werewolf/api test --runInBand src/cli/prompt-label.spec.ts src/prompts/template.spec.ts src/prompts/catalog.spec.ts src/prompts/langfuse-source.spec.ts`。
 官方说明：[Prompt 版本与标签](https://langfuse.com/docs/prompt-management/features/prompt-version-control)。

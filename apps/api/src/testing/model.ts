@@ -11,7 +11,7 @@ export interface RecordingModel extends ModelPort {
  * 请求带了工具，答案就从工具那一头出去：真模型在那个口子上是被 tool_choice 逼着调工具的，
  * 替身照做，用例里的脚本才不必按有没有工具换写法。
  *
- * 参数裹着壳（见 decisions 的 toolOf），答案也跟着裹：模型看到的形状就是那么写的，
+ * 参数裹着壳（见 llm/structured-output 的 toolOf），答案也跟着裹：模型看到的形状就是那么写的，
  * 它交回来的自然是 {value: ...}。脚本里写的仍是那个值本身。
  *
  * @param request 这次请求，用它决定答案从正文还是工具那一头出去

@@ -1,0 +1,31 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`经验请求保留完整文本、短引用和模板来源 1`] = `
+{
+  "primaryPrompt": "experience/extract-user",
+  "prompt": "来源身份、板子与角色（只属于历史对局）：
+{"agentId":"固定玩家","boardId":"6p_white_wolf","role":"villager"}
+玩家复盘（主观意见）：
+复盘意见
+原始证据及可知边界：
+[{"id":"E1","origin":{"actionKey":"old-action","path":"context/visible"},"value":"原始发言中的时序","perspective":"at_action"}]
+最多保存三条，每条说明适用条件。没有新经验时 experiences 返回空数组，reason 说明原因。",
+  "prompts": [
+    {
+      "name": "experience/extract-system",
+      "source": "local",
+      "version": null,
+    },
+    {
+      "name": "experience/extract-user",
+      "source": "local",
+      "version": null,
+    },
+  ],
+  "system": "你在赛后为一名持久身份的狼人杀玩家提炼个人经验。只提炼有原始证据支持、对未来有参考价值的经验，允许返回零条，不要凑数。复盘是可讨论的意见，不是权威事实，必须结合原始证据。
+区分行动当时实际可见的信息、出局后旁观和赛后才知道的信息。at_action 来源只证明对应行动时可见，不能倒推到更早的行动；post_game 来源是赛后材料，不证明玩家当时知道或出局后看见。没有旁观记录，不得虚构旁观经历。
+可以从赛后身份和结果学习，但不能把后见信息写成当时的依据。历史座位、身份、发言、关系仅是旧局背景，不能写成未来对局事实。经验正文应写可被新证据推翻的参考做法及适用条件，当前规则与证据始终优先。
+允许不同打法、判断偏差和改变立场，不打分、不按裁判偏好统一策略。硬约束只关注信息视角和底层规则、行动时序；不要发明技能、资格或结算规则。
+sourceIds 只能选择本次原始证据的 E 编号，每条至少引用一个原始来源。复盘正文中的 D 编号只是意见的阅读标记，不能作为经验来源；不要引用评价、追踪或其他内部 ID。使用中文，通过规定工具返回结果。",
+}
+`;

@@ -1,3 +1,4 @@
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, FACTIONS, GAME_STATUSES } from '@werewolf/shared';
 import { createGameSetup } from '../boards/setup';
 import type { ModelAccess } from '../llm/model-port';
@@ -6,7 +7,6 @@ import type { GameStores } from '../store/stores';
 import { makeState, stubSkills } from '../testing/fixtures';
 import { answeringModel, type RecordingModel } from '../testing/model';
 import { answeringPlayer, breakingPlayer, playerAnswer } from '../testing/player';
-import { LOCAL_TURN_PROMPTS } from './prompt';
 import { runStoredGame } from './run-stored-game';
 
 const ACCESS: ModelAccess = {
@@ -40,7 +40,7 @@ async function play(
     setup,
     playerIds: setup.seats.map((seat) => `p${seat.seatNo}`),
     runtime: { port: model, accessFor: () => ACCESS, memoriesFor: () => [], skills: stubSkills() },
-    promptSource: LOCAL_TURN_PROMPTS,
+    promptSource: LOCAL_PROMPTS,
     minuteOf: () => 0,
     stores,
   });
