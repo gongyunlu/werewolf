@@ -21,6 +21,7 @@ import {
   ExperienceEditSchema,
   ExperienceArchiveSchema,
   ExperienceIndexSchema,
+  ExperienceReviewRequestSchema,
 } from '@werewolf/shared';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -35,6 +36,7 @@ import { indexCompleted } from './indexing';
 import { ExperienceConflictError } from '../store/experiences';
 import { embeddingKey, embeddingRuntime } from '../llm/embedding';
 import { experienceIndexJobId, prepareExperienceIndex } from './maintenance';
+import { experienceAudit } from './audit';
 
 async function conflict<T>(work: () => Promise<T>): Promise<T> {
   try {
@@ -64,8 +66,7 @@ export class ExperienceController {
     const { enabled, revision } = parseBody(ExperienceToggleSchema, body);
     const row = await this.stores.experiences.find(id);
     if (!row || row.item.agentId !== agentId) throw new NotFoundException('该 agent 没有这条经验');
-    if (row.item.version > 1 && revision === undefined)
-      throw new ConflictException('请刷新经验后携带修订号操作');
+    if (revision === undefined) throw new ConflictException('请刷新经验后携带修订号操作');
     if (
       !(await conflict(() =>
         this.stores.experiences.toggle(
@@ -73,10 +74,26 @@ export class ExperienceController {
           id,
           enabled,
           revision,
-          enabled && row.item.version > 1 ? embeddingKey(embeddingRuntime()) : undefined,
+          enabled ? embeddingKey(embeddingRuntime()) : undefined,
         ),
       ))
     )
+      throw new NotFoundException('该 agent 没有这条经验');
+    return this.list(agentId);
+  }
+
+  @Get('agents/:agentId/experiences/:id/audit')
+  async audit(@Param('agentId') agentId: string, @Param('id') id: string) {
+    const row = await this.stores.experiences.find(id);
+    if (!row || row.item.agentId !== agentId) throw new NotFoundException('该 agent 没有这条经验');
+    return experienceAudit(this.stores, row.item);
+  }
+
+  @Post('agents/:agentId/experiences/:id/review')
+  @UseGuards(AdminTokenGuard)
+  async review(@Param('agentId') agentId: string, @Param('id') id: string, @Body() body: unknown) {
+    const input = parseBody(ExperienceReviewRequestSchema, body);
+    if (!(await conflict(() => this.stores.experiences.review(agentId, id, input))))
       throw new NotFoundException('该 agent 没有这条经验');
     return this.list(agentId);
   }
@@ -119,9 +136,12 @@ export class ExperienceController {
     if (!row || row.item.agentId !== agentId) throw new NotFoundException('该 agent 没有这条经验');
     if (row.item.version !== version) throw new ConflictException('经验已被修改，请刷新后重试');
     if (row.item.archived) throw new ConflictException('请先恢复归档经验，再建立索引');
-    if (version === 1) {
-      await this.start(row.item.sourceGameId, row.item.sourcePlayerId);
-      return this.list(agentId);
+    if (version === 1 && row.state === null) {
+      const generation = (await this.stores.experiences.findGeneration(row.item.generationId))!;
+      if (!indexCompleted(generation.state)) {
+        await this.start(row.item.sourceGameId, row.item.sourcePlayerId);
+        return this.list(agentId);
+      }
     }
     const jobId = experienceIndexJobId(id, version);
     const job = await this.queue.getJob(jobId);

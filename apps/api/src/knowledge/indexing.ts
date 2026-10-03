@@ -1,6 +1,7 @@
 import { KNOWLEDGE_CHARACTERS, KnowledgeSnapshotSchema } from '@werewolf/shared';
 import { embedTask, newEmbeddingTask } from '../experience/embedding-task';
-import { embeddingKey, embeddingRuntime, type EmbeddingRuntime } from '../llm/embedding';
+import { embeddingRuntime, type EmbeddingRuntime } from '../llm/embedding';
+import { knowledgeEmbeddingKey, knowledgeText, KNOWLEDGE_TEXT_VERSION } from './text';
 import { KnowledgeConflictError, type KnowledgeRevision } from '../store/knowledge';
 import type { Queue } from 'bullmq';
 import type { KnowledgeJob } from './knowledge-queue';
@@ -32,8 +33,9 @@ export async function prepareKnowledgeIndex(
     throw new KnowledgeConflictError('条目超过单次知识输入预算，请精简正文和来源');
   if (row.state.status === 'unknown' || row.state.task?.attempts.at(-1)?.status === 'pending')
     throw new KnowledgeConflictError('上次向量请求结果未知，请先核查调用记录，不能自动重发');
-  if (row.state.status === 'ready' && row.state.task?.key === embeddingKey(runtime)) return;
-  if (row.state.task && row.state.task.key !== embeddingKey(runtime)) {
+  if (row.state.status === 'ready' && row.state.task?.key === knowledgeEmbeddingKey(runtime))
+    return;
+  if (row.state.task && row.state.task.key !== knowledgeEmbeddingKey(runtime)) {
     const item = await stores.knowledge.find(row.id);
     if (item?.activeVersionId === row.versionId)
       throw new KnowledgeConflictError('接入已改变，请先停用此版本再重建索引');
@@ -42,9 +44,9 @@ export async function prepareKnowledgeIndex(
     status: 'pending',
     failure: null,
     task:
-      row.state.task?.key === embeddingKey(runtime)
+      row.state.task?.key === knowledgeEmbeddingKey(runtime)
         ? row.state.task
-        : newEmbeddingTask(JSON.stringify(row.content), runtime),
+        : newEmbeddingTask(knowledgeText(row.content), runtime, KNOWLEDGE_TEXT_VERSION),
   });
 }
 

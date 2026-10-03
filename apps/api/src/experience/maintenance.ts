@@ -16,7 +16,6 @@ export async function prepareExperienceIndex(
   runtime: EmbeddingRuntime,
 ) {
   if (row.item.archived) throw new ExperienceConflictError('请先恢复归档经验，再建立索引');
-  if (row.item.version === 1) throw new ExperienceConflictError('原始版本请通过提炼记录建立索引');
   if (row.state?.status === 'unknown' || row.state?.task?.attempts.at(-1)?.status === 'pending')
     throw new ExperienceConflictError('上次向量请求结果未知，请核查调用记录，不能自动重发');
   const key = embeddingKey(runtime);

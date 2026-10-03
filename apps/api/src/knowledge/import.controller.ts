@@ -1,3 +1,4 @@
+import { knowledgeEmbeddingKey } from './text';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
@@ -27,7 +28,7 @@ import type { Queue } from 'bullmq';
 import { AdminTokenGuard } from '../common/guards/admin-token.guard';
 import { parseBody } from '../common/parse-body';
 import { loadEnv } from '../config/env';
-import { embeddingKey, embeddingRuntime } from '../llm/embedding';
+import { embeddingRuntime } from '../llm/embedding';
 import { KnowledgeConflictError } from '../store/knowledge';
 import type { CaptureRecord } from '../store/knowledge-imports';
 import { requireCandidate } from '../store/knowledge-imports';
@@ -150,7 +151,7 @@ export class KnowledgeImportController {
             item.id,
             item.revision,
             item.versionId,
-            embeddingKey(embeddingRuntime()),
+            knowledgeEmbeddingKey(embeddingRuntime()),
           );
       } catch (failure) {
         error = failure instanceof Error ? failure.message : '操作失败';

@@ -16,6 +16,8 @@ import {
   type ExperienceGeneration,
   type ExperienceState,
   type ExperienceStore,
+  type ExperienceScope,
+  reviewedExperience,
 } from './experiences';
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -42,37 +44,60 @@ const record = (row: Prisma.AgentExperienceModel) => ({
   state: row.indexState as unknown as ExperienceIndexState | null,
   embeddingKey: row.embeddingKey,
 });
+type RetrievedExperience = Pick<
+  Prisma.AgentExperienceModel,
+  'content' | 'version' | 'revision' | 'createdAt'
+>;
+const retrievedExperience = (row: RetrievedExperience): AgentExperience => ({
+  ...(row.content as unknown as AgentExperience),
+  version: row.version,
+  revision: row.revision,
+  createdAt: row.createdAt.toISOString(),
+  enabled: true,
+  archived: false,
+  indexed: true,
+});
+const scopeSql = (scope: ExperienceScope) => Prisma.sql`
+  e.enabled = true AND e.archived = false AND e.board_id = ${scope.boardId} AND e.role = ${scope.role}
+  AND g.game_id <> ${scope.gameId}
+  AND e.content->'actionTypes' ? ${scope.actionType ?? ''}
+  AND (e.content->>'minDay')::integer <= ${scope.day ?? 0}
+  AND e.content->>'firstDayOnly' IS NOT NULL
+  AND ((e.content->>'firstDayOnly')::boolean = false OR ${scope.day ?? 0} = 1)
+  AND e.content->'reviews'->-1->>'decision' = 'approved'
+  AND (e.content->'reviews'->-1->>'version')::integer = e.version
+`;
 
 export function prismaExperiences(client: PrismaClient): ExperienceStore {
   return {
-    async hasCandidates({ boardId, role, gameId }) {
-      return (
-        (await client.agentExperience.count({
-          where: {
-            boardId,
-            role,
-            enabled: true,
-            archived: false,
-            generation: { gameId: { not: gameId } },
-          },
-        })) > 0
-      );
+    async hasCandidates(scope) {
+      const rows = await client.$queryRaw<Array<{ exists: boolean }>>`
+        SELECT EXISTS(SELECT 1 FROM agent_experiences e
+          JOIN experience_generations g ON g.id = e.generation_id WHERE ${scopeSql(scope)})`;
+      return rows[0]!.exists;
     },
-    async search({ boardId, role, gameId }, key, vector, limit) {
+    async lexicalCandidates(scope, key) {
+      const rows = await client.$queryRaw<RetrievedExperience[]>`
+        SELECT e.content, e.version, e.revision, e.created_at AS "createdAt" FROM agent_experiences e
+        JOIN experience_generations g ON g.id = e.generation_id
+        WHERE ${scopeSql(scope)} AND e.embedding_key = ${key} AND cardinality(e.embedding) > 0
+        ORDER BY e.id ASC`;
+      return rows.map(retrievedExperience);
+    },
+    async search(scope, key, vector, limit) {
       // PostgreSQL 精确余弦检索，先过滤适用范围，只返回有界候选；不把全库向量搬到应用层。
-      const rows = await client.$queryRaw<Array<{ content: unknown; similarity: number }>>`
-        SELECT e.content,
+      const rows = await client.$queryRaw<Array<RetrievedExperience & { similarity: number }>>`
+        SELECT e.content, e.version, e.revision, e.created_at AS "createdAt",
           (SELECT sum(v.x * q.x) / NULLIF(sqrt(sum(v.x * v.x) * sum(q.x * q.x)), 0)
            FROM unnest(e.embedding) WITH ORDINALITY AS v(x, i)
            JOIN unnest(${vector}::double precision[]) WITH ORDINALITY AS q(x, i) USING (i)) AS similarity
         FROM agent_experiences e JOIN experience_generations g ON g.id = e.generation_id
-        WHERE e.enabled = true AND e.archived = false AND e.board_id = ${boardId} AND e.role = ${role}
-          AND g.game_id <> ${gameId} AND e.embedding_key = ${key}
+        WHERE ${scopeSql(scope)} AND e.embedding_key = ${key}
           AND cardinality(e.embedding) = ${vector.length}
         ORDER BY similarity DESC, e.id ASC LIMIT ${limit}
       `;
       return rows.map((row) => ({
-        experience: row.content as AgentExperience,
+        experience: retrievedExperience(row),
         similarity: row.similarity,
       }));
     },
@@ -80,7 +105,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
       await client.$transaction(
         rows.map((row) =>
           client.agentExperience.updateMany({
-            where: { id: row.id, version: 1 },
+            where: { id: row.id, version: 1, indexState: { equals: Prisma.DbNull } },
             data: { embedding: row.vector, embeddingKey: key },
           }),
         ),
@@ -98,6 +123,35 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
       const row = await client.agentExperience.findUnique({ where: { id } });
       return row ? record(row) : null;
     },
+    async related(boardId, role) {
+      return (
+        await client.agentExperience.findMany({
+          where: { boardId, role, archived: false },
+          orderBy: { id: 'asc' },
+        })
+      ).map(experience);
+    },
+    async review(agentId, id, input) {
+      return client.$transaction(async (tx) => {
+        const row = await tx.agentExperience.findFirst({
+          where: { id, agentId },
+          include: { generation: { select: { state: true } } },
+        });
+        if (!row) return false;
+        const sources = (row.generation.state as unknown as ExperienceState).input!.sources;
+        const next = reviewedExperience(experience(row), input, sources);
+        const saved = await tx.agentExperience.updateMany({
+          where: { id, agentId, revision: input.revision },
+          data: {
+            content: json({ ...ExperienceSnapshotSchema.parse(next), reviews: next.reviews }),
+            enabled: false,
+            revision: { increment: 1 },
+          },
+        });
+        if (saved.count !== 1) throw new ExperienceConflictError('经验已被修改，请刷新后重试');
+        return true;
+      });
+    },
     async edit(agentId, id, revision, content) {
       return client.$transaction(async (tx) => {
         const row = await tx.agentExperience.findFirst({ where: { id, agentId } });
@@ -109,7 +163,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
         const saved = await tx.agentExperience.updateMany({
           where: { id, agentId, revision },
           data: {
-            content: json(ExperienceSnapshotSchema.parse(next)),
+            content: json({ ...ExperienceSnapshotSchema.parse(next), reviews: next.reviews }),
             version: next.version,
             revision: { increment: 1 },
             history: json(next.history),
@@ -217,6 +271,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
               role: item.role,
               ordinal,
               content: json(item),
+              enabled: false,
             })),
           });
       });

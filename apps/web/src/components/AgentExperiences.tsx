@@ -56,7 +56,7 @@ export function AgentExperiences({ agent, onClose }: { agent: AgentSummary; onCl
         <DialogHeader>
           <DialogTitle>{agent.name} · 个人历史经验</DialogTitle>
           <DialogDescription>
-            由已完成复盘及原始证据提炼，与人工人设、策略分开保存。启用后其他参赛者也可检索参考；编辑和归档只影响后续新行动，已保存的行动输入保持不变。停用仍可编辑；归档后隐藏并排除检索，恢复后保持停用。
+            由已完成复盘及原始证据提炼，候选默认停用。审核通过并建立索引后可手动启用，启用后其他参赛者也可检索参考。编辑后需重新审核；归档恢复后保持停用。审核记录用于追溯依据，不代表策略收益已经验证。
           </DialogDescription>
         </DialogHeader>
         <Field orientation="horizontal">

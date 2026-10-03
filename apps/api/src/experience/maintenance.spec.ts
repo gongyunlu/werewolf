@@ -1,7 +1,15 @@
 import { ExperienceEditableSchema } from '@werewolf/shared';
 import { embeddingKey } from '../llm/embedding';
 import { ModelCallError } from '../llm/model-port';
-import { fixture, result, access, promptSource, controlledPort, vectorRuntime } from './testing';
+import {
+  fixture,
+  result,
+  access,
+  promptSource,
+  controlledPort,
+  vectorRuntime,
+  approveExperience,
+} from './testing';
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
 import { indexExperienceVersion, prepareExperienceIndex } from './maintenance';
@@ -20,11 +28,37 @@ export async function maintenanceFixture() {
     title: '更正时序',
     body: '以当时可见记录核对先后，不用赛后信息替代。',
     conditions: '解释较早行为时',
+    actionTypes: ['speech', 'vote'] as Array<'speech' | 'vote'>,
+    minDay: 1,
+    firstDayOnly: false,
+    exclusions: '没有当时可见依据时不适用',
   };
   return { ...f, item, content };
 }
 
 describe('经验编辑与归档', () => {
+  it('原始版本切换向量接入后可以重建索引，迟到的提炼索引不覆盖新接入', async () => {
+    const f = await maintenanceFixture();
+    const original = vectorRuntime();
+    await indexExperience(f.stores, f.row.id, original);
+    const next = vectorRuntime([0, 1]);
+    next.access = { ...next.access, model: '新向量模型' };
+    await expect(
+      f.stores.experiences.toggle(f.agent.id, f.item.id, true, 0, embeddingKey(next)),
+    ).rejects.toThrow('索引');
+    await prepareExperienceIndex(f.stores, (await f.stores.experiences.find(f.item.id))!, next);
+    await indexExperienceVersion(f.stores, f.item.id, 1, next);
+    await f.stores.experiences.writeVectors(embeddingKey(original), [
+      { id: f.item.id, vector: [1, 0] },
+    ]);
+    expect((await f.stores.experiences.find(f.item.id))!.embeddingKey).toBe(embeddingKey(next));
+    await approveExperience(f.stores, f.item.id, next);
+    expect((await f.stores.experiences.find(f.item.id))!.item).toMatchObject({
+      version: 1,
+      enabled: true,
+    });
+    expect(next.port.generate).toHaveBeenCalledTimes(1);
+  });
   it('拒绝空白、超长与不可编辑字段；保存不同字段均产生新版，原来源保持不变', async () => {
     const f = await maintenanceFixture();
     for (const content of [
@@ -63,7 +97,13 @@ describe('经验编辑与归档', () => {
   it('编辑清除旧向量，原始索引迟到不覆盖新版；新版显式索引启用后才参与检索', async () => {
     const f = await maintenanceFixture();
     const runtime = vectorRuntime();
-    const scope = { gameId: 'next', boardId: f.item.boardId, role: f.item.role };
+    const scope = {
+      gameId: 'next',
+      boardId: f.item.boardId,
+      role: f.item.role,
+      actionType: 'vote',
+      day: 1,
+    };
     await indexExperience(f.stores, f.row.id, runtime);
     const source = await f.stores.experiences.findGeneration(f.row.id);
     await f.stores.experiences.edit(f.agent.id, f.item.id, 0, f.content);
@@ -82,7 +122,7 @@ describe('经验编辑与归档', () => {
     expect(jest.mocked(runtime.port.generate).mock.calls.at(-1)![0].prompt).toContain(
       f.content.body,
     );
-    await f.stores.experiences.toggle(f.agent.id, f.item.id, true, 1, embeddingKey(runtime));
+    await approveExperience(f.stores, f.item.id, runtime);
     const hits = await f.stores.experiences.search(scope, embeddingKey(runtime), [1, 0], 20);
     expect(hits[0]!.experience).toMatchObject({ version: 2, body: f.content.body });
     for (const other of [
@@ -157,7 +197,14 @@ describe('经验编辑与归档', () => {
     const f = await maintenanceFixture();
     const runtime = vectorRuntime();
     await indexExperience(f.stores, f.row.id, runtime);
-    const scope = { gameId: 'next', boardId: f.item.boardId, role: f.item.role };
+    await approveExperience(f.stores, f.item.id, runtime);
+    const scope = {
+      gameId: 'next',
+      boardId: f.item.boardId,
+      role: f.item.role,
+      actionType: 'vote',
+      day: 1,
+    };
     const initial = initialRetrieval(
       {
         actor: { playerId: 'p1', seatNo: 1, role: '平民' },
@@ -168,6 +215,8 @@ describe('经验编辑与归档', () => {
         skill: [],
       },
       scope,
+      'vote',
+      'vector',
     );
     await f.stores.actions.begin({
       gameId: 'next',
@@ -180,11 +229,11 @@ describe('经验编辑与归档', () => {
       experienceRetrieval: initial,
     });
     const saved = await retrieveExperiences(f.stores, 'next/vote', initial, runtime);
-    await f.stores.experiences.edit(f.agent.id, f.item.id, 0, f.content);
-    await f.stores.experiences.archive(f.agent.id, f.item.id, 1, true);
+    await f.stores.experiences.edit(f.agent.id, f.item.id, 2, f.content);
+    await f.stores.experiences.archive(f.agent.id, f.item.id, 3, true);
     expect(await f.stores.experiences.hasCandidates(scope)).toBe(false);
     await expect(f.stores.experiences.toggle(f.agent.id, f.item.id, true)).rejects.toThrow('归档');
-    await expect(f.stores.experiences.edit(f.agent.id, f.item.id, 2, f.content)).rejects.toThrow(
+    await expect(f.stores.experiences.edit(f.agent.id, f.item.id, 4, f.content)).rejects.toThrow(
       '恢复',
     );
     await expect(
@@ -194,11 +243,11 @@ describe('经验编辑与归档', () => {
     expect((await f.stores.actions.find('next/vote'))!.experienceRetrieval).toEqual(saved);
     expect(saved.selected[0]!.body).toBe(f.item.body);
     expect(runtime.port.generate).toHaveBeenCalledTimes(2);
-    await f.stores.experiences.archive(f.agent.id, f.item.id, 2, false);
+    await f.stores.experiences.archive(f.agent.id, f.item.id, 4, false);
     expect((await f.stores.experiences.find(f.item.id))!.item).toMatchObject({
       archived: false,
       enabled: false,
-      revision: 3,
+      revision: 5,
     });
   });
 });

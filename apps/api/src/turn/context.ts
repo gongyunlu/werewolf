@@ -103,7 +103,12 @@ function situationFacts(state: GameState): string[] {
   }
 
   if (!state.hasSheriff) facts.push('本局不选警长。');
-  else if (state.sheriffId !== null) facts.push(`警长是 ${seatOf(state, state.sheriffId)} 号。`);
+  else if (state.sheriffId !== null) {
+    const sheriff = playerOf(state, state.sheriffId);
+    facts.push(
+      `警长是 ${sheriff.seatNo} 号。${sheriff.isAlive ? '目前仍存活，此刻没有主动交徽或撕徽窗口；传徽计划要等本人出局后的合法窗口。' : ''}`,
+    );
+  }
   // 竞选走完了仍然没有（流失、撕徽）与还没选出来是两回事，别把前一种写成「还没有」。
   else facts.push(state.sheriffElectionSettled ? '本局没有警长。' : '还没有警长。');
 

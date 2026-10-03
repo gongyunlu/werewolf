@@ -10,12 +10,13 @@ import {
   promptSource,
   result,
   vectorRuntime,
+  approveExperience,
 } from '../experience/testing';
 import { runExperience } from '../experience/workflow';
 import { indexExperience } from '../experience/indexing';
 import { INITIAL_KNOWLEDGE } from '../knowledge/initial-content';
 import { indexKnowledge, prepareKnowledgeIndex } from '../knowledge/indexing';
-import { embeddingKey } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from '../knowledge/text';
 import { openaiModelPort } from '../llm/openai-model-port';
 import { retryingModelPort } from '../llm/retrying-model-port';
 import { observeOperation, startTelemetry, stopTelemetry } from '../llm/telemetry';
@@ -91,19 +92,29 @@ async function fixture(answers: Array<string | number>) {
   experience.input.boardId = '12p_wolf_king';
   experience.input.role = 'guard';
   await runExperience(stores, experience.row.id, {
-    port: controlledPort(JSON.stringify(result)),
+    port: controlledPort(
+      JSON.stringify({
+        ...result,
+        experiences: result.experiences.map((item) => ({
+          ...item,
+          actionTypes: ['guard_protect'],
+        })),
+      }),
+    ),
     access: experienceAccess,
     promptSource,
     prepare: experience.prepare,
   });
   await indexExperience(stores, experience.row.id, indexer);
+  for (const item of await stores.experiences.list(experience.agent.id))
+    await approveExperience(stores, item.id, indexer);
   await prepareKnowledgeIndex(stores, knowledge.versions[0]!, indexer);
   await indexKnowledge(stores, knowledge.versions[0]!.versionId, indexer);
   await stores.knowledge.activate(
     knowledge.id,
     knowledge.revision,
     knowledge.versions[0]!.versionId,
-    embeddingKey(indexer),
+    knowledgeEmbeddingKey(indexer),
   );
   const sent: Record<string, unknown>[] = [];
   const fetch = jest.fn(async (_url, init) => {
@@ -184,6 +195,7 @@ async function fixture(answers: Array<string | number>) {
     skills: stubSkills(),
     preview: () => {},
     embedding: { ...indexer, port },
+    referenceModeFor: () => 'vector' as const,
   };
   const actions = () => {
     const provider = modelActions(runtime, stores);

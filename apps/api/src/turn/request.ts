@@ -73,6 +73,7 @@ export function actionKeyOf(request: ActionRequest): string {
  * 提示词给的是取用口子而不是取好的正文：图里哪个节点走到才取哪两条。
  */
 export interface TurnRuntime {
+  referenceModeFor?: (seatNo: number) => 'none' | 'vector' | 'hybrid';
   embedding?: import('../llm/embedding').EmbeddingRuntime;
   port: ModelPort;
   /**

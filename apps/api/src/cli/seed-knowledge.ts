@@ -4,7 +4,8 @@ import { loadEnvFiles } from '../config/env-files';
 import { loadEnv } from '../config/env';
 import { INITIAL_KNOWLEDGE } from '../knowledge/initial-content';
 import { prepareKnowledgeIndex, indexKnowledge } from '../knowledge/indexing';
-import { embeddingKey, embeddingRuntime } from '../llm/embedding';
+import { embeddingRuntime } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from '../knowledge/text';
 import { startTelemetry, stopTelemetry } from '../llm/telemetry';
 import { openPrismaClient, prismaStores } from '../store/prisma';
 
@@ -36,7 +37,7 @@ async function main() {
           item.id,
           item.revision,
           version.versionId,
-          embeddingKey(runtime),
+          knowledgeEmbeddingKey(runtime),
         );
       }
       Logger.log(

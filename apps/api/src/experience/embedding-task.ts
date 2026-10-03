@@ -9,6 +9,7 @@ export interface EmbeddingTask {
   key: string;
   model: string;
   dimensions: number;
+  textVersion?: string;
   attempts: Array<{
     callId: string;
     status: 'pending' | 'responded' | 'failed';
@@ -17,12 +18,17 @@ export interface EmbeddingTask {
   }>;
 }
 
-export function newEmbeddingTask(text: string, runtime: EmbeddingRuntime): EmbeddingTask {
+export function newEmbeddingTask(
+  text: string,
+  runtime: EmbeddingRuntime,
+  textVersion?: string,
+): EmbeddingTask {
   return {
     text,
-    key: embeddingKey(runtime),
+    key: embeddingKey(runtime, textVersion),
     model: runtime.access.model,
     dimensions: runtime.dimensions,
+    ...(textVersion ? { textVersion } : {}),
     attempts: [],
   };
 }
@@ -50,7 +56,7 @@ export async function embedTask(
     throw new Error('上次向量请求结果未知，已停止自动重发，请核查调用记录');
   let finish: ModelResponse['completeObservation'];
   if (!attempt || attempt.status === 'failed') {
-    if (task.key !== embeddingKey(runtime))
+    if (task.key !== embeddingKey(runtime, task.textVersion))
       throw new Error('向量接入或型号已改变，不能在同一任务中混用');
     attempt = { callId: randomUUID(), status: 'pending' };
     await persist({ ...task, attempts: [...task.attempts, attempt] });

@@ -3,11 +3,15 @@ import { z } from 'zod';
 import type { ExperienceRetrieval, KnowledgeRetrieval } from '@werewolf/shared';
 import type { EmbeddingTask } from '../experience/embedding-task';
 import type { ExperienceScope } from './experiences';
+import type { RetrievalCandidate } from '../experience/retrieval-ranking';
+import type { RerankTask } from '../experience/reranking';
 
 export type StoredExperienceRetrieval = ExperienceRetrieval & {
   scope: ExperienceScope;
   embedding?: EmbeddingTask;
   knowledge?: KnowledgeRetrieval;
+  frozenCandidates?: RetrievalCandidate[];
+  reranking?: RerankTask;
 };
 
 /** 列表读取的快照字段；旧记录可以没有思考或耗时。 */

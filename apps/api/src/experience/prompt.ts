@@ -1,7 +1,7 @@
 import { EXPERIENCE_PROMPTS, loadPrompt } from '../prompts/catalog';
 import { z } from 'zod';
 import {
-  ExperienceContentSchema,
+  ExperienceCandidateContentSchema,
   ExperienceResultSchema,
   ReviewAnalysisSchema,
   type ExperienceResult,
@@ -42,9 +42,13 @@ export function experienceTool(input: ExperienceInput) {
   const schema = ExperienceResultSchema.extend({
     experiences: ids.length
       ? z
-          .array(ExperienceContentSchema.extend({ sourceIds: z.array(z.enum(ids)).min(1).max(6) }))
+          .array(
+            ExperienceCandidateContentSchema.safeExtend({
+              sourceIds: z.array(z.enum(ids)).min(1).max(6),
+            }),
+          )
           .max(3)
-      : z.array(ExperienceContentSchema).max(0),
+      : z.array(ExperienceCandidateContentSchema).max(0),
   });
   return toolOf(schema, '提炼零至三条个人历史经验，sourceIds 只选原始证据的 E 编号');
 }

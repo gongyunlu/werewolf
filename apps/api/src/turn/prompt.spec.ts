@@ -2,6 +2,7 @@ import { LOCAL_PROMPTS, TURN_PROMPT_NAMES } from '../prompts/catalog';
 import type { PromptSource } from '../prompts/template';
 import { renderCritique, renderGenerate, renderRevise, renderSummary } from './prompt';
 import type { TurnContext } from './request';
+import { gameSkills } from '../skills/game-skills';
 
 const context: TurnContext = {
   task: '投票决定放逐谁。',
@@ -66,6 +67,155 @@ describe('提示词渲染', () => {
     // 台账换天那一行是分隔不是事实，不挂项目符号。
     expect(turn.user.text).not.toContain('- 【第 2 天】');
     expect(turn.user.text).not.toContain('你已知的事实：');
+  });
+
+  it('生成、复核与修订保留私密和公开材料的原文及顺序，仅私密块标注受众', async () => {
+    const skills = gameSkills('12p_white_wolf');
+    const speech: TurnContext = {
+      task: '轮到你发言。',
+      actor: { playerId: 'p12', seatNo: 12, role: '狼人' },
+      day: 2,
+      visible: [
+        { title: '狼队商议', lines: ['11 号商议发言：明天我报8号查杀。'] },
+        { title: '公开发言', lines: ['11 号昨天发言：明晚我准备验8号。'] },
+        { title: '这一问的说明', lines: ['本轮发言顺序：12 号、1 号、11 号。'] },
+      ],
+      options: [],
+      skill: [
+        `${skills.ruleset.content}\n\n${skills.common.content}`,
+        skills.role('werewolf').content,
+        skills.scenario('wolf_team').content,
+        skills.scenario('day_speech').content,
+      ],
+    };
+    const generate = await renderGenerate(offline, speech, null);
+    const critique = await renderCritique(offline, speech, '11号今天报8号查杀。', null);
+    const revise = await renderRevise(offline, speech, '11号今天报8号查杀。', '核对引用来源', null);
+
+    for (const turn of [generate, critique, revise]) {
+      expect(turn.user.text).toContain(
+        [
+          '【狼队商议】',
+          '仅狼队可见；其中计划不表示已公开或已执行。公开配合须核对本轮发言顺序与队友已经公开说过的内容。',
+          '- 11 号商议发言：明天我报8号查杀。',
+          '',
+          '【公开发言】',
+          '- 11 号昨天发言：明晚我准备验8号。',
+          '',
+          '【这一问的说明】',
+          '- 本轮发言顺序：12 号、1 号、11 号。',
+        ].join('\n'),
+      );
+      expect(turn.user.text.match(/仅狼队可见/g)).toHaveLength(1);
+    }
+    expect(generate.system.text).toContain(skills.scenario('wolf_team').content);
+    for (const turn of [critique, revise]) {
+      expect(turn.system.text).not.toContain(skills.scenario('wolf_team').content);
+      expect(turn.system.text).not.toContain(skills.role('werewolf').content);
+    }
+  });
+
+  it('队友已经公开报验时保留原话，夜商标记只作用于私密块', async () => {
+    const publicClaim = '11 号发言：我今天改报8号金水。';
+    const turn = await renderGenerate(
+      offline,
+      { ...context, visible: [{ title: '公开发言', lines: [publicClaim] }] },
+      null,
+    );
+
+    expect(turn.user.text).toContain(`【公开发言】\n- ${publicClaim}`);
+    expect(turn.user.text).not.toContain('仅狼队可见');
+  });
+
+  it('法官私密回执保留原文并就近标明受众，公开播报与本人底牌不重复该说明', async () => {
+    const privateReceipt = '狼队今晚选择袭击5号。';
+    const publicNotice = '昨晚是平安夜。';
+    const hand = '你的狼队友：11 号（狼人）。';
+    const input = {
+      ...context,
+      task: '轮到你发言。',
+      actor: { playerId: 'p12', seatNo: 12, role: '狼人' },
+      visible: [
+        { title: '你手里的牌', lines: [hand] },
+        { title: '法官播报', lines: [publicNotice] },
+        { title: '法官私密告知', lines: [privateReceipt] },
+      ],
+    };
+    const note =
+      '仅向具备资格的玩家告知，不代表全场已知。可据此制定战术；公开表达先分清所扮身份能知道的依据，避免无意暴露，仍可有意造假或隐瞒。';
+
+    for (const turn of [
+      await renderGenerate(offline, input, null),
+      await renderCritique(offline, input, '草稿', null),
+      await renderRevise(offline, input, '草稿', '意见', null),
+    ]) {
+      expect(turn.user.text).toContain(
+        `【你手里的牌】\n- ${hand}\n\n【法官播报】\n- ${publicNotice}\n\n【法官私密告知】\n${note}\n- ${privateReceipt}`,
+      );
+      expect(turn.user.text.match(/仅向具备资格的玩家告知/g)).toHaveLength(1);
+    }
+
+    const publicTurn = await renderGenerate(
+      offline,
+      { ...context, visible: [{ title: '法官播报', lines: [publicNotice] }] },
+      null,
+    );
+    expect(publicTurn.user.text).not.toContain(note);
+    expect(publicTurn.user.text).not.toContain(privateReceipt);
+  });
+
+  it('此前个人判断先于当前原话与局面，三个环节保留完整旧判断而不让它覆盖当前材料', async () => {
+    const assessment = '我曾以为他在用警下身份解释首验。';
+    const changes = '上一轮因多人附和而提高怀疑。';
+    const originalQuote = '6 号发言：7 号现在在警下有票，大家留意他的投票。';
+    const situation = '警长是 11 号。';
+    const input = {
+      ...context,
+      previousJudgment: { actionKey: '日终判断', day: 1, ledgerSeq: 29, assessment, changes },
+      visible: [
+        { title: '公开发言', lines: [originalQuote] },
+        { title: '局面', lines: [situation] },
+      ],
+    };
+
+    for (const turn of [
+      await renderGenerate(offline, input, null),
+      await renderCritique(offline, input, '草稿', null),
+      await renderRevise(offline, input, '草稿', '意见', null),
+    ]) {
+      const text = turn.user.text;
+      expect(text).toContain(`形成于第 1 天日终。\n${assessment}\n当时的主要变化：${changes}`);
+      expect(text).not.toContain('信息截至事件 #29');
+      expect(text.indexOf(assessment)).toBeLessThan(text.indexOf(originalQuote));
+      expect(text.indexOf(originalQuote)).toBeLessThan(text.indexOf(situation));
+      expect(text.indexOf(originalQuote)).toBeGreaterThan(-1);
+      expect(text.indexOf(situation)).toBeGreaterThan(-1);
+    }
+  });
+
+  it('隐藏事件只改变此前判断的内部水位，不改变三个环节的可见题面', async () => {
+    const original = {
+      ...context,
+      previousJudgment: {
+        actionKey: '日终判断',
+        day: 1,
+        ledgerSeq: 29,
+        assessment: '仍需核对预言家的公开说法。',
+        changes: '',
+      },
+    };
+    const withHiddenEvent = {
+      ...original,
+      previousJudgment: { ...original.previousJudgment, ledgerSeq: 30 },
+    };
+
+    for (const render of [
+      (input: TurnContext) => renderGenerate(offline, input, null),
+      (input: TurnContext) => renderCritique(offline, input, '草稿', null),
+      (input: TurnContext) => renderRevise(offline, input, '草稿', '意见', null),
+    ]) {
+      expect(await render(withHiddenEvent)).toEqual(await render(original));
+    }
   });
 
   it('有形状的让他走工具交，没有形状的让他写一段话', async () => {

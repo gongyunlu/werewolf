@@ -7,6 +7,8 @@ import {
   editedExperience,
   experienceIndexView,
   ExperienceConflictError,
+  experienceMatches,
+  reviewedExperience,
   type ExperienceIndexState,
   initialExperienceState,
   type ExperienceGeneration,
@@ -34,28 +36,20 @@ export function memoryExperiences(): ExperienceStore {
       throw new Error('经验任务状态已变化，请刷新后重试');
   };
   return {
-    async hasCandidates({ boardId, role, gameId }) {
-      return [...experiences.values()].some(
-        (row) =>
-          row.enabled &&
-          !row.archived &&
-          row.boardId === boardId &&
-          row.role === role &&
-          row.sourceGameId !== gameId,
+    async hasCandidates(scope) {
+      return [...experiences.values()].some((row) => experienceMatches(row, scope));
+    },
+    async lexicalCandidates(scope, key) {
+      return copy(
+        [...experiences.values()].filter(
+          (row) => experienceMatches(row, scope) && vectors.get(row.id)?.key === key,
+        ),
       );
     },
-    async search({ boardId, role, gameId }, key, vector, limit) {
+    async search(scope, key, vector, limit) {
       return copy(
         [...experiences.values()]
-          .filter(
-            (row) =>
-              row.enabled &&
-              !row.archived &&
-              row.boardId === boardId &&
-              row.role === role &&
-              row.sourceGameId !== gameId &&
-              vectors.get(row.id)?.key === key,
-          )
+          .filter((row) => experienceMatches(row, scope) && vectors.get(row.id)?.key === key)
           .map((experience) => ({
             experience,
             similarity: cosine(vectors.get(experience.id)!.vector, vector),
@@ -70,8 +64,8 @@ export function memoryExperiences(): ExperienceStore {
       for (const { id, vector } of rows) {
         const row = experiences.get(id);
         if (!row) throw new Error('经验不存在');
-        // 提炼任务只写原始 v1 的向量，编辑后的版本由独立索引任务处理。
-        if (row.version !== 1) continue;
+        // 提炼任务不覆盖编辑后的版本或手动重建的索引。
+        if (row.version !== 1 || indexes.has(row.id)) continue;
         vectors.set(id, copy({ key, vector }));
         experiences.set(id, { ...row, indexed: true });
       }
@@ -87,6 +81,20 @@ export function memoryExperiences(): ExperienceStore {
     async find(id) {
       const item = experiences.get(id);
       return item ? copy(record(item)) : null;
+    },
+    async related(boardId, role) {
+      return copy(
+        [...experiences.values()].filter(
+          (row) => !row.archived && row.boardId === boardId && row.role === role,
+        ),
+      );
+    },
+    async review(agentId, id, input) {
+      const item = experiences.get(id);
+      if (!item || item.agentId !== agentId) return false;
+      const sources = generations.get(item.generationId)!.state.input!.sources;
+      experiences.set(id, copy(reviewedExperience(item, input, sources)));
+      return true;
     },
     async edit(agentId, id, revision, content) {
       const item = experiences.get(id);

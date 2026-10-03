@@ -1,6 +1,7 @@
 import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, DEATH_CAUSES, ROLES, type PreviewChunk } from '@werewolf/shared';
 import type { Ballot } from '../core/vote';
+import type { BlastWindow } from '../core/day/self-destruct';
 import { actionKey, phaseInstanceId } from '../core/identity';
 import { patchPlayer, type GameState } from '../core/state';
 import type { ModelCapability } from '../llm/model-capability';
@@ -151,20 +152,31 @@ describe('模型行动提供者', () => {
       await expect(bad.actions.withdraw('p3')).rejects.toMatchObject({ code: 'invalid_output' });
     });
 
-    it('自爆问的是同一个形状，续轮换个说法', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), ['false', 'false']);
-
-      await actions.chooseBlaster(['p1'], 'campaign');
-      await actions.chooseBlaster(['p1'], 'campaign_resume');
-
-      // 题面问的是「爆不爆」，不是「现在是什么窗口」：跟别的两态行动一样，先问再让他自己定。
-      expect(decided(model)[0].prompt).toContain(
-        '决定是否自爆。自爆会出局并跳过当天剩余的发言和放逐；完成尚未处理的死讯和技能结算后入夜。',
-      );
-      expect(decided(model)[1].prompt).toContain(
-        '决定是否自爆。自爆会出局并使警徽流失；完成尚未处理的死讯和技能结算后入夜。',
-      );
-    });
+    it.each<[BlastWindow, RegExp, RegExp]>([
+      ['campaign', /首轮警上发言开始前.*首轮退水前没有自爆窗口/, /首轮竞选暂停.*次日续选/],
+      ['campaign_pk', /首轮竞选PK发言开始前.*下一次.*常规发言开始前/, /首轮竞选暂停.*次日续选/],
+      ['campaign_resume', /续选退水开始前.*平票.*续选PK开始前/, /警徽流失/],
+      ['campaign_resume_pk', /续选PK发言开始前.*下一次.*常规发言开始前/, /警徽流失/],
+      [
+        'day',
+        /常规发言开始前.*放逐投票出现平票.*放逐PK开始前/,
+        /发言之间和首轮放逐投票前没有自爆窗口/,
+      ],
+      ['exile_pk', /放逐PK发言开始前.*本窗口后今天不再询问自爆/, /下一次.*下一白天/],
+    ])(
+      '%s自爆题面说明当前与后续窗口，保持布尔决定并冻结题面',
+      async (window, timing, consequence) => {
+        const { model, actions } = await withActions(sixPlayerState(), ['false']);
+        expect(await actions.chooseBlaster(['p1'], window)).toBeNull();
+        const { context, actionType } = actions.outcomes()[0]!.snapshot;
+        expect(actionType).toBe(ACTION_TYPES.WOLF_EXPLODE);
+        expect(context.task).toMatch(timing);
+        expect(context.task).toMatch(consequence);
+        expect(context.task).toMatch(/已终局就停止.*不再带人、交徽或入夜/);
+        expect(decided(model)[0]!.prompt).toContain(context.task);
+        expect(shapeOf(decided(model)[0]!)).toContain('"type": "boolean"');
+      },
+    );
   });
 
   describe('技能正文', () => {
@@ -213,6 +225,10 @@ describe('模型行动提供者', () => {
       }
       expect(model.calls[4].prompt).toContain(assessment);
       for (const { snapshot } of actions.outcomes()) {
+        if (snapshot.actionType === ACTION_TYPES.DAY_END_JUDGMENT) {
+          expect(snapshot.context.task).toMatch(/来源.*假设/);
+          expect(snapshot.context.task).toMatch(/先经过下一夜.*再到下一白天/);
+        }
         expect(snapshot.context.skill[0]).toContain(skills.common.content);
         for (const prompt of snapshot.prompts.filter((part) => part.template.endsWith('-system'))) {
           expect(prompt.text).toContain(skills.common.content);
@@ -298,24 +314,33 @@ describe('模型行动提供者', () => {
       expect(decided(model)[0].tool).toBeUndefined();
     });
 
-    it('各轮发言各自有说法', async () => {
+    it('各轮公开发言在当前任务核对原话，首日无旧判断也携带且不增加调用', async () => {
       const { model, actions } = await withActions(
         sixPlayerState(),
-        quality('过', '过', '过', '过'),
+        quality('过', '过', '过', '过', '过'),
       );
 
       await actions.speak('campaign', 'p3', []);
       await actions.speak('campaign_pk', 'p3', []);
       await actions.speak('day', 'p3', []);
       await actions.speak('exile_pk', 'p3', []);
+      await actions.speak('last_words', 'p3', []);
 
       const asked = decided(model);
+      const check =
+        '发言前，先在心里核对这次会引用的关键原话：谁在何时向谁说，原句是在解释过去、提醒现在还是提出条件计划。随后按你的立场表达；若故意歪曲或伪装，自己仍记住原意。';
       [
         '轮到你上警发言。',
         '警上平票，轮到你做一轮 PK 发言。',
         '轮到你发言。',
         '放逐平票，轮到你做一轮 PK 发言。',
-      ].forEach((task, index) => expect(asked[index].prompt).toContain(task));
+        '你已出局，轮到你发表遗言。这是最后一次公开发言，可以说明判断和建议；不能再投票、执行夜间行动或要求其他玩家立即回应。',
+      ].forEach((task, index) => {
+        expect(actions.outcomes()[index].snapshot.context.task).toBe(task + check);
+        expect(asked[index].prompt).toContain(task + check);
+      });
+      expect(actions.outcomes()[0].snapshot.context.previousJudgment).toBeUndefined();
+      expect(model.calls).toHaveLength(10);
     });
 
     it('发言顺序进题面，各轮各一份', async () => {
@@ -579,6 +604,81 @@ describe('模型行动提供者', () => {
   });
 
   describe('台账', () => {
+    it('同源材料在 quick 与 quality 保留来源和原文，好人收不到狼队私密内容', async () => {
+      const state = packState();
+      const publicSpeech = '我认为 6 号是好人，暂不判断具体身份。';
+      const wolfSpeech = '我准备给 6 号发金水，这只是明天的发言安排。';
+      const publicFlow = '昨晚是平安夜。';
+      const privateFlow = '狼队落刀：6 号。';
+      const { actions, model } = await withActions(state, [
+        wolfSpeech,
+        ...quality(publicSpeech),
+        'false',
+        ...quality('6'),
+        'false',
+        ...quality('6'),
+      ]);
+      await actions.wolfSpeech('p2', 1, ['p2', 'p1']);
+      await actions.speak('day', 'p5', []);
+      await actions.recordFlow(state, { key: 'dawn', text: publicFlow });
+      await actions.recordFlow(state, {
+        key: 'knife',
+        text: privateFlow,
+        audience: ['p1', 'p2'],
+      });
+      for (const playerId of ['p1', 'p4']) {
+        await actions.runForSheriff(playerId);
+        await actions.vote('exile', playerId, ['p5', 'p6']);
+      }
+
+      const snapshots = actions
+        .outcomes()
+        .slice(2)
+        .map((outcome) => outcome.snapshot);
+      expect(snapshots.map((snapshot) => snapshot.preset)).toEqual([
+        'quick',
+        'quality',
+        'quick',
+        'quality',
+      ]);
+      const sharedFacts = snapshots.map((snapshot) =>
+        snapshot.context.visible.filter((block) => block.title !== '这一问的说明'),
+      );
+      expect(sharedFacts[0]).toEqual(sharedFacts[1]);
+      expect(sharedFacts[2]).toEqual(sharedFacts[3]);
+      for (const [index, snapshot] of snapshots.entries()) {
+        const speechNumber = index < 2 ? 2 : 1;
+        expect(snapshot.context.visible).toEqual(
+          expect.arrayContaining([
+            {
+              title: '公开发言',
+              lines: ['【第 1 天】', `[#${speechNumber}] 5 号发言：${publicSpeech}`],
+            },
+            { title: '法官播报', lines: ['【第 1 天】', `[#${speechNumber + 1}] ${publicFlow}`] },
+          ]),
+        );
+      }
+      expect(snapshots[0].context.visible).toEqual(
+        expect.arrayContaining([
+          { title: '狼队商议', lines: ['【第 1 天】', `[#1] 2 号商议发言：${wolfSpeech}`] },
+          { title: '法官私密告知', lines: ['【第 1 天】', `[#4] ${privateFlow}`] },
+        ]),
+      );
+      // 包括 quality 的复核调用：材料应在生成和复核中保持同一可见边界。
+      for (const call of model.calls.slice(3)) {
+        expect(call.prompt).toContain(`5 号发言：${publicSpeech}`);
+        expect(call.prompt).toContain(publicFlow);
+      }
+      for (const call of model.calls.slice(3, 6)) {
+        expect(call.prompt).toContain(`2 号商议发言：${wolfSpeech}`);
+        expect(call.prompt).toContain(privateFlow);
+      }
+      for (const call of model.calls.slice(6)) {
+        expect(call.prompt).not.toContain(wolfSpeech);
+        expect(call.prompt).not.toContain(privateFlow);
+      }
+    });
+
     it('报名和退水由 Core 统一公布，单人答复不会提前进入他人的上下文', async () => {
       const state = sixPlayerState();
       const { model, actions, stores } = await withActions(state, [

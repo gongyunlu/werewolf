@@ -1,12 +1,21 @@
 import { openPrismaClient, prismaStores } from '../store/prisma';
 import { randomUUID } from 'node:crypto';
 import { recordingModelPort } from '../llm/recording-model-port';
-import { fixture, result, access, promptSource, controlledPort, vectorRuntime } from './testing';
+import {
+  fixture,
+  result,
+  access,
+  promptSource,
+  controlledPort,
+  vectorRuntime,
+  approveExperience,
+} from './testing';
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
 import { initialRetrieval, retrieveExperiences } from './retrieval';
 import { indexExperienceVersion, prepareExperienceIndex } from './maintenance';
 import { embeddingKey } from '../llm/embedding';
+import { AgentExperienceSchema } from '@werewolf/shared';
 
 const databaseUrl = process.env.OBSERVATION_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -49,6 +58,7 @@ integration('Postgres 个人经验持久恢复', () => {
       client = openPrismaClient(databaseUrl!);
       const resumed = prismaStores(client);
       await indexExperience(resumed, f.row.id, embedding);
+      await approveExperience(resumed, items[0]!.id, embedding);
       expect(embedding.port.generate).toHaveBeenCalledTimes(1);
       const actionKey = `${nextId}/vote`;
       const retrieval = initialRetrieval(
@@ -60,7 +70,9 @@ integration('Postgres 个人经验持久恢复', () => {
           options: [],
           skill: [],
         },
-        { gameId: nextId, boardId: '6p_white_wolf', role: 'villager' },
+        { gameId: nextId, boardId: '6p_white_wolf', role: 'villager', actionType: 'vote', day: 1 },
+        'vote',
+        'vector',
       );
       await resumed.actions.begin({
         actionKey,
@@ -73,6 +85,11 @@ integration('Postgres 个人经验持久恢复', () => {
         experienceRetrieval: retrieval,
       });
       const selected = await retrieveExperiences(resumed, actionKey, retrieval, embedding);
+      const candidates = await resumed.experiences.lexicalCandidates(
+        retrieval.scope,
+        embeddingKey(embedding),
+      );
+      expect(AgentExperienceSchema.parse(candidates[0]).enabled).toBe(true);
       expect(selected.selected[0]!.id).toBe(items[0]!.id);
       expect(selected.candidates[0]!.similarity).toBeCloseTo(1);
       expect(await resumed.experiences.search(retrieval.scope, '其他向量空间', [1, 0], 20)).toEqual(
@@ -106,6 +123,10 @@ integration('Postgres 个人经验持久恢复', () => {
         title: '核对可见时序',
         body: '只以行动当时可见证据核对先后。',
         conditions: '有人解释先前行动时',
+        actionTypes: ['vote'] as Array<'vote'>,
+        minDay: 1,
+        firstDayOnly: false,
+        exclusions: '没有当时可见依据时不适用',
       };
       const itemId = items[0]!.id;
       const before = (await resumed.experiences.find(itemId))!;
@@ -144,13 +165,7 @@ integration('Postgres 个人经验持久恢复', () => {
       await prepareExperienceIndex(maintained, failed, embedding);
       await indexExperienceVersion(maintained, itemId, 2, embedding);
       expect(embedding.port.generate).toHaveBeenCalledTimes(requests);
-      await maintained.experiences.toggle(
-        f.agent.id,
-        itemId,
-        true,
-        failed.item.revision,
-        embeddingKey(embedding),
-      );
+      await approveExperience(maintained, itemId, embedding);
       expect(
         (
           await maintained.experiences.search(retrieval.scope, embeddingKey(embedding), [1, 0], 20)

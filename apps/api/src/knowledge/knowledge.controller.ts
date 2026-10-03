@@ -1,3 +1,4 @@
+import { knowledgeEmbeddingKey } from './text';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
   Body,
@@ -23,7 +24,7 @@ import type { Queue } from 'bullmq';
 import { validateKnowledgeContent, validateKnowledgeSources } from './content-validation';
 import { AdminTokenGuard } from '../common/guards/admin-token.guard';
 import { parseBody } from '../common/parse-body';
-import { embeddingKey, embeddingRuntime } from '../llm/embedding';
+import { embeddingRuntime } from '../llm/embedding';
 import { KnowledgeConflictError, type KnowledgeRecord } from '../store/knowledge';
 import type { GameStores } from '../store/stores';
 import { GAME_STORES } from '../store/stores.provider';
@@ -91,7 +92,7 @@ export class KnowledgeController {
         id,
         revision,
         versionId,
-        versionId ? embeddingKey(embeddingRuntime()) : '',
+        versionId ? knowledgeEmbeddingKey(embeddingRuntime()) : '',
       ),
     );
     return this.read(id);

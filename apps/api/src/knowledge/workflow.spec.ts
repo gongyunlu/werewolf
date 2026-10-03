@@ -9,10 +9,11 @@ import {
   promptSource,
   result,
   vectorRuntime,
+  approveExperience,
 } from '../experience/testing';
 import { runExperience } from '../experience/workflow';
 import { indexExperience } from '../experience/indexing';
-import { embeddingKey } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from './text';
 import { memoryStores } from '../store/memory';
 import type { GameStores } from '../store/stores';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
@@ -29,7 +30,7 @@ export async function indexed(stores: GameStores, n = 0) {
     item.id,
     item.revision,
     item.versions[0]!.versionId,
-    embeddingKey(runtime),
+    knowledgeEmbeddingKey(runtime),
   );
   return { item: (await stores.knowledge.find(item.id))!, runtime };
 }
@@ -46,6 +47,7 @@ async function begin(stores: GameStores, day = 1) {
     },
     { gameId: 'new-game', boardId: '12p_wolf_king', role: 'guard' },
     'guard_protect',
+    'vector',
   );
   await stores.actions.begin({
     actionKey: key,
@@ -89,7 +91,7 @@ describe('知识版本与逐行动输入', () => {
         next.id,
         next.revision,
         next.versions[1]!.versionId,
-        embeddingKey(runtime),
+        knowledgeEmbeddingKey(runtime),
       ),
     ).rejects.toThrow('索引');
     await expect(
@@ -153,13 +155,21 @@ describe('知识版本与逐行动输入', () => {
     f.input.role = 'guard';
     await runExperience(f.stores, f.row.id, {
       port: controlledPort(
-        JSON.stringify({ ...result, experiences: Array(3).fill(result.experiences[0]) }),
+        JSON.stringify({
+          ...result,
+          experiences: Array.from({ length: 3 }, () => ({
+            ...result.experiences[0],
+            actionTypes: ['guard_protect'],
+          })),
+        }),
       ),
       access,
       promptSource,
       prepare: f.prepare,
     });
     await indexExperience(f.stores, f.row.id, vectorRuntime());
+    for (const item of await f.stores.experiences.list(f.agent.id))
+      await approveExperience(f.stores, item.id, vectorRuntime());
     const known = await Promise.all([
       indexed(f.stores, 1),
       indexed(f.stores, 1),
@@ -191,13 +201,18 @@ describe('知识版本与逐行动输入', () => {
     expect(await stores.knowledge.hasCandidates(base)).toBe(true);
     const later = await indexed(stores, 2);
     expect(
-      (await stores.knowledge.search(base, embeddingKey(later.runtime), [1, 0], 20)).some(
+      (await stores.knowledge.search(base, knowledgeEmbeddingKey(later.runtime), [1, 0], 20)).some(
         (hit) => hit.knowledge.id === later.item.id,
       ),
     ).toBe(false);
     expect(
       (
-        await stores.knowledge.search({ ...base, day: 3 }, embeddingKey(later.runtime), [1, 0], 20)
+        await stores.knowledge.search(
+          { ...base, day: 3 },
+          knowledgeEmbeddingKey(later.runtime),
+          [1, 0],
+          20,
+        )
       ).some((hit) => hit.knowledge.id === later.item.id),
     ).toBe(true);
     for (const patch of [
@@ -235,6 +250,7 @@ describe('知识版本与逐行动输入', () => {
       skills: stubSkills(),
       promptSource: LOCAL_PROMPTS,
       embedding: query,
+      referenceModeFor: () => 'vector' as const,
     };
     const state = withRoles({ ...makeState(3, false), gameId: 'guard-game' }, { p1: 'guard' });
     const actions = modelActions(runtime, stores);

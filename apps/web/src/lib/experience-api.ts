@@ -3,6 +3,8 @@ import {
   ExperienceListSchema,
   ReviewStartResponseSchema,
   type ExperienceEditable,
+  ExperienceAuditSchema,
+  type ExperienceReviewRequest,
 } from '@werewolf/shared';
 import { adminHeaders } from './admin-token';
 import { http } from './http';
@@ -10,12 +12,24 @@ import { http } from './http';
 export function fetchExperiences(agentId: string, signal?: AbortSignal) {
   return http.get(`/agents/${agentId}/experiences`, { schema: ExperienceListSchema, signal });
 }
-export function toggleExperience(agentId: string, id: string, enabled: boolean, revision?: number) {
+export function toggleExperience(agentId: string, id: string, enabled: boolean, revision: number) {
   return http.patch(
     `/agents/${agentId}/experiences/${id}`,
     { enabled, revision },
     { schema: ExperienceListSchema, headers: adminHeaders() },
   );
+}
+export function fetchExperienceAudit(agentId: string, id: string, signal?: AbortSignal) {
+  return http.get(`/agents/${agentId}/experiences/${id}/audit`, {
+    schema: ExperienceAuditSchema,
+    signal,
+  });
+}
+export function reviewExperience(agentId: string, id: string, input: ExperienceReviewRequest) {
+  return http.post(`/agents/${agentId}/experiences/${id}/review`, input, {
+    schema: ExperienceListSchema,
+    headers: adminHeaders(),
+  });
 }
 export function editExperience(
   agentId: string,

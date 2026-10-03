@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
-import { ExperienceResultSchema, type ExperienceResult } from '@werewolf/shared';
+import {
+  ExperienceCandidateResultSchema,
+  ExperienceResultSchema,
+  type ExperienceResult,
+} from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import { seatContextOf } from '../agents/seat-context';
 import { loadEnv } from '../config/env';
@@ -127,7 +131,12 @@ export async function runExperience(stores: GameStores, id: string, provided?: E
         }
         const callId = randomUUID();
         const note = row.state.attempts.findLast((item) => item.diagnosis)?.diagnosis;
-        attempt = { callId, status: 'pending', citationFormat: 'short_ids' };
+        attempt = {
+          callId,
+          status: 'pending',
+          citationFormat: 'short_ids',
+          contentFormat: 'scoped_v1',
+        };
         await save({ attempts: [...row.state.attempts, attempt] });
         const started = performance.now();
         const port = recordingModelPort(
@@ -210,7 +219,9 @@ export async function runExperience(stores: GameStores, id: string, provided?: E
           throw new InvalidOutputError('没有工具结果', '没有通过工具提交');
         result = parseStructured(
           attempt.response.toolCall.arguments,
-          ExperienceResultSchema,
+          attempt.contentFormat === 'scoped_v1'
+            ? ExperienceCandidateResultSchema
+            : ExperienceResultSchema,
           '个人经验',
         );
         result = resolveExperienceSources(input, result, attempt.citationFormat === 'short_ids');

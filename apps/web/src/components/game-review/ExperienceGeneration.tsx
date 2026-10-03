@@ -133,7 +133,7 @@ export function ExperienceGeneration({
             </Link>
           </div>
           <p className="text-xs text-muted-foreground">
-            新经验默认启用，建立索引后可供所有参赛者在后续行动中按当前情境检索；已经保存的行动输入保持不变。输入不代表模型明确采纳。
+            新经验默认停用。核对原始证据、适用范围及重复内容后，需审核通过、建立索引并手动启用，才参与后续行动。审核通过不代表已验证对局收益。
           </p>
         </>
       )}

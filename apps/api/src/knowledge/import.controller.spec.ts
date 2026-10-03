@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { knowledgeText } from './text';
 import { getQueueToken } from '@nestjs/bullmq';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -146,7 +147,7 @@ describe('网页采集管理接口', () => {
     expect(accepted.results[0]!.error).toBeNull();
     expect(queue.add).toHaveBeenCalledTimes(1);
     const indexed = (await f.stores.knowledge.version(item.versionId))!;
-    expect(JSON.parse(indexed.state.task!.text)).toEqual(updated.versions[0]!.content);
+    expect(indexed.state.task!.text).toBe(knowledgeText(updated.versions[0]!.content));
     expect(runtime.port.generate).not.toHaveBeenCalled();
   });
 });

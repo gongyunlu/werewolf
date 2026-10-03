@@ -25,6 +25,17 @@ export interface KnowledgeScope {
   day: number;
 }
 export class KnowledgeConflictError extends Error {}
+export function knowledgeApplicable(snapshot: KnowledgeSnapshot, scope: KnowledgeScope) {
+  const c = snapshot.content;
+  return (
+    c.kind === 'strategy' &&
+    c.boardIds.includes(scope.boardId) &&
+    c.roles.some((role) => role === scope.role) &&
+    c.actionTypes.some((action) => action === scope.actionType) &&
+    (!c.firstDayOnly || scope.day === 1) &&
+    c.minDay <= scope.day
+  );
+}
 export function knowledgeHash(content: KnowledgeContent): string {
   return createHash('sha256').update(JSON.stringify(content)).digest('hex');
 }
@@ -40,6 +51,7 @@ export interface KnowledgeStore {
     vector?: number[],
   ): Promise<void>;
   hasCandidates(scope: KnowledgeScope): Promise<boolean>;
+  lexicalCandidates(scope: KnowledgeScope, key: string): Promise<KnowledgeSnapshot[]>;
   search(
     scope: KnowledgeScope,
     key: string,

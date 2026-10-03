@@ -8,6 +8,7 @@ import { experiencePrompts } from './prompt';
 import { REVIEW_VERSION } from './workflow';
 import type { ExperienceInput } from '../store/experiences';
 import type { GameStores } from '../store/stores';
+import { embeddingKey } from '../llm/embedding';
 
 export const result: ExperienceResult = {
   experiences: [
@@ -16,6 +17,10 @@ export const result: ExperienceResult = {
       body: '先核对行为先后，再判断解释是否得到证据支持；公开说法仍可能是伪装。',
       conditions: '出现用后来的信息解释更早行动的情况时',
       sourceIds: ['E1'],
+      actionTypes: ['speech', 'vote'],
+      minDay: 1,
+      firstDayOnly: false,
+      exclusions: '只有赛后信息、没有当时可见依据时不适用。',
     },
   ],
   reason: '保留一条可复核的时序经验',
@@ -60,6 +65,28 @@ export function vectorRuntime(
       }),
     },
   };
+}
+
+export async function approveExperience(
+  stores: GameStores,
+  id: string,
+  runtime: import('../llm/embedding').EmbeddingRuntime,
+) {
+  const row = (await stores.experiences.find(id))!;
+  await stores.experiences.review(row.item.agentId, id, {
+    revision: row.item.revision ?? 0,
+    version: row.item.version,
+    decision: 'approved',
+    note: '离线用例已核对来源与适用范围。',
+    sourceIds: row.item.sourceIds,
+  });
+  await stores.experiences.toggle(
+    row.item.agentId,
+    id,
+    true,
+    (row.item.revision ?? 0) + 1,
+    embeddingKey(runtime),
+  );
 }
 
 export async function fixture(stores: GameStores = memoryStores()) {

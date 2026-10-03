@@ -224,7 +224,9 @@ describe('留得住的对局', () => {
     expect(ballot).toBeDefined();
     expect(
       result.outcomes.some((outcome) =>
-        outcome.snapshot.context.visible.some((block) => block.lines.includes(ballot!.text)),
+        outcome.snapshot.context.visible.some((block) =>
+          block.lines.some((line) => line.replace(/^\[#\d+\] /, '') === ballot!.text),
+        ),
       ),
     ).toBe(true);
   });

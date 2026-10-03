@@ -191,17 +191,30 @@ function briefOf(
 
 function factsOf(context: TurnContext): string {
   // 块之间空一行，免得上一块的最后一条跟下一块的标题连成一串。
-  const rendered = context.visible.map(
-    (block) => `【${block.title}】\n${block.lines.map(factLine).join('\n')}`,
+  const rendered = context.visible.map((block) =>
+    [
+      `【${block.title}】`,
+      ...(block.title === '狼队商议'
+        ? [
+            '仅狼队可见；其中计划不表示已公开或已执行。公开配合须核对本轮发言顺序与队友已经公开说过的内容。',
+          ]
+        : []),
+      ...(block.title === '法官私密告知'
+        ? [
+            '仅向具备资格的玩家告知，不代表全场已知。可据此制定战术；公开表达先分清所扮身份能知道的依据，避免无意暴露，仍可有意造假或隐瞒。',
+          ]
+        : []),
+      ...block.lines.map(factLine),
+    ].join('\n'),
   );
 
   const previous = context.previousJudgment;
   return blocks([
+    previous
+      ? `【你此前的个人判断（不是已确认事实）】\n形成于第 ${previous.day} 天日终。\n${previous.assessment}\n当时的主要变化：${previous.changes || '未记录变化'}\n这只是你当时的推测和意图，可能误判或被骗；以当前可见证据重新判断，允许改变立场。发言和身份主张仍属于原说话人，不能因记入判断就升级为事实；计划也不代表已经执行。`
+      : '',
     rendered.length > 0
       ? `你当前可见的材料（系统记录与玩家说法分列）：\n${rendered.join('\n\n')}`
-      : '',
-    previous
-      ? `【你此前的个人判断（不是已确认事实）】\n形成于第 ${previous.day} 天日终，信息截至事件 #${previous.ledgerSeq}。\n${previous.assessment}\n当时的主要变化：${previous.changes || '未记录变化'}\n这只是你当时的推测和意图，可能误判或被骗；以当前可见证据重新判断，允许改变立场。发言和身份主张仍属于原说话人，不能因记入判断就升级为事实；计划也不代表已经执行。`
       : '',
     renderExperiences(context.experiences ?? []),
     renderKnowledge(context.knowledge ?? []),

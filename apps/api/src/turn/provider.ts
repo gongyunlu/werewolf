@@ -2,6 +2,7 @@ import { ACTION_TYPES, VISIBILITY_TYPES } from '@werewolf/shared';
 import type { ActionProvider, BallotTurn, SpeechTurn, WitchDecision } from '../core/actions';
 import type { Ballot } from '../core/vote';
 import type { FlowObserver } from '../core/flow';
+import type { BlastWindow } from '../core/day/self-destruct';
 import { actionKey, nodeNameOf, type PhaseInstanceId } from '../core/identity';
 import { audienceOf } from '../core/visibility';
 import { inWolfChannel } from '../core/roles';
@@ -88,6 +89,21 @@ const SPEECH_TASKS: Readonly<Record<SpeechTurn, string>> = {
   exile_pk: '放逐平票，轮到你做一轮 PK 发言。',
   last_words:
     '你已出局，轮到你发表遗言。这是最后一次公开发言，可以说明判断和建议；不能再投票、执行夜间行动或要求其他玩家立即回应。',
+};
+
+/** 窗口由 Core 传入，题面只说明当前时点及后续机会，不增加行动入口。 */
+const BLAST_TASKS: Readonly<Record<BlastWindow, string>> = {
+  campaign:
+    '当前是首轮警上发言开始前的自爆窗口。若本窗口无人自爆，首轮退水前没有自爆窗口；下一次可能在警长投票平票后的竞选PK开始前，否则要等竞选结束后的常规发言开始前。本窗口有人自爆则首轮竞选暂停，未终局才保留候选资格等待次日续选。',
+  campaign_pk:
+    '当前是首轮竞选PK发言开始前的自爆窗口。若本窗口无人自爆，下一次要等竞选结束后的常规发言开始前；PK发言与投票之间不再询问。本窗口有人自爆则首轮竞选暂停，未终局才保留剩余候选资格等待次日续选。',
+  campaign_resume:
+    '当前是续选退水开始前的自爆窗口。若本窗口无人自爆，下一次可能在警长投票平票后的续选PK开始前，否则要等竞选结束后的常规发言开始前。本窗口有人自爆则警徽流失，不再续选。',
+  campaign_resume_pk:
+    '当前是续选PK发言开始前的自爆窗口。若本窗口无人自爆，下一次要等竞选结束后的常规发言开始前；PK发言与投票之间不再询问。本窗口有人自爆则警徽流失，不再续选。',
+  day: '当前是常规发言开始前的自爆窗口。若本窗口无人自爆，只有放逐投票出现平票才会在放逐PK开始前再次询问，否则今天没有下一次机会。发言之间和首轮放逐投票前没有自爆窗口。',
+  exile_pk:
+    '当前是放逐PK发言开始前的自爆窗口。若本窗口无人自爆，本窗口后今天不再询问自爆，接着进行PK发言和投票；下一次只能等下一白天实际到达的合法窗口。',
 };
 
 /** 各轮投票要选什么。 */
@@ -216,8 +232,15 @@ export function modelActions(
    */
   function ledgerNow(): Promise<Ledger> {
     if (!process) {
-      const { gameId } = stateNow();
-      process = stores.events.list(gameId).then((stored) => ledger(stores.events, gameId, stored));
+      const { gameId, players } = stateNow();
+      process = stores.events.list(gameId).then((stored) =>
+        ledger(
+          stores.events,
+          gameId,
+          stored,
+          players.map((player) => player.id),
+        ),
+      );
     }
     return process;
   }
@@ -400,6 +423,7 @@ export function modelActions(
           role: actor.role,
         },
         input.actionType,
+        runtime.referenceModeFor?.(actor.seatNo) ?? 'hybrid',
       );
       await stores.actions.begin({
         actionKey: key,
@@ -445,6 +469,7 @@ export function modelActions(
                   key,
                   retrieval,
                   runtime.embedding,
+                  { port: runtime.port, access: runtime.accessFor(actor.seatNo) },
                 );
                 request.context = {
                   ...request.context,
@@ -522,7 +547,7 @@ export function modelActions(
               actionOrdinal: 0,
               shape: 'judgment',
               ledgerSeq: dayEndLedgerSeq,
-              task: `整理第 ${state.day} 天日终的个人判断。当天必要结算已完成，对局尚未结束，下一夜尚未开始；信息截至事件 #${dayEndLedgerSeq}。这份记录只供你本人后续使用，不是公开发言或狼队商议，也不执行任何行动。用 assessment 简洁记录当前怀疑或信任及依据、待观察问题和行动意图中有用的内容（最多 1600 字）；用 changes 记录相较此前判断的主要变化和新依据（最多 600 字，首次或无变化可留空）。分清系统确认的事件、他人的发言或身份主张、你自己的推测，不把主张写成事实，不编造未来结果，不打分或排名。允许不确定、误判及根据新证据推翻旧判断。`,
+              task: `整理第 ${state.day} 天日终的个人判断。当天结算已完成，对局尚未结束，下一夜尚未开始；编号仅表示你可见记录的先后。记录只供本人后续使用，不公开，也不执行行动。assessment 只留影响后续选择的判断、依据和待观察问题（最多 1600 字），不重抄完整局史；changes 简述相比旧判断的变化与新依据（最多 600 字，首次或无变化可留空）。引用经历时按本人可见编号逐条核对当事人、先后与原话来源，不把建议当作已执行行动，也不补原文没有的身份声明；跨类别排列不代表发生顺序，后来的票型不能成为先前归票的动机。分开本人已知信息、玩家主张和自己的假设：本人尚无可见依据的身份与死因仍保留未知，人数与票权按实际参与者逐人核算，身份自述不能直接当作神民计数；身份不明时保留会改变结论的分支。旧记忆与当前原始记录冲突时改正旧记忆，不以旧记忆反过来证明自身。行动意图先经过下一夜，再到下一白天；只等待尚未发生且届时可见的信息，按当前存活状态、技能与终局规则判断计划是否仍可执行。不编造未来结果，不打分或排名；允许误判和推翻旧判断。`,
             }),
           ),
       );
@@ -568,7 +593,7 @@ export function modelActions(
       return ask({
         actionType: ACTION_TYPES.SPEECH,
         actorId: playerId,
-        task: SPEECH_TASKS[round],
+        task: `${SPEECH_TASKS[round]}发言前，先在心里核对这次会引用的关键原话：谁在何时向谁说，原句是在解释过去、提醒现在还是提出条件计划。随后按你的立场表达；若故意歪曲或伪装，自己仍记住原意。`,
         shape: 'speech',
         scenario: 'day_speech',
         extra: [`本轮发言顺序：${order.map((id) => `${seatNoOf(id)} 号`).join('、')}。`],
@@ -613,7 +638,7 @@ export function modelActions(
       return ask({
         actionType: ACTION_TYPES.SHERIFF_TRANSFER,
         actorId: sheriffId,
-        task: '你出局了，决定警徽交给谁，还是撕掉。',
+        task: '你已出局，当前是死亡技能结算后的交徽窗口。决定把警徽交给一名存活玩家，还是撕掉。',
         shape: 'badgeDecision',
         candidates,
         fact: (decision) =>
@@ -753,7 +778,6 @@ export function modelActions(
       const ordinals = new Map(
         wolfIds.map((id) => [id, ordinal(scope, ACTION_TYPES.WOLF_EXPLODE, id)]),
       );
-      const resuming = window === 'campaign_resume' || window === 'campaign_resume_pk';
       const result = await chooseBlaster(
         stores.checkpoints,
         JSON.stringify([state.gameId, state.phaseInstanceId, 'blast', window]),
@@ -764,9 +788,7 @@ export function modelActions(
             actorId: wolfId,
             actionOrdinal: ordinals.get(wolfId),
             control,
-            task: resuming
-              ? '决定是否自爆。自爆会出局并使警徽流失；完成尚未处理的死讯和技能结算后入夜。'
-              : '决定是否自爆。自爆会出局并跳过当天剩余的发言和放逐；完成尚未处理的死讯和技能结算后入夜。',
+            task: `决定是否自爆。${BLAST_TASKS[window]}后续窗口须实际触发，且你仍具备行动资格。自爆先让自己出局并立即判胜负；已终局就停止，不再带人、交徽或入夜。未终局才继续符合条件的技能、尚未处理的死讯和警徽结算，跳过当天剩余发言与放逐后入夜。`,
             shape: 'yesOrNo',
           }),
       );

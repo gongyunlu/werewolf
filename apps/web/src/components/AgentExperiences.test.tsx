@@ -10,6 +10,8 @@ import {
   editExperience,
   archiveExperience,
   indexExperience,
+  fetchExperienceAudit,
+  reviewExperience,
 } from '@/lib/experience-api';
 
 vi.mock('@/lib/experience-api', () => ({
@@ -19,6 +21,8 @@ vi.mock('@/lib/experience-api', () => ({
   editExperience: vi.fn(),
   archiveExperience: vi.fn(),
   indexExperience: vi.fn(),
+  fetchExperienceAudit: vi.fn(),
+  reviewExperience: vi.fn(),
 }));
 const agent = {
   id: 'agent-1',
@@ -39,12 +43,27 @@ const item = {
   body: '先核对发生顺序',
   conditions: '有人解释过去行动时',
   sourceIds: ['s1'],
+  actionTypes: ['vote'] as Array<'vote'>,
+  minDay: 1,
+  firstDayOnly: false,
+  exclusions: '没有当时可见证据时不适用',
   version: 1,
   sourceGameId: 'old-game',
   sourcePlayerId: 'p1',
   boardId: '6p_white_wolf',
   role: 'villager',
   enabled: true,
+  indexed: true,
+  revision: 0,
+  reviews: [
+    {
+      version: 1,
+      decision: 'approved' as const,
+      note: '已经核对证据',
+      sourceIds: ['s1'],
+      reviewedAt: '2026-10-02T00:00:00.000Z',
+    },
+  ],
   createdAt: '2026-09-26',
 };
 beforeEach(() => {
@@ -53,8 +72,8 @@ beforeEach(() => {
 it('读取、停用、重新启用与来源展开仅调用管理和读取接口', async () => {
   vi.mocked(fetchExperiences).mockResolvedValue({ experiences: [item] });
   vi.mocked(toggleExperience)
-    .mockResolvedValueOnce({ experiences: [{ ...item, enabled: false }] })
-    .mockResolvedValueOnce({ experiences: [item] });
+    .mockResolvedValueOnce({ experiences: [{ ...item, enabled: false, revision: 1 }] })
+    .mockResolvedValueOnce({ experiences: [{ ...item, revision: 2 }] });
   render(
     <MemoryRouter>
       <AgentExperiences agent={agent} onClose={() => {}} />
@@ -63,7 +82,7 @@ it('读取、停用、重新启用与来源展开仅调用管理和读取接口'
   await screen.findByText('先核对发生顺序');
   expect(screen.getByText(/来源参赛者：甲/)).toBeInTheDocument();
   expect(screen.getByText(/启用后其他参赛者也可检索参考/)).toBeInTheDocument();
-  expect(screen.getByText('待建立向量索引')).toBeInTheDocument();
+  expect(screen.getByText('索引已就绪')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: '来源对局与复盘' })).toHaveAttribute(
     'href',
     '/games/old-game?view=review',
@@ -73,8 +92,8 @@ it('读取、停用、重新启用与来源展开仅调用管理和读取接口'
   await screen.findByText('已停用');
   await user.click(screen.getByRole('button', { name: '重新启用' }));
   await screen.findByText('已启用');
-  expect(toggleExperience).toHaveBeenNthCalledWith(1, agent.id, item.id, false, undefined);
-  expect(toggleExperience).toHaveBeenNthCalledWith(2, agent.id, item.id, true, undefined);
+  expect(toggleExperience).toHaveBeenNthCalledWith(1, agent.id, item.id, false, 0);
+  expect(toggleExperience).toHaveBeenNthCalledWith(2, agent.id, item.id, true, 1);
   expect(fetchExperienceSources).not.toHaveBeenCalled();
 });
 it('编辑保存不调用索引，显示新版本和历史正文；显式索引失败显示原因和调用号', async () => {
@@ -114,6 +133,10 @@ it('编辑保存不调用索引，显示新版本和历史正文；显式索引�
     title: item.title,
     body: changed.body,
     conditions: item.conditions,
+    actionTypes: item.actionTypes,
+    minDay: item.minDay,
+    firstDayOnly: item.firstDayOnly,
+    exclusions: item.exclusions,
   });
   expect(indexExperience).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: '重新启用' })).toBeDisabled();
@@ -195,4 +218,79 @@ it('空经验正常显示，读取失败允许刷新', async () => {
   await screen.findByRole('alert');
   await userEvent.click(screen.getByRole('button', { name: '刷新经验' }));
   await waitFor(() => expect(screen.getByText(/还没有个人经验/)).toBeInTheDocument());
+});
+
+it('候选须核对来源并提交审核；审核通过保持停用，收益不由审核状态推断', async () => {
+  const candidate = { ...item, enabled: false, reviews: [] };
+  vi.mocked(fetchExperiences).mockResolvedValue({ experiences: [candidate] });
+  vi.mocked(fetchExperienceAudit).mockResolvedValue({
+    experience: candidate,
+    sources: [
+      {
+        id: 's1',
+        origin: { actionKey: 'a1', path: 'context/visible' },
+        value: '当时的原始发言',
+        perspective: 'at_action',
+      },
+    ],
+    related: [{ experience: { ...item, id: '另一条', title: '相同做法' }, reason: 'duplicate' }],
+  });
+  vi.mocked(reviewExperience).mockResolvedValue({
+    experiences: [{ ...item, enabled: false, revision: 1 }],
+  });
+  render(
+    <MemoryRouter>
+      <AgentExperiences agent={agent} onClose={() => {}} />
+    </MemoryRouter>,
+  );
+  await screen.findByText('待审核候选');
+  expect(screen.getByRole('button', { name: '重新启用' })).toBeDisabled();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '审核经验' }));
+  await screen.findByText('正文与条件重复');
+  expect(screen.getByText(/当时的原始发言/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '审核通过，保持停用' }));
+  await screen.findByText('请填写审核说明，并选择至少一项原始证据。');
+  expect(reviewExperience).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('checkbox', { name: '证据 1 · 对应行动当时' }));
+  await user.type(screen.getByLabelText('审核说明'), '原始材料支持时序核对，重复条目待归档。');
+  await user.click(screen.getByRole('button', { name: '审核通过，保持停用' }));
+  await screen.findByText('审核通过');
+  expect(reviewExperience).toHaveBeenCalledExactlyOnceWith(agent.id, item.id, {
+    revision: 0,
+    version: 1,
+    decision: 'approved',
+    note: '原始材料支持时序核对，重复条目待归档。',
+    sourceIds: ['s1'],
+  });
+  expect(screen.getByRole('button', { name: '重新启用' })).toBeEnabled();
+  expect(toggleExperience).not.toHaveBeenCalled();
+  expect(screen.getByText('审核记录（1）')).toBeInTheDocument();
+});
+
+it('旧经验的适用行动与天数留空，不能在编辑时静默补齐', async () => {
+  vi.mocked(fetchExperiences).mockResolvedValue({
+    experiences: [
+      {
+        ...item,
+        actionTypes: undefined,
+        minDay: undefined,
+        firstDayOnly: undefined,
+        exclusions: undefined,
+        reviews: [],
+      },
+    ],
+  });
+  render(
+    <MemoryRouter>
+      <AgentExperiences agent={agent} onClose={() => {}} />
+    </MemoryRouter>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '编辑经验' }));
+  expect(screen.getByLabelText('最早适用天数')).toHaveValue(null);
+  expect(screen.getByRole('checkbox', { name: '投票' })).not.toBeChecked();
+  expect(screen.getByLabelText('不适用条件')).toHaveValue('');
+  await user.click(screen.getByRole('button', { name: '保存新版本' }));
+  expect(editExperience).not.toHaveBeenCalled();
 });

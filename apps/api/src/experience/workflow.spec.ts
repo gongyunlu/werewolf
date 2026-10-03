@@ -54,7 +54,7 @@ describe('个人经验生成与恢复', () => {
         sourceGameId: f.gameId,
         sourcePlayerId: 'p1',
         version: 1,
-        enabled: true,
+        enabled: false,
         sourceIds: ['source-1'],
       }),
     ]);
@@ -101,6 +101,53 @@ describe('个人经验生成与恢复', () => {
     await runExperience(f.stores, f.row.id, { port: model, access, promptSource });
     expect(model.calls).toHaveLength(0);
     expect((await f.stores.experiences.list(f.agent.id))[0]!.sourceIds).toEqual(['source-1']);
+  });
+
+  it('升级前已保存的短编号答复缺少新范围时仍恢复，保留为待审核候选', async () => {
+    const f = await fixture();
+    const old = {
+      experiences: [
+        { title: '旧经验', body: '先核对时序', conditions: '解释过去行动时', sourceIds: ['E1'] },
+      ],
+      reason: '旧输出',
+    };
+    const callId = '已付费旧调用';
+    await f.stores.asked.append(f.gameId, {
+      model: access.model,
+      system: '旧模板',
+      prompt: '旧题面',
+      actionKey: null,
+      observation: {
+        callId,
+        executionId: f.row.id,
+        step: 'experience',
+        formatAttempt: 1,
+        endpointKey: '离线',
+      },
+    });
+    await f.stores.experiences.save(f.row, {
+      ...f.row.state,
+      status: 'failed',
+      input: f.input,
+      attempts: [
+        {
+          callId,
+          status: 'responded',
+          citationFormat: 'short_ids',
+          response: {
+            content: '',
+            reasoning: null,
+            toolCall: { name: 'submit', arguments: JSON.stringify({ value: old }) },
+          },
+        },
+      ],
+    });
+    const model = scriptedModel([]);
+    await runExperience(f.stores, f.row.id, { port: model, access, promptSource });
+    expect(model.calls).toHaveLength(0);
+    const item = (await f.stores.experiences.list(f.agent.id))[0]!;
+    expect(item).toMatchObject({ sourceIds: ['source-1'], enabled: false });
+    expect(item.actionTypes).toBeUndefined();
   });
 
   it('校验失败后又遇到请求失败，续跑仍保留引用诊断', async () => {

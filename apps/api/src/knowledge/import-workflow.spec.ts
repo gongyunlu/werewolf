@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { KnowledgeContentSchema } from '@werewolf/shared';
 import { controlledPort, vectorRuntime } from '../experience/testing';
 import { ModelCallError } from '../llm/model-port';
-import { embeddingKey } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from './text';
 import { memoryStores } from '../store/memory';
 import { page, proposed, importFixture } from './import-testing';
 import {
@@ -118,7 +118,7 @@ describe('网页采集、整理与确认', () => {
       items[0]!.id,
       1,
       items[0]!.versions[0]!.versionId,
-      embeddingKey(runtime),
+      knowledgeEmbeddingKey(runtime),
     );
     expect(f.runtime.port.generate).toHaveBeenCalledTimes(1);
     expect((await f.stores.asked.captureCalls(f.id)).calls).toHaveLength(1);
@@ -179,7 +179,7 @@ describe('网页采集、整理与确认', () => {
       item.id,
       item.revision,
       item.versions[0]!.versionId,
-      embeddingKey(vector),
+      knowledgeEmbeddingKey(vector),
     );
     item = (await f.stores.knowledge.find(item.id))!;
     const old = structuredClone(item.versions[0]);

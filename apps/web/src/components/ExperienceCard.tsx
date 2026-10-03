@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/card';
 import { fetchExperienceSources } from '@/lib/experience-api';
 import { errorMessage } from '@/lib/http';
-import { roleName } from '@/lib/labels';
+import { actionTypeName, roleName } from '@/lib/labels';
 
 export function ExperienceCard({
   experience,
@@ -60,6 +60,18 @@ export function ExperienceCard({
       <CardContent className="flex flex-col gap-3">
         <p className="whitespace-pre-wrap wrap-anywhere">{experience.body}</p>
         <p className="text-sm text-muted-foreground">适用条件：{experience.conditions}</p>
+        <p className="text-sm text-muted-foreground">
+          适用行动：{experience.actionTypes?.map(actionTypeName).join('、') ?? '尚未审核填写'}
+          {' · '}
+          {experience.minDay === undefined || experience.firstDayOnly === undefined
+            ? '天数范围待填写'
+            : experience.firstDayOnly
+              ? '仅第 1 天'
+              : `第 ${experience.minDay} 天起`}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          不适用条件：{experience.exclusions ?? '尚未审核填写'}
+        </p>
         {sources?.map((source) => (
           <div key={source.id} className="text-xs text-muted-foreground">
             <p>

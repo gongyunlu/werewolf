@@ -4,6 +4,7 @@ import { cosine } from '../llm/embedding';
 import {
   KnowledgeConflictError,
   knowledgeHash,
+  knowledgeApplicable,
   type KnowledgeRecord,
   type KnowledgeScope,
   type KnowledgeRevision,
@@ -18,16 +19,7 @@ export function memoryKnowledge(): KnowledgeStore {
   const candidates = (scope: KnowledgeScope) =>
     [...rows.values()].flatMap((item) => {
       const row = item.versions.find((v) => v.versionId === item.activeVersionId);
-      const c = row?.content;
-      return row &&
-        c?.kind === 'strategy' &&
-        c.boardIds.includes(scope.boardId) &&
-        c.roles.some((role) => role === scope.role) &&
-        c.actionTypes.some((action) => action === scope.actionType) &&
-        (!c.firstDayOnly || scope.day === 1) &&
-        c.minDay <= scope.day
-        ? [row]
-        : [];
+      return row && knowledgeApplicable(row, scope) ? [row] : [];
     });
   return {
     async list() {
@@ -89,6 +81,11 @@ export function memoryKnowledge(): KnowledgeStore {
     },
     async hasCandidates(scope) {
       return candidates(scope).length > 0;
+    },
+    async lexicalCandidates(scope, key) {
+      return candidates(scope)
+        .filter((row) => vectors.get(row.versionId)?.key === key)
+        .map((row) => KnowledgeSnapshotSchema.parse(row));
     },
     async search(scope, key, vector, limit) {
       return candidates(scope)

@@ -149,6 +149,21 @@ export function prismaKnowledge(client: PrismaClient): KnowledgeStore {
     async hasCandidates(scope) {
       return (await client.knowledgeVersion.count({ where: scopeWhere(scope) })) > 0;
     },
+    async lexicalCandidates(scope, key) {
+      const rows = await client.knowledgeVersion.findMany({
+        where: { ...scopeWhere(scope), embeddingKey: key, embedding: { isEmpty: false } },
+        select: { id: true, itemId: true, version: true, content: true },
+        orderBy: { id: 'asc' },
+      });
+      return rows.map((row) =>
+        KnowledgeSnapshotSchema.parse({
+          id: row.itemId,
+          versionId: row.id,
+          version: row.version,
+          content: row.content,
+        }),
+      );
+    },
     async search(scope, key, vector, limit) {
       const rows = await client.$queryRaw<Array<Row & { similarity: number }>>`
         SELECT v.id, v.item_id AS "itemId", v.version, v.content,

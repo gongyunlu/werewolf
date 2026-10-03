@@ -69,13 +69,19 @@ const CHANNELS: readonly { speech: EventKind; summary: EventKind }[] = [
  * 模型读到的形状固定，也省得相邻两问的块序不一样。
  * 摘要与它折的那些明细同块：它替的就是那几行，挪到别处读的人就得两头对。
  */
-const BLOCKS: readonly { kinds: readonly EventKind[]; title: string }[] = [
-  { kinds: [EVENT_KINDS.SYSTEM], title: '法官播报' },
+const BLOCKS: readonly {
+  kinds: readonly EventKind[];
+  title: string;
+  audience?: 'all' | 'limited';
+}[] = [
+  { kinds: [EVENT_KINDS.SYSTEM], title: '法官播报', audience: 'all' },
+  { kinds: [EVENT_KINDS.SYSTEM], title: '法官私密告知', audience: 'limited' },
   { kinds: [EVENT_KINDS.SHERIFF], title: '上警与警徽' },
   { kinds: [EVENT_KINDS.BALLOT], title: '票型' },
   { kinds: [EVENT_KINDS.PUBLIC_SPEECH, EVENT_KINDS.PUBLIC_SUMMARY], title: '公开发言' },
   { kinds: [EVENT_KINDS.WOLF_SPEECH, EVENT_KINDS.WOLF_SUMMARY], title: '狼队商议' },
-  { kinds: [EVENT_KINDS.OTHER], title: '其它' },
+  { kinds: [EVENT_KINDS.OTHER], title: '其它', audience: 'all' },
+  { kinds: [EVENT_KINDS.OTHER], title: '其它私密记录', audience: 'limited' },
 ];
 
 /** 一天一条摘要，键由天与渠道拼出来，重放时按它认「这条已经折过了」。 */
@@ -146,9 +152,20 @@ export interface PendingSummary {
 function render(
   rows: readonly StoredEvent[],
   viewerId: string,
+  playerIds: readonly string[],
   upToSeq?: number,
 ): readonly FactBlock[] {
   const watermark = watermarkDay(rows, upToSeq);
+  const visibleOrder = new Map(
+    rows
+      .filter(
+        (row) =>
+          !isSummary(row.kind) &&
+          row.audience.includes(viewerId) &&
+          (upToSeq === undefined || row.seq <= upToSeq),
+      )
+      .map((row, index) => [row.seq, index + 1]),
+  );
 
   const byDay = new Map<number, StoredEvent[]>();
   for (const row of rows) {
@@ -157,7 +174,7 @@ function render(
     else byDay.set(row.day, [row]);
   }
 
-  return BLOCKS.map(({ kinds, title }) => {
+  return BLOCKS.map(({ kinds, title, audience }) => {
     const lines: string[] = [];
 
     for (const [day, sameDay] of byDay) {
@@ -168,9 +185,21 @@ function render(
         // 那一整天就既没有明细也没有摘要。它折的全是这个记号之前的东西，给出来不越界。
         if (upToSeq !== undefined && row.seq > upToSeq && !isSummary(row.kind)) continue;
         if (!row.audience.includes(viewerId)) continue;
+        // 公开受众按本局全员核对，不能因玩家出局或目前只存了私密事件而缩小。
+        if (
+          audience !== undefined &&
+          playerIds.every((playerId) => row.audience.includes(playerId)) !== (audience === 'all')
+        )
+          continue;
 
-        // 摘要那条是一天一条、正文里每人一行，摊开来各占一行。
-        shown.push(...row.text.split('\n'));
+        // 按本人可见记录编号，避免全局序号空档暴露私密行动；摘要不冒充原发言时点。
+        shown.push(
+          ...row.text
+            .split('\n')
+            .map((line) =>
+              isSummary(row.kind) ? line : `[#${visibleOrder.get(row.seq)}] ${line}`,
+            ),
+        );
       }
       // 这一天没有他看得到的条目，天号那一行也不留。
       if (shown.length > 0) lines.push(`【第 ${day} 天】`, ...shown);
@@ -236,8 +265,14 @@ function pendingSummaries(rows: readonly StoredEvent[]): readonly PendingSummary
  * 造一份台账。
  * stored 是这局已经落库的那几段，由持有这一局的人先取出来交进来：一局只取这一次，
  * 这一层就不必为了读一次历史把自己变成异步构造。
+ * playerIds 是本局全员（含已出局玩家），用于区分公开播报和私密告知。
  */
-export function ledger(store: EventStore, gameId: string, stored: readonly StoredEvent[]): Ledger {
+export function ledger(
+  store: EventStore,
+  gameId: string,
+  stored: readonly StoredEvent[],
+  playerIds: readonly string[],
+): Ledger {
   /** 已经发生的事实，按发生顺序；库里那几条先铺回来。 */
   const rows: StoredEvent[] = [...stored];
   /** 库里已经有的事实，重放时照着铺回内存，不再落第二遍。 */
@@ -275,7 +310,7 @@ export function ledger(store: EventStore, gameId: string, stored: readonly Store
     // 同一轮里并发问出去的几个人看到的就是同一份台账，谁也不比谁多知道一条。
     // 记号取的是位置而不是那一问自己那条的键：投票、提刀这些提问答完不留事实，
     // 台账里根本没有它那一条，凭键只能落回整份。
-    factsFor: (viewerId, upToSeq) => render(rows, viewerId, upToSeq),
+    factsFor: (viewerId, upToSeq) => render(rows, viewerId, playerIds, upToSeq),
 
     pendingSummaries: () => pendingSummaries(rows),
 

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { KnowledgeSnapshotSchema } from '@werewolf/shared';
 import { openPrismaClient, prismaStores } from '../store/prisma';
-import { embeddingKey } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from './text';
 import { access, controlledPort, vectorRuntime } from '../experience/testing';
 import { recordingModelPort } from '../llm/recording-model-port';
 import { INITIAL_KNOWLEDGE } from './initial-content';
@@ -55,7 +55,7 @@ integration('Postgres 知识版本、索引与追溯', () => {
         itemId,
         current.revision,
         toIndex.versionId,
-        embeddingKey(runtime),
+        knowledgeEmbeddingKey(runtime),
       );
       const scope = {
         boardId: '12p_wolf_king',
@@ -64,7 +64,7 @@ integration('Postgres 知识版本、索引与追溯', () => {
         day: 1,
       };
       expect(
-        (await stores.knowledge.search(scope, embeddingKey(runtime), [1, 0], 20)).some(
+        (await stores.knowledge.search(scope, knowledgeEmbeddingKey(runtime), [1, 0], 20)).some(
           (h) => h.knowledge.id === itemId,
         ),
       ).toBe(true);
@@ -103,7 +103,7 @@ integration('Postgres 知识版本、索引与追溯', () => {
         knowledge: [snapshot],
       });
       expect(
-        (await stores.knowledge.search(scope, embeddingKey(runtime), [1, 0], 20)).some(
+        (await stores.knowledge.search(scope, knowledgeEmbeddingKey(runtime), [1, 0], 20)).some(
           (h) => h.knowledge.id === itemId,
         ),
       ).toBe(false);

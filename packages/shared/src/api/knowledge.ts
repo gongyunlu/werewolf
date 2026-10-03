@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RetrievalCandidateDiagnosticsSchema } from './retrieval';
 import { ACTION_TYPES } from '../domain/action-types';
 import { ROLES } from '../domain/roles';
 
@@ -108,7 +109,13 @@ export const KnowledgeActivateSchema = z.object({
 export const KnowledgeRetrievalSchema = z.object({
   actionType: z.string(),
   day: z.number(),
-  candidates: z.array(z.object({ id: z.string(), versionId: z.string(), similarity: z.number() })),
+  candidates: z.array(
+    RetrievalCandidateDiagnosticsSchema.extend({
+      id: z.string(),
+      versionId: z.string(),
+      similarity: z.number(),
+    }),
+  ),
   selected: z.array(KnowledgeSnapshotSchema),
 });
 export const KnowledgeCallInputSchema = z.object({

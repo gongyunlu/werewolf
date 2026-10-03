@@ -26,13 +26,17 @@ export function embeddingRuntime(env: AppEnv = loadEnv()): EmbeddingRuntime {
   };
 }
 
-export function embeddingKey(runtime: Pick<EmbeddingRuntime, 'access' | 'dimensions'>): string {
+export function embeddingKey(
+  runtime: Pick<EmbeddingRuntime, 'access' | 'dimensions'>,
+  textVersion?: string,
+): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
         runtime.access.baseUrl.replace(/\/$/, ''),
         runtime.access.model,
         runtime.dimensions,
+        ...(textVersion ? [textVersion] : []),
       ]),
     )
     .digest('hex');

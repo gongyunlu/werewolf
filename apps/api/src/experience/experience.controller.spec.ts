@@ -41,7 +41,15 @@ describe('个人经验接口', () => {
     process.env.ADMIN_TOKEN = 'test-admin-token';
     const item = (await f.stores.experiences.list(f.agent.id))[0]!;
     const url = `/api/agents/${f.agent.id}/experiences/${item.id}`;
-    const content = { title: '新标题', body: '只使用当时可见材料', conditions: '核对时序时' };
+    const content = {
+      title: '新标题',
+      body: '只使用当时可见材料',
+      conditions: '核对时序时',
+      actionTypes: ['vote'],
+      minDay: 1,
+      firstDayOnly: false,
+      exclusions: '缺少当时依据时不适用',
+    };
     await request(app.getHttpServer())
       .put(`${url}/content`)
       .send({ revision: 0, content })
@@ -99,11 +107,27 @@ describe('个人经验接口', () => {
       .patch(url)
       .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
       .send({ enabled: true, revision: 1 })
+      .expect(409);
+    await request(app.getHttpServer())
+      .post(`${url}/review`)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({
+        revision: 1,
+        version: 2,
+        decision: 'approved',
+        note: '已核对原始证据与范围',
+        sourceIds: item.sourceIds,
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .patch(url)
+      .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
+      .send({ enabled: true, revision: 2 })
       .expect(200);
     await request(app.getHttpServer())
       .patch(`${url}/archive`)
       .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
-      .send({ archived: true, revision: 2 })
+      .send({ archived: true, revision: 3 })
       .expect(200);
     await request(app.getHttpServer())
       .post(`${url}/index`)
@@ -113,13 +137,13 @@ describe('个人经验接口', () => {
     const restored = await request(app.getHttpServer())
       .patch(`${url}/archive`)
       .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
-      .send({ archived: false, revision: 3 })
+      .send({ archived: false, revision: 4 })
       .expect(200);
     expect(restored.body.experiences[0]).toMatchObject({
       enabled: false,
       archived: false,
       version: 2,
-      revision: 4,
+      revision: 5,
     });
   });
   it('已提炼的旧任务能明确补建索引，查看不发请求，完成后重复提交不再入队', async () => {
@@ -212,7 +236,7 @@ describe('个人经验接口', () => {
     await request(app.getHttpServer())
       .patch(toggleUrl)
       .set(ADMIN_TOKEN_HEADER, 'test-admin-token')
-      .send({ enabled: false })
+      .send({ enabled: false, revision: 0 })
       .expect(200);
     expect((await f.stores.experiences.list(f.agent.id))[0]!.enabled).toBe(false);
     const detail = await request(app.getHttpServer())

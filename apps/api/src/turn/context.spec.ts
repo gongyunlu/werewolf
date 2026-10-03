@@ -42,6 +42,30 @@ describe('局面视图', () => {
     expect(facts).not.toContain('还没有警长。');
   });
 
+  it('存活警长没有主动交徽窗口，出局待处理警徽时保留原警长行', () => {
+    const state = { ...makeState(4), sheriffId: 'p2', sheriffElectionSettled: true };
+    const dead = patchPlayer(state, 'p2', {
+      isAlive: false,
+      deathDay: 1,
+      deathCause: DEATH_CAUSES.EXECUTION,
+    });
+    const withoutSheriff = { ...dead, sheriffId: null };
+
+    expect(
+      lines(visibleFacts(state, [], 'p3')).filter((line) => line.startsWith('警长是')),
+    ).toEqual([
+      '警长是 2 号。目前仍存活，此刻没有主动交徽或撕徽窗口；传徽计划要等本人出局后的合法窗口。',
+    ]);
+    expect(lines(visibleFacts(dead, [], 'p2')).filter((line) => line.startsWith('警长是'))).toEqual(
+      ['警长是 2 号。'],
+    );
+    const withoutSheriffFacts = lines(visibleFacts(withoutSheriff, [], 'p3'));
+    expect(withoutSheriffFacts).toContain('本局没有警长。');
+    expect(withoutSheriffFacts.some((line) => line.includes('交徽') || line.includes('撕徽'))).toBe(
+      false,
+    );
+  });
+
   it('出局的人连同出局天数一起公布，死因不公布', () => {
     const dead = patchPlayer(makeState(4), 'p2', {
       isAlive: false,
@@ -162,7 +186,7 @@ describe('局面视图', () => {
   });
 
   it('台账按类别分块，排在局面之前', async () => {
-    const process = ledger(memoryEvents(), 'g1', []);
+    const process = ledger(memoryEvents(), 'g1', [], ALL);
     await process.add('a#0', 1, '1 号上警。', ALL, EVENT_KINDS.SHERIFF);
     await process.add('b#0', 2, '2 号发言：我先过。', ALL, EVENT_KINDS.PUBLIC_SPEECH);
 
@@ -171,8 +195,47 @@ describe('局面视图', () => {
     expect(blocks.map((block) => block.title)).toEqual(['上警与警徽', '公开发言', '局面']);
     expect(blocks.find((block) => block.title === '公开发言')?.lines).toEqual([
       '【第 2 天】',
-      '2 号发言：我先过。',
+      '[#2] 2 号发言：我先过。',
     ]);
+  });
+
+  it('狼队刀口保留私密来源，包含死者的全员播报仍公开，存活者专属记录不扩大受众', async () => {
+    const state = patchPlayer(
+      withRoles(makeState(6), { p1: ROLES.WEREWOLF, p2: ROLES.WEREWOLF }),
+      'p4',
+      { isAlive: false, deathDay: 1, deathCause: DEATH_CAUSES.EXECUTION },
+    );
+    const playerIds = state.players.map((player) => player.id);
+    const process = ledger(memoryEvents(), state.gameId, [], playerIds);
+    const attack = '狼队今晚选择袭击5号。';
+    const quietNight = '昨晚是平安夜。';
+    const aliveOnly = '仅告知当前存活玩家的记录。';
+    await process.add('attack', 1, attack, ['p1', 'p2'], EVENT_KINDS.SYSTEM);
+    await process.add('quiet-night', 2, quietNight, playerIds, EVENT_KINDS.SYSTEM);
+    await process.add(
+      'alive-only',
+      2,
+      aliveOnly,
+      state.players.filter((player) => player.isAlive).map((player) => player.id),
+      EVENT_KINDS.SYSTEM,
+    );
+
+    for (const viewerId of ['p1', 'p3', 'p4']) {
+      const visible = visibleFacts(state, process.factsFor(viewerId), viewerId);
+      expect(visible.find((block) => block.title === '法官播报')?.lines).toEqual([
+        '【第 2 天】',
+        `[#${viewerId === 'p1' ? 2 : 1}] ${quietNight}`,
+      ]);
+      const privateLines = visible.find((block) => block.title === '法官私密告知')?.lines ?? [];
+      expect(privateLines).toEqual(
+        viewerId === 'p1'
+          ? ['【第 1 天】', `[#1] ${attack}`, '【第 2 天】', `[#3] ${aliveOnly}`]
+          : viewerId === 'p3'
+            ? ['【第 2 天】', `[#2] ${aliveOnly}`]
+            : [],
+      );
+      if (viewerId !== 'p1') expect(lines(visible).join('\n')).not.toContain(attack);
+    }
   });
 
   it('这一问的说明单独成块，不混进事实里', () => {
@@ -182,7 +245,7 @@ describe('局面视图', () => {
   });
 
   it('先取出的那份不会被后来的发言改写', async () => {
-    const process = ledger(memoryEvents(), 'g1', []);
+    const process = ledger(memoryEvents(), 'g1', [], ALL);
     await process.add('a#0', 1, '1 号发言：我先过。', ALL, EVENT_KINDS.PUBLIC_SPEECH);
 
     const before = visibleFacts(makeState(2), process.factsFor('p1'), 'p1');

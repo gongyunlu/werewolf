@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { KnowledgeSnapshotSchema } from '@werewolf/shared';
 import { openPrismaClient, prismaStores } from '../store/prisma';
 import { access, controlledPort, vectorRuntime } from '../experience/testing';
-import { embeddingKey } from '../llm/embedding';
+import { knowledgeEmbeddingKey } from './text';
 import { recordingModelPort } from '../llm/recording-model-port';
 import { importFixture, page, proposed } from './import-testing';
 import {
@@ -81,7 +81,12 @@ integration('Postgres 网页采集与版本同步', () => {
       const old = item.versions[0]!;
       await prepareKnowledgeIndex(stores, old, runtime);
       await indexKnowledge(stores, old.versionId, runtime);
-      await stores.knowledge.activate(item.id, item.revision, old.versionId, embeddingKey(runtime));
+      await stores.knowledge.activate(
+        item.id,
+        item.revision,
+        old.versionId,
+        knowledgeEmbeddingKey(runtime),
+      );
       const snapshot = KnowledgeSnapshotSchema.parse(old);
       await stores.games.open({ gameId, boardId: '12p_wolf_king', roster: [] });
       const actionKey = `${gameId}/guard`;
@@ -147,7 +152,7 @@ integration('Postgres 网页采集与版本同步', () => {
         day: 1,
       };
       const search = async () =>
-        (await stores.knowledge.search(scope, embeddingKey(runtime), [1, 0], 100)).find(
+        (await stores.knowledge.search(scope, knowledgeEmbeddingKey(runtime), [1, 0], 100)).find(
           (h) => h.knowledge.id === item.id,
         )!.knowledge;
       expect((await search()).versionId).toBe(old.versionId);
@@ -158,7 +163,7 @@ integration('Postgres 网页采集与版本同步', () => {
         item.id,
         item.revision,
         updated.versionId,
-        embeddingKey(runtime),
+        knowledgeEmbeddingKey(runtime),
       );
       expect((await search()).versionId).toBe(updated.versionId);
       expect(await stores.asked.knowledgeInputs(gameId, actionKey)).toEqual(historical);

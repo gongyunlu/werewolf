@@ -2,12 +2,22 @@ import { LOCAL_PROMPTS } from '../prompts/catalog';
 import { ACTION_TYPES, ROLES } from '@werewolf/shared';
 import { randomUUID } from 'node:crypto';
 import { runExperience } from './workflow';
-import { fixture, result, access, promptSource, controlledPort, vectorRuntime } from './testing';
+import {
+  fixture,
+  result,
+  access,
+  promptSource,
+  controlledPort,
+  vectorRuntime,
+  approveExperience,
+} from './testing';
 import { EXPERIENCE_CHARACTERS } from './selection';
 import { modelActions } from '../turn/provider';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { initialRetrieval, retrieveExperiences, retrievalQuery } from './retrieval';
-import { indexExperience } from './indexing';
+import { indexExperience as buildIndex } from './indexing';
+import type { EmbeddingRuntime } from '../llm/embedding';
+import { embeddingKey } from '../llm/embedding';
 import type { GameStores } from '../store/stores';
 import type { TurnContext } from '../turn/request';
 
@@ -21,7 +31,7 @@ const context: TurnContext = {
 };
 const scope = { gameId: 'next', boardId: '6p_white_wolf', role: 'villager' };
 async function begin(stores: GameStores, key = randomUUID(), selectedScope = scope) {
-  const state = initialRetrieval(context, selectedScope);
+  const state = initialRetrieval(context, selectedScope, ACTION_TYPES.VOTE, 'vector');
   await stores.actions.begin({
     actionKey: key,
     gameId: selectedScope.gameId,
@@ -33,6 +43,14 @@ async function begin(stores: GameStores, key = randomUUID(), selectedScope = sco
     experienceRetrieval: state,
   });
   return { key, state };
+}
+async function indexExperience(stores: GameStores, id: string, runtime: EmbeddingRuntime) {
+  await buildIndex(stores, id, runtime);
+  const generation = (await stores.experiences.findGeneration(id))!;
+  for (const item of (await stores.experiences.list(generation.agentId)).filter(
+    (candidate) => candidate.generationId === id,
+  ))
+    await approveExperience(stores, item.id, runtime);
 }
 async function extracted(stores?: GameStores, count = 1) {
   const f = await fixture(stores);
@@ -54,19 +72,19 @@ async function extracted(stores?: GameStores, count = 1) {
 }
 
 describe('逐行动语义检索', () => {
-  it('没有相近经验允许空结果；未建立索引时明确失败而不是静默忽略', async () => {
+  it('未审核经验不参与检索；向量相似度不为正允许空结果', async () => {
     const f = await extracted();
     const first = await begin(f.stores);
     const embedding = vectorRuntime();
-    await expect(retrieveExperiences(f.stores, first.key, first.state, embedding)).rejects.toThrow(
-      '尚未建立',
-    );
-    expect((await f.stores.actions.find(first.key))!.experienceRetrieval!.failure).toContain(
-      '索引',
-    );
+    expect(
+      (await retrieveExperiences(f.stores, first.key, first.state, embedding)).selected,
+    ).toEqual([]);
+    expect(embedding.port.generate).not.toHaveBeenCalled();
     await indexExperience(f.stores, f.row.id, vectorRuntime([-1, 0]));
-    const saved = (await f.stores.actions.find(first.key))!.experienceRetrieval!;
-    expect((await retrieveExperiences(f.stores, first.key, saved, embedding)).selected).toEqual([]);
+    const next = await begin(f.stores);
+    expect((await retrieveExperiences(f.stores, next.key, next.state, embedding)).selected).toEqual(
+      [],
+    );
     expect(embedding.port.generate).toHaveBeenCalledTimes(1);
   });
   it('共享池按语义排序，不按归属或新旧优先；数量长度有界', async () => {
@@ -99,7 +117,7 @@ describe('逐行动语义检索', () => {
       (await retrieveExperiences(f.stores, second.key, second.state, embedding)).selected,
     ).toEqual([]);
     expect(embedding.port.generate).toHaveBeenCalledTimes(2);
-    await f.stores.experiences.toggle(f.agent.id, id, true);
+    await f.stores.experiences.toggle(f.agent.id, id, true, undefined, embeddingKey(embedding));
     const third = await begin(f.stores);
     expect(
       (await retrieveExperiences(f.stores, third.key, third.state, embedding)).selected[0]!.id,
@@ -178,6 +196,7 @@ describe('逐行动语义检索', () => {
       skills: stubSkills(),
       promptSource: LOCAL_PROMPTS,
       embedding,
+      referenceModeFor: () => 'vector' as const,
     };
     const state = withRoles(
       { ...makeState(3, false), gameId: receiver.gameId },
