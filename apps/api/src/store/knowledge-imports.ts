@@ -5,6 +5,7 @@ import type {
   WebSnapshot,
 } from '@werewolf/shared';
 import type { ModelResponse } from '../llm/model-port';
+import type { PendingModelObservation } from '../llm/observation';
 import type { PromptTemplate } from '../prompts/template';
 import { KnowledgeConflictError, type KnowledgeRecord } from './knowledge';
 
@@ -27,6 +28,7 @@ export interface OrganizationState {
     status: 'pending' | 'responded' | 'failed' | 'invalid' | 'accepted';
     response?: Pick<ModelResponse, 'content' | 'toolCall' | 'reasoning'>;
     durationMs?: number;
+    observation?: PendingModelObservation;
   }>;
 }
 export interface CaptureState {

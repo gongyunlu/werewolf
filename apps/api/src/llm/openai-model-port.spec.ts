@@ -1,4 +1,5 @@
 import { openaiModelPort, type SendRequest } from './openai-model-port';
+import { retryingModelPort } from './retrying-model-port';
 import {
   ModelCallError,
   type ModelAccess,
@@ -555,6 +556,70 @@ describe('OpenAI 兼容模型端口', () => {
   });
 
   describe('流式', () => {
+    it('预览回调错误原样抛出，不重复模型请求', async () => {
+      const send = jest.fn(sseSend(thought('推理'), said('答复')));
+      const failure = new TypeError('预览回调异常');
+      const port = retryingModelPort(openaiModelPort({ fetch: send }), { backoffMs: 0 });
+      await expect(
+        port.generate(REQUEST, ACCESS, {
+          onDelta() {
+            throw failure;
+          },
+        }),
+      ).rejects.toBe(failure);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it('流内配额错误归 fatal，不重复模型请求', async () => {
+      const body = `data: ${JSON.stringify({ error: { code: 'insufficient_quota', message: 'quota exhausted' } })}\n\n`;
+      const send = jest.fn(
+        async () =>
+          new Response(body, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      );
+      const port = retryingModelPort(openaiModelPort({ fetch: send }), { backoffMs: 0 });
+      await expect(port.generate(REQUEST, ACCESS, { onDelta() {} })).rejects.toMatchObject({
+        code: 'fatal',
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      { code: 'rate_limit_exceeded' },
+      { code: 'server_error' },
+      { type: 'rate_limit_error' },
+      { type: 'overloaded_error' },
+    ])('流内明确暂态错误保留有限重试：%j', async (error) => {
+      const send = jest.fn(sseSend(said('恢复后的答复'))).mockImplementationOnce(
+        async () =>
+          new Response(`data: ${JSON.stringify({ error })}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      );
+      const port = retryingModelPort(openaiModelPort({ fetch: send }), { backoffMs: 0 });
+      await expect(port.generate(REQUEST, ACCESS, { onDelta() {} })).resolves.toMatchObject({
+        content: '恢复后的答复',
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+
+    it('流内损坏的 JSON 不按网络故障重试', async () => {
+      const send = jest.fn(
+        async () =>
+          new Response('data: {broken}\n\n', {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      );
+      const port = retryingModelPort(openaiModelPort({ fetch: send }), { backoffMs: 0 });
+      await expect(port.generate(REQUEST, ACCESS, { onDelta() {} })).rejects.toBeInstanceOf(
+        SyntaxError,
+      );
+      expect(send).toHaveBeenCalledTimes(1);
+    });
     it.each(['', 'data: [DONE]\n\n'])('缺少结束原因时不把半句正文当作成功：%s', async (ending) => {
       const { send } = fakeSend(200, said('还没说完') + ending, {
         'content-type': 'text/event-stream',

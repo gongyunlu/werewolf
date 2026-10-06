@@ -412,6 +412,7 @@ function GameWatch({ gameId }: { gameId: string }) {
                   key={player.id}
                   player={player}
                   side="left"
+                  showPrivate={perspective === PERSPECTIVES.GOD}
                   seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
                   active={!ended && activeSeats.has(player.seatNo)}
                 />
@@ -515,6 +516,7 @@ function GameWatch({ gameId }: { gameId: string }) {
                   key={player.id}
                   player={player}
                   side="right"
+                  showPrivate={perspective === PERSPECTIVES.GOD}
                   seat={game?.roster.find((seat) => seat.seatNo === player.seatNo) ?? null}
                   active={!ended && activeSeats.has(player.seatNo)}
                 />

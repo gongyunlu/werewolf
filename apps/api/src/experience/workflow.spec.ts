@@ -7,6 +7,22 @@ import * as reviewWorkflow from '../review/workflow';
 import { experienceSource, prepareExperience, runExperience } from './workflow';
 import { fixture, result, access, promptSource, controlledPort } from './testing';
 describe('个人经验生成与恢复', () => {
+  it('发送前题面写入失败后可恢复，不把零请求判为结果未知', async () => {
+    const f = await fixture();
+    const model = controlledPort(JSON.stringify(result));
+    const generate = jest.spyOn(model, 'generate');
+    const runtime = { port: model, access, promptSource, prepare: f.prepare };
+    jest.spyOn(f.stores.asked, 'append').mockRejectedValueOnce(new Error('模拟题面写入失败'));
+    await expect(runExperience(f.stores, f.row.id, runtime)).rejects.toThrow();
+    expect(generate).not.toHaveBeenCalled();
+    expect((await f.stores.experiences.findGeneration(f.row.id))!.state.attempts[0]!.status).toBe(
+      'failed',
+    );
+    await runExperience(f.stores, f.row.id, runtime);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect((await f.stores.experiences.findGeneration(f.row.id))!.state.status).toBe('completed');
+  });
+
   it('从已完成复盘取本人原始行动和赛后材料，保留可知时点', async () => {
     const f = await fixture();
     await reviewFixture(f.gameId, f.stores);
@@ -243,6 +259,9 @@ describe('个人经验生成与恢复', () => {
     await runExperience(f.stores, f.row.id, runtime);
     expect(generate).toHaveBeenCalledTimes(1);
     expect(await f.stores.experiences.list(f.agent.id)).toHaveLength(1);
+    expect((await f.stores.observations.read(f.gameId))!.calls).toMatchObject([
+      { status: 'accepted', attempts: [{ status: 'succeeded', usage: { total_tokens: 15 } }] },
+    ]);
   });
 
   it('非法来源可控重问，已知网络失败可以续跑', async () => {

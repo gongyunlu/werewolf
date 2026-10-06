@@ -1,4 +1,4 @@
-/** 模板从哪来。平台是源，本地那份只是平台读不到时顶上的兜底。 */
+/** 模板来源，由接入配置显式选择。 */
 export type PromptSourceKind = 'platform' | 'local';
 
 /**
@@ -9,7 +9,7 @@ export type PromptSourceKind = 'platform' | 'local';
 export interface PromptTemplate {
   name: string;
   text: string;
-  /** 平台版本号；本地兜底没有版本号，所以是 null。 */
+  /** 平台版本号；本地模板没有版本号，所以是 null。 */
   version: number | null;
   source: PromptSourceKind;
 }
@@ -24,8 +24,6 @@ export class PromptContractError extends Error {
 
 /** 提示词源：按名字取一条模板，取不到就抛。 */
 export interface PromptSource {
-  /** 已固定的源不允许在缺失时换成本地正文。 */
-  strict?: boolean;
   load(name: string, version?: number): Promise<PromptTemplate>;
 }
 
@@ -33,7 +31,6 @@ export interface PromptSource {
 export function snapshotPromptSource(templates: readonly PromptTemplate[]): PromptSource {
   const saved = new Map(templates.map((template) => [template.name, structuredClone(template)]));
   return {
-    strict: true,
     async load(name, version) {
       const template = saved.get(name);
       if (!template || (version !== undefined && template.version !== version)) {
@@ -59,7 +56,9 @@ export function renderTemplate(
   template: PromptTemplate,
   variables: Record<string, string>,
 ): string {
-  const missing = extractPromptVariables(template.text).filter((name) => !(name in variables));
+  const missing = extractPromptVariables(template.text).filter(
+    (name) => !Object.hasOwn(variables, name),
+  );
   if (missing.length > 0)
     throw new PromptContractError(`提示词 "${template.name}" 缺少变量: ${missing.join(', ')}`);
 
@@ -89,7 +88,7 @@ export function assertTemplateContract(
     throw new PromptContractError(`提示词 "${template.name}" 缺少必需变量: ${missing.join(', ')}`);
 }
 
-/** 用一张写死在代码里的正文表做提示词源。本地兜底没有版本号。 */
+/** 用代码里的正文表做本地提示词源。 */
 export function localPromptSource(texts: Readonly<Record<string, string>>): PromptSource {
   return {
     async load(name: string): Promise<PromptTemplate> {

@@ -10,6 +10,7 @@ import {
 } from '@werewolf/shared';
 import type { EmbeddingTask } from '../experience/embedding-task';
 import type { ModelResponse } from '../llm/model-port';
+import type { PendingModelObservation } from '../llm/observation';
 import type { PromptTemplate } from '../prompts/template';
 import type { RosterSeat } from './games';
 import { createHash } from 'node:crypto';
@@ -31,6 +32,7 @@ export interface ExperienceAttempt {
   response?: Pick<ModelResponse, 'content' | 'toolCall' | 'reasoning'>;
   diagnosis?: string;
   durationMs?: number;
+  observation?: PendingModelObservation;
 }
 export interface ExperienceState {
   indexing?: {

@@ -9,6 +9,11 @@ describe('模板渲染', () => {
     expect(() => renderTemplate(template('A {{x}} B'), {})).toThrow(PromptContractError);
   });
 
+  it.each(['constructor', 'toString', '__proto__'])('继承属性 %s 不能充当模板变量', (name) => {
+    expect(() => renderTemplate(template(`{{${name}}}`), {})).toThrow(PromptContractError);
+    expect(renderTemplate(template(`{{${name}}}`), { [name]: '已提供' })).toBe('已提供');
+  });
+
   it('独占一行的空变量连那一行一起去掉，不留空行', () => {
     expect(renderTemplate(template('A\n\n{{mid}}\n\nB'), { mid: '' })).toBe('A\n\nB');
   });

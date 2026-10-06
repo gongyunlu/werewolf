@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { KnowledgeContentSchema } from '@werewolf/shared';
-import { controlledPort, vectorRuntime } from '../experience/testing';
+import { controlledPort, vectorRuntime, failNextAttemptObservation } from '../experience/testing';
 import { ModelCallError } from '../llm/model-port';
 import { knowledgeEmbeddingKey } from './text';
 import { memoryStores } from '../store/memory';
@@ -13,6 +13,36 @@ import {
 import { prepareKnowledgeIndex, indexKnowledge } from './indexing';
 
 describe('网页采集、整理与确认', () => {
+  it('整理前记录写入失败可以恢复，未派发不算结果未知', async () => {
+    const f = await importFixture();
+    jest.spyOn(f.stores.asked, 'append').mockRejectedValueOnce(new Error('模拟题面写入失败'));
+    await expect(organizeKnowledgePage(f.stores, f.id, f.runtime)).rejects.toThrow();
+    expect(f.runtime.port.generate).not.toHaveBeenCalled();
+    expect((await f.stores.knowledgeImports.find(f.id))!.state.organization).toMatchObject({
+      status: 'failed',
+      attempts: [{ status: 'failed' }],
+    });
+    await organizeKnowledgePage(f.stores, f.id, f.runtime);
+    expect(f.runtime.port.generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('整理答复收到后观测写入失败不产出候选，恢复补记后复用答复', async () => {
+    const f = await importFixture();
+    failNextAttemptObservation(f.stores);
+    await expect(organizeKnowledgePage(f.stores, f.id, f.runtime)).rejects.toThrow(
+      '模型观测写入失败',
+    );
+    const failed = (await f.stores.knowledgeImports.find(f.id))!;
+    expect(failed.state.organization!.status).toBe('failed');
+    expect(failed.state.candidates).toHaveLength(0);
+    await organizeKnowledgePage(f.stores, f.id, f.runtime);
+    expect((await f.stores.knowledgeImports.find(f.id))!.state.organization!.status).toBe('ready');
+    expect(f.runtime.port.generate).toHaveBeenCalledTimes(1);
+    expect((await f.stores.asked.captureCalls(f.id)).calls).toMatchObject([
+      { status: 'accepted', attempts: [{ status: 'succeeded', usage: { total_tokens: 15 } }] },
+    ]);
+  });
+
   it('请求链接的跳转目标改变后仍按来源身份关联更新，替换本来源但保留其他来源', async () => {
     const f = await importFixture();
     const first = (await f.stores.knowledgeImports.find(f.id))!;

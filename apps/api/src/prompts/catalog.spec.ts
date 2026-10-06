@@ -16,19 +16,17 @@ it('公共本地源直接提供全部十二条运行时模板', async () => {
 });
 
 it.each([new Error('平台离线'), new PromptContractError('源拒绝读取')])(
-  '普通源加载失败保持原有回退范围：%s',
+  '提示词源加载失败直接抛出：%s',
   async (error) => {
     const source: PromptSource = { load: jest.fn().mockRejectedValue(error) };
-    expect(await loadPrompt(source, 'knowledge/organize-user')).toEqual(
-      await LOCAL_PROMPTS.load('knowledge/organize-user'),
-    );
+    await expect(loadPrompt(source, 'knowledge/organize-user')).rejects.toBe(error);
     expect(source.load).toHaveBeenCalledTimes(1);
   },
 );
 
 it('严格源的原始错误继续抛出，不取本地正文', async () => {
   const error = new Error('固定版本不可用');
-  const source: PromptSource = { strict: true, load: jest.fn().mockRejectedValue(error) };
+  const source: PromptSource = { load: jest.fn().mockRejectedValue(error) };
   await expect(loadPrompt(source, 'experience/extract-user')).rejects.toBe(error);
   expect(source.load).toHaveBeenCalledTimes(1);
 });

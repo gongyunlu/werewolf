@@ -18,23 +18,10 @@ export const ACTION_PRESETS: Readonly<Record<ActionPresetName, ActionPreset>> = 
   quick: { name: 'quick', critique: false },
 };
 
-/**
- * 走 quick 的行动类型；不在表里的一律 quality。
- * 二态、发言方向和日终主观判断直接提交，不增加内容复核调用。
- * 发言反而最值得审——一段话站不站得住，是这局里唯一没法靠形状卡住的东西。
- * 新加的行动类型默认落到 quality，是往严的那边倒，不用再有人来记着补一笔。
- */
-const QUICK_ACTIONS: readonly ActionType[] = [
-  // 日终判断只校验格式，不按策略偏好质疑和改写。
-  ACTION_TYPES.DAY_END_JUDGMENT,
-  ACTION_TYPES.SHERIFF_CANDIDACY,
-  ACTION_TYPES.SHERIFF_WITHDRAW,
-  ACTION_TYPES.WOLF_EXPLODE,
-  ACTION_TYPES.WOLF_DISCUSSION_CONTINUE,
-  ACTION_TYPES.SHERIFF_DECIDE_ORDER,
-];
+/** 自由发言需要内容复核；结构化决定由候选与 schema 校验。 */
+const QUALITY_ACTIONS: readonly ActionType[] = [ACTION_TYPES.SPEECH];
 
 /** 这次行动走哪一档。 */
 export function presetOf(actionType: ActionType): ActionPresetName {
-  return QUICK_ACTIONS.includes(actionType) ? 'quick' : 'quality';
+  return QUALITY_ACTIONS.includes(actionType) ? 'quality' : 'quick';
 }

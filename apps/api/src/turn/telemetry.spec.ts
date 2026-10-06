@@ -218,10 +218,10 @@ beforeEach(() => {
 });
 afterAll(stopTelemetry);
 
-it('行动串联检索、流式生成、质疑和修订，实际请求与本地快照对应', async () => {
-  const f = await fixture(['2', '{"accept":false,"issues":"换一个候选"}', '3']);
+it('结构化行动串联检索与流式生成，不额外复核，实际请求与本地快照对应', async () => {
+  const f = await fixture(['2']);
   mockSpans.length = 0;
-  expect(await f.actions().guardProtect('p1', ['p2', 'p3'])).toBe('p3');
+  expect(await f.actions().guardProtect('p1', ['p2', 'p3'])).toBe('p2');
   const root = mockSpans.find((span) => span.name === 'turn.action')!;
   const retrieval = mockSpans.find((span) => span.name === 'references.retrieve')!;
   expect(root).toBeDefined();
@@ -235,8 +235,8 @@ it('行动串联检索、流式生成、质疑和修订，实际请求与本地�
   expect(retrieved.knowledge.count).toBe(1);
   expect(retrieved.knowledge.selected[0]!.versionId).toBe(f.knowledge.versions[0]!.versionId);
   const generations = mockSpans.filter((span) => span.name.startsWith('model.request.'));
-  expect(generations).toHaveLength(4);
-  expect(f.fetch).toHaveBeenCalledTimes(4);
+  expect(generations).toHaveLength(2);
+  expect(f.fetch).toHaveBeenCalledTimes(2);
   expect(new Set(mockSpans.map((span) => span.spanContext().traceId))).toEqual(
     new Set([root.spanContext().traceId]),
   );
@@ -248,11 +248,14 @@ it('行动串联检索、流式生成、质疑和修订，实际请求与本地�
     expect(span.attributes['langfuse.version']).toBe('test-release');
     expect(span.attributes['langfuse.environment']).toBe('test');
   }
-  for (const step of ['generate', 'critique', 'revise', 'finalize']) {
+  for (const step of ['generate', 'finalize']) {
     expect(parentOf(mockSpans.find((span) => span.name === `turn.${step}`)!)).toBe(root);
   }
   const calls = (await f.stores.observations.read(f.state.gameId))!.calls;
-  expect(calls).toHaveLength(4);
+  expect(calls).toHaveLength(2);
+  expect(mockSpans.some((span) => ['turn.critique', 'turn.revise'].includes(span.name))).toBe(
+    false,
+  );
   for (const row of f.asked.filter(
     (item) => item.actionKey && item.observation?.step !== 'experience_embedding',
   )) {
@@ -276,16 +279,16 @@ it('行动串联检索、流式生成、质疑和修订，实际请求与本地�
   );
 });
 
-it('中断恢复复用检索与生成；已完成行动重入不再创建观测', async () => {
-  const f = await fixture(['2', 400, '{"accept":true,"issues":""}']);
+it('生成中断后复用检索；已完成行动重入不再创建观测', async () => {
+  const f = await fixture([400, '2']);
   mockSpans.length = 0;
   await expect(f.actions().guardProtect('p1', ['p2', 'p3'])).rejects.toThrow();
   expect(await f.actions().guardProtect('p1', ['p2', 'p3'])).toBe('p2');
   expect(f.sent.filter((body) => 'input' in body)).toHaveLength(1);
   expect(mockSpans.filter((span) => span.name === 'references.retrieve')).toHaveLength(1);
   expect(mockSpans.filter((span) => span.name === 'references.snapshot')).toHaveLength(1);
-  expect(mockSpans.filter((span) => span.name === 'turn.generate')).toHaveLength(1);
-  expect(mockSpans.filter((span) => span.name.startsWith('model.request.'))).toHaveLength(4);
+  expect(mockSpans.filter((span) => span.name === 'turn.generate')).toHaveLength(2);
+  expect(mockSpans.filter((span) => span.name.startsWith('model.request.'))).toHaveLength(3);
   const roots = mockSpans.filter((span) => span.name === 'turn.action');
   expect(roots).toHaveLength(2);
   expect(roots[0]!.spanContext().traceId).not.toBe(roots[1]!.spanContext().traceId);
@@ -294,16 +297,16 @@ it('中断恢复复用检索与生成；已完成行动重入不再创建观测'
   const before = mockSpans.length;
   expect(await f.actions().guardProtect('p1', ['p2', 'p3'])).toBe('p2');
   expect(mockSpans).toHaveLength(before);
-  expect(f.fetch).toHaveBeenCalledTimes(4);
+  expect(f.fetch).toHaveBeenCalledTimes(3);
 });
 
 it('传输重试与格式重问按实际请求记录，重问保留修正后的题面', async () => {
-  const f = await fixture([503, '"错误类型"', '2', '{"accept":true,"issues":""}']);
+  const f = await fixture([503, '"错误类型"', '2']);
   mockSpans.length = 0;
   expect(await f.actions().guardProtect('p1', ['p2', 'p3'])).toBe('p2');
   const requests = mockSpans.filter((span) => span.name.startsWith('model.request.'));
-  expect(requests).toHaveLength(5);
-  expect(f.fetch).toHaveBeenCalledTimes(5);
+  expect(requests).toHaveLength(4);
+  expect(f.fetch).toHaveBeenCalledTimes(4);
   expect(field(requests[1]!, 'input')).toEqual(field(requests[2]!, 'input'));
   expect(JSON.stringify(field(requests[3]!, 'input'))).toContain('上一次交的');
   expect(field(requests[3]!, 'input')).toEqual(f.sent[3]);

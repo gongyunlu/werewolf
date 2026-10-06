@@ -1,4 +1,4 @@
-import OpenAI, { APIError } from 'openai';
+import OpenAI, { APIConnectionError, APIError } from 'openai';
 import type {
   ChatCompletionCreateParamsStreaming,
   ChatCompletionMessageParam,
@@ -215,15 +215,40 @@ function asModelCallError(error: unknown, url: string): ModelCallError {
   );
 }
 
-/**
- * 流断在半路的归类：一律按「这次没读完」算，重发一次还有戏。
- *
- * 迭代期的异常大多不带状态码，分不清是端点拒绝还是连接断了，所以不细分。
- * 已实测两种会落到这儿的其它情况：流里读到错误报文时 SDK 抛的是没有状态码的 APIError；
- * 调用方自己的 onDelta 抛错也走这条。眼下都当流断。
- */
+/** 流内仅重试明确的连接、限流和服务端暂态错误。 */
 function streamFailure(error: unknown, url: string, emitted: boolean): ModelCallError {
-  const detail = error instanceof Error ? error.message : String(error);
+  if (error instanceof APIError) {
+    const detail = detailOf(error);
+    const temporary = [error.code, error.type].some((value) =>
+      ['rate_limit_exceeded', 'rate_limit_error', 'server_error', 'overloaded_error'].includes(
+        value ?? '',
+      ),
+    );
+    const code =
+      error instanceof APIConnectionError
+        ? 'transient'
+        : error.status === undefined
+          ? temporary && !QUOTA_EXHAUSTED.test(detail)
+            ? 'transient'
+            : 'fatal'
+          : codeOf(error.status, detail);
+    return new ModelCallError(code, `${url} 的流式请求失败：${detail}`, {
+      cause: error,
+      partialOutput: emitted,
+      retryAfterMs: retryAfterOf(error.headers),
+    });
+  }
+  if (!(error instanceof Error)) throw error;
+  const cause = error.cause instanceof Error ? error.cause : error;
+  const code = (cause as NodeJS.ErrnoException).code;
+  if (
+    !['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'UND_ERR_BODY_TIMEOUT'].includes(
+      code ?? '',
+    ) &&
+    error.message !== 'socket hang up'
+  )
+    throw error;
+  const detail = error.message;
   return new ModelCallError('transient', `${url} 的答复读到一半断了：${detail}`, {
     cause: error,
     // 已经交给调用方的预览不能作为完整答复提交。
@@ -252,60 +277,61 @@ async function collectStream(
   // 吐过的是正文那一头。思考不算：它不往哪段话里接，重发一段新的不会跟它拼出两截话来。
   let emitted = false;
 
-  try {
-    const stream = await client.chat.completions.create(params, { signal });
-    started = true;
-    for await (const chunk of stream) {
-      const choice = chunk.choices?.[0];
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      // 最后一片可以只有 usage、没有 choice。累计用量覆盖旧值，不逐片相加。
-      const usage = usageObject(chunk.usage);
-      if (usage) {
-        metrics.usage = usage;
-        // 只将结束分片及其后的用量视为最终值，中途累计值仍保留为部分用量。
-        finalUsage = finishReason !== null;
-      }
-      const delta = choice?.delta;
-      if (!delta) continue;
+  async function* chunks() {
+    try {
+      const stream = await client.chat.completions.create(params, { signal });
+      started = true;
+      yield* stream;
+    } catch (error) {
+      if (signal.aborted) throw aborted(signal, url, emitted);
+      if (!started) throw asModelCallError(error, url);
+      throw streamFailure(error, url, emitted);
+    }
+  }
+  for await (const chunk of chunks()) {
+    const choice = chunk.choices?.[0];
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    // 最后一片可以只有 usage、没有 choice。累计用量覆盖旧值，不逐片相加。
+    const usage = usageObject(chunk.usage);
+    if (usage) {
+      metrics.usage = usage;
+      // 只将结束分片及其后的用量视为最终值，中途累计值仍保留为部分用量。
+      finalUsage = finishReason !== null;
+    }
+    const delta = choice?.delta;
+    if (!delta) continue;
 
-      // reasoning_content 是思考那一段的字段名，供应商的扩展，SDK 的类型里没有它。
-      const thought = (delta as { reasoning_content?: string | null }).reasoning_content;
-      if (thought) {
-        thinkingStarted ??= Date.now();
-        reasoning += thought;
-        onDelta({
-          channel: 'reasoning',
-          text: reasoning,
-          thinkingMs: Date.now() - thinkingStarted,
-        });
-      }
-
-      if (thinkingStarted !== undefined && (delta.content || delta.tool_calls?.length)) {
-        thinkingEnded ??= Date.now();
-      }
-
-      for (const piece of delta.tool_calls ?? []) {
-        const call = calls.get(piece.index) ?? { name: '', arguments: '' };
-        if (piece.function?.name) call.name = piece.function.name;
-        if (piece.function?.arguments) call.arguments += piece.function.arguments;
-        calls.set(piece.index, call);
-      }
-
-      if (!delta.content) continue;
-      content += delta.content;
-      emitted = true;
+    // reasoning_content 是思考那一段的字段名，供应商的扩展，SDK 的类型里没有它。
+    const thought = (delta as { reasoning_content?: string | null }).reasoning_content;
+    if (thought) {
+      thinkingStarted ??= Date.now();
+      reasoning += thought;
       onDelta({
-        channel: 'content',
-        text: content,
-        ...(thinkingStarted !== undefined ? { thinkingMs: thinkingEnded! - thinkingStarted } : {}),
+        channel: 'reasoning',
+        text: reasoning,
+        thinkingMs: Date.now() - thinkingStarted,
       });
     }
-  } catch (error) {
-    // 中止排在最前面：被喊停的流和半路断掉的流长得一样，得先分辨出来，
-    // 不然一次「不要了」会被当成这次没读完，重发一遍。
-    if (signal.aborted) throw aborted(signal, url, emitted);
-    if (!started) throw asModelCallError(error, url);
-    throw streamFailure(error, url, emitted);
+
+    if (thinkingStarted !== undefined && (delta.content || delta.tool_calls?.length)) {
+      thinkingEnded ??= Date.now();
+    }
+
+    for (const piece of delta.tool_calls ?? []) {
+      const call = calls.get(piece.index) ?? { name: '', arguments: '' };
+      if (piece.function?.name) call.name = piece.function.name;
+      if (piece.function?.arguments) call.arguments += piece.function.arguments;
+      calls.set(piece.index, call);
+    }
+
+    if (!delta.content) continue;
+    content += delta.content;
+    emitted = true;
+    onDelta({
+      channel: 'content',
+      text: content,
+      ...(thinkingStarted !== undefined ? { thinkingMs: thinkingEnded! - thinkingStarted } : {}),
+    });
   }
 
   // 被中止的流未必抛错：SDK 收到底层读到一半被中止时是把迭代就地收尾（它自己的分类见

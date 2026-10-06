@@ -5,12 +5,7 @@ import { ALL_BOARDS, type BoardId } from '../boards/boards';
 import { loadEnv } from '../config/env';
 import { modelRuntimeOf, promptSourceOf } from '../llm/from-env';
 import { endpointOf } from '../llm/model-capability';
-import {
-  ModelCallError,
-  type ModelAccess,
-  type ModelPort,
-  type ModelResponse,
-} from '../llm/model-port';
+import { type ModelAccess, type ModelPort, type ModelResponse } from '../llm/model-port';
 import type { PromptSource } from '../prompts/template';
 import { recordingModelPort } from '../llm/recording-model-port';
 import { gameSkills } from '../skills/game-skills';
@@ -25,6 +20,7 @@ import {
   resolveProposals,
 } from './import-prompt';
 import { fetchWebPage } from './web-source';
+import { attemptFailure, recoverAttemptObservation } from '../experience/attempt-observation';
 
 export const importEndpointKey = (access: Pick<ModelAccess, 'baseUrl'>) =>
   createHash('sha256').update(endpointOf(access.baseUrl)).digest('hex');
@@ -145,6 +141,11 @@ export async function organizeKnowledgePage(
     let complete: ModelResponse['completeObservation'];
     let organization = row.state.organization;
     let attempt = organization.attempts.at(-1);
+    if (attempt?.observation) {
+      attempt = await recoverAttemptObservation(stores.asked, attempt);
+      await save({ ...organization, attempts: [...organization.attempts.slice(0, -1), attempt] });
+      organization = row.state.organization!;
+    }
     if (!attempt || ['failed', 'invalid'].includes(attempt.status)) {
       if (organization.attempts.length >= 3)
         throw new Error('已尝试三次整理，请核查调用记录与原文');
@@ -187,17 +188,19 @@ export async function organizeKnowledgePage(
         failure = error;
       }
       if (!received) {
-        if (failure instanceof ModelCallError) {
-          await save({
-            ...organization,
-            attempts: [...organization.attempts.slice(0, -1), { ...attempt, status: 'failed' }],
-          });
-        }
+        await save({
+          ...organization,
+          attempts: [
+            ...organization.attempts.slice(0, -1),
+            { ...attempt, ...attemptFailure(failure) },
+          ],
+        });
         throw failure ?? new Error('没有收到模型答复');
       }
       complete = received.completeObservation;
       attempt = {
         ...attempt,
+        ...attemptFailure(failure),
         status: 'responded',
         durationMs: performance.now() - started,
         response: {
@@ -207,6 +210,7 @@ export async function organizeKnowledgePage(
         },
       };
       await save({ ...organization, attempts: [...organization.attempts.slice(0, -1), attempt] });
+      if (failure) throw failure;
     }
     organization = row.state.organization!;
     let candidates;

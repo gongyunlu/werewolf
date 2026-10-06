@@ -9,6 +9,7 @@ import {
   controlledPort,
   vectorRuntime,
   approveExperience,
+  failNextAttemptObservation,
 } from './testing';
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
@@ -37,6 +38,50 @@ export async function maintenanceFixture() {
 }
 
 describe('经验编辑与归档', () => {
+  it('新版索引用量写入失败保持失败，恢复补记用量而不重发', async () => {
+    const f = await maintenanceFixture();
+    await f.stores.experiences.edit(f.agent.id, f.item.id, 0, f.content);
+    const runtime = vectorRuntime();
+    await prepareExperienceIndex(f.stores, (await f.stores.experiences.find(f.item.id))!, runtime);
+    failNextAttemptObservation(f.stores);
+    await expect(indexExperienceVersion(f.stores, f.item.id, 2, runtime)).rejects.toThrow(
+      '模型观测写入失败',
+    );
+    expect((await f.stores.experiences.find(f.item.id))!.state!.status).toBe('failed');
+    await prepareExperienceIndex(f.stores, (await f.stores.experiences.find(f.item.id))!, runtime);
+    await indexExperienceVersion(f.stores, f.item.id, 2, runtime);
+    expect((await f.stores.experiences.find(f.item.id))!.state!.status).toBe('ready');
+    expect(runtime.port.generate).toHaveBeenCalledTimes(1);
+    expect(
+      (await f.stores.observations.read(f.gameId))!.calls.filter(
+        (call) => call.step === 'experience_embedding',
+      ),
+    ).toMatchObject([
+      { status: 'accepted', attempts: [{ status: 'succeeded', usage: { total_tokens: 8 } }] },
+    ]);
+  });
+
+  it('初次索引后重建与启用交错，不清空已经启用的向量', async () => {
+    const f = await maintenanceFixture();
+    const runtime = vectorRuntime();
+    await indexExperience(f.stores, f.row.id, runtime);
+    await f.stores.experiences.review(f.agent.id, f.item.id, {
+      revision: 0,
+      version: 1,
+      decision: 'approved',
+      note: '已核对证据',
+      sourceIds: f.item.sourceIds,
+    });
+    const beforeEnable = (await f.stores.experiences.find(f.item.id))!;
+    expect(beforeEnable.state).toBeNull();
+    await f.stores.experiences.toggle(f.agent.id, f.item.id, true, 1, embeddingKey(runtime));
+    await expect(prepareExperienceIndex(f.stores, beforeEnable, runtime)).rejects.toThrow('已变化');
+    expect((await f.stores.experiences.find(f.item.id))!.item).toMatchObject({
+      enabled: true,
+      indexed: true,
+    });
+  });
+
   it('原始版本切换向量接入后可以重建索引，迟到的提炼索引不覆盖新接入', async () => {
     const f = await maintenanceFixture();
     const original = vectorRuntime();

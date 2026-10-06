@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { embeddingKey, validVector, type EmbeddingRuntime } from '../llm/embedding';
-import { ModelCallError, type ModelResponse } from '../llm/model-port';
+import type { ModelResponse } from '../llm/model-port';
+import type { PendingModelObservation } from '../llm/observation';
 import { recordingModelPort } from '../llm/recording-model-port';
 import type { GameStores } from '../store/stores';
+import { attemptFailure, recoverAttemptObservation } from './attempt-observation';
 
 export interface EmbeddingTask {
   text: string;
@@ -15,6 +17,7 @@ export interface EmbeddingTask {
     status: 'pending' | 'responded' | 'failed';
     vector?: number[];
     durationMs?: number;
+    observation?: PendingModelObservation;
   }>;
 }
 
@@ -52,6 +55,10 @@ export async function embedTask(
     task = next;
   };
   let attempt = task.attempts.at(-1);
+  if (attempt?.observation) {
+    attempt = await recoverAttemptObservation(stores.asked, attempt);
+    await persist({ ...task, attempts: [...task.attempts.slice(0, -1), attempt] });
+  }
   if (attempt?.status === 'pending')
     throw new Error('上次向量请求结果未知，已停止自动重发，请核查调用记录');
   let finish: ModelResponse['completeObservation'];
@@ -66,6 +73,7 @@ export async function embedTask(
       scope,
     );
     let received: ModelResponse | undefined;
+    let failure: unknown;
     const started = performance.now();
     try {
       const response = await port.generate(
@@ -90,22 +98,24 @@ export async function embedTask(
       received = response;
       finish = response.completeObservation;
     } catch (error) {
+      failure = error;
       if (!received) {
-        if (error instanceof ModelCallError)
-          await persist({
-            ...task,
-            attempts: [...task.attempts.slice(0, -1), { ...attempt, status: 'failed' }],
-          });
+        await persist({
+          ...task,
+          attempts: [...task.attempts.slice(0, -1), { ...attempt, ...attemptFailure(error) }],
+        });
         throw error;
       }
     }
     attempt = {
       ...attempt,
+      ...attemptFailure(failure),
       status: 'responded',
       durationMs: performance.now() - started,
       ...(received.vector ? { vector: received.vector } : {}),
     };
     await persist({ ...task, attempts: [...task.attempts.slice(0, -1), attempt] });
+    if (failure) throw failure;
   }
   try {
     validVector(attempt.vector, task.dimensions);

@@ -1,6 +1,11 @@
-import type { ReviewPreview, ReviewResponse } from '@werewolf/shared';
+import type { ReviewPreview, ReviewProgressResponse, ReviewResponse } from '@werewolf/shared';
 import { useEffect, useRef, useState } from 'react';
-import { fetchReview, fetchReviewPreview, startReview } from '@/lib/api-client';
+import {
+  fetchReview,
+  fetchReviewPreview,
+  fetchReviewProgress,
+  startReview,
+} from '@/lib/api-client';
 import { errorMessage } from '@/lib/http';
 
 export const reviewIsRunning = (status: string) =>
@@ -38,15 +43,26 @@ export function useGameReview(gameId: string) {
     if (submitting) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
+    let previous: ReviewProgressResponse | null = null;
     const load = async () => {
       setLoading(true);
       let poll = false;
       try {
-        const value = await fetchReview(gameId, controller.signal);
+        const progress = await fetchReviewProgress(gameId, controller.signal);
         if (controller.signal.aborted) return;
-        setData(value);
+        poll = reviewIsRunning(progress.status);
+        if (
+          !previous ||
+          previous.status !== progress.status ||
+          previous.revision !== progress.revision
+        ) {
+          const value = await fetchReview(gameId, controller.signal);
+          if (controller.signal.aborted) return;
+          setData(value);
+          poll = reviewIsRunning(value.status);
+        }
+        previous = progress;
         setReadError(null);
-        poll = reviewIsRunning(value.status);
       } catch (failure) {
         if (controller.signal.aborted) return;
         setReadError(errorMessage(failure));

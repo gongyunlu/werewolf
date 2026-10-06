@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   InvalidOutputError,
-  ModelCallError,
   type ModelAccess,
   type ModelPort,
   type ModelRequest,
@@ -13,6 +12,8 @@ import { parseStructured, toolOf } from '../llm/structured-output';
 import type { GameStores } from '../store/stores';
 import type { ReferenceJudgment, RetrievalCandidate } from './retrieval-ranking';
 import { fingerprint } from '../turn/prompt-comparison';
+import type { PendingModelObservation } from '../llm/observation';
+import { attemptFailure, recoverAttemptObservation } from './attempt-observation';
 
 export interface RerankRuntime {
   port: ModelPort;
@@ -28,6 +29,7 @@ export interface RerankTask {
     status: 'pending' | 'responded' | 'failed';
     response?: Pick<ModelResponse, 'content' | 'toolCall' | 'reasoning'>;
     durationMs?: number;
+    observation?: PendingModelObservation;
   }>;
 }
 
@@ -45,9 +47,11 @@ const judgmentsSchema = z.array(
     relevance: z.number().int().min(0).max(3),
     applicable: z.boolean(),
     reason: z.string().min(1).max(240),
-    duplicateOf: z.string().nullable().optional(),
+    duplicateOf: z.string().nullable(),
   }),
 );
+const legacyJudgmentsSchema = z.array(judgmentsSchema.element.partial({ duplicateOf: true }));
+const legacyParametersKey = fingerprint(toolOf(legacyJudgmentsSchema, '').parameters);
 
 export function newRerankTask(
   query: string,
@@ -67,7 +71,7 @@ export function newRerankTask(
         'relevance：3=能直接帮助本次行动，2=有部分参考价值，1=仅主题相近，0=无关。允许所有材料均不适用。',
         '只有角色或行动标签匹配、仅重复当前系统规则，不足以给3分；要看正文是否提供当前决策所需的证据核对、可执行方法或具体取舍。材料主要讨论另一个决策时，即使附带通用提醒也只算部分参考。',
         '每个候选 key 必须提交且只能出现一次，说明适用或排除理由。',
-        '相同条件下表达同一建议的跨库材料只留一份，将其余材料的 duplicateOf 指向最有帮助的一项；适用条件不同不算重复，无重复关系时省略 duplicateOf 或填 null。',
+        '相同条件下表达同一建议的跨库材料只留一份，将其余材料的 duplicateOf 指向最有帮助的一项；适用条件不同不算重复，每项都必须提交 duplicateOf，无重复关系时填 null。',
       ].join('\n'),
       prompt: JSON.stringify({
         query,
@@ -81,14 +85,18 @@ export function newRerankTask(
 export function parseRerankResponse(
   response: Pick<ModelResponse, 'toolCall'>,
   candidates: readonly RetrievalCandidate[],
+  request?: ModelRequest,
 ): ReferenceJudgment[] {
   if (!response.toolCall || response.toolCall.name !== 'submit')
     throw new InvalidOutputError('重排未通过工具提交', '请通过指定工具提交全部候选的评价');
-  const judgments = parseStructured(
-    response.toolCall.arguments,
-    judgmentsSchema,
-    '参考材料重排',
-  ).map((row) => ({ ...row, duplicateOf: row.duplicateOf ?? null }));
+  // 旧任务沿用已保存的工具契约，新请求仍要求显式提交重复关系。
+  const schema =
+    request?.tool && fingerprint(request.tool.parameters) === legacyParametersKey
+      ? legacyJudgmentsSchema
+      : judgmentsSchema;
+  const judgments = parseStructured(response.toolCall.arguments, schema, '参考材料重排').map(
+    (row) => ({ ...row, duplicateOf: row.duplicateOf ?? null }),
+  );
   const keys = new Set(candidates.map((row) => row.key));
   if (
     judgments.length !== keys.size ||
@@ -121,11 +129,15 @@ export async function rerankReferences(
     task = next;
   };
   let attempt = task.attempts.at(-1);
+  if (attempt?.observation) {
+    attempt = await recoverAttemptObservation(stores.asked, attempt);
+    await persist({ ...task, attempts: [...task.attempts.slice(0, -1), attempt] });
+  }
   if (attempt?.status === 'pending') throw new Error('上次重排请求结果未知，请核查调用记录后恢复');
   let judgments: ReferenceJudgment[] | undefined;
   if (attempt?.status === 'failed' && attempt.response) {
     try {
-      judgments = parseRerankResponse(attempt.response, candidates);
+      judgments = parseRerankResponse(attempt.response, candidates, task.request);
     } catch (error) {
       if (!(error instanceof InvalidOutputError)) throw error;
     }
@@ -147,6 +159,7 @@ export async function rerankReferences(
       scope,
     );
     let received: ModelResponse | undefined;
+    let failure: unknown;
     const started = performance.now();
     try {
       const response = await port.generate(task.request, runtime.access, {
@@ -163,17 +176,18 @@ export async function rerankReferences(
       received = response;
       finish = response.completeObservation;
     } catch (error) {
+      failure = error;
       if (!received) {
-        if (error instanceof ModelCallError)
-          await persist({
-            ...task,
-            attempts: [...task.attempts.slice(0, -1), { ...attempt, status: 'failed' }],
-          });
+        await persist({
+          ...task,
+          attempts: [...task.attempts.slice(0, -1), { ...attempt, ...attemptFailure(error) }],
+        });
         throw error;
       }
     }
     attempt = {
       ...attempt,
+      ...attemptFailure(failure),
       status: 'responded',
       durationMs: performance.now() - started,
       response: {
@@ -183,9 +197,10 @@ export async function rerankReferences(
       },
     };
     await persist({ ...task, attempts: [...task.attempts.slice(0, -1), attempt] });
+    if (failure) throw failure;
   }
   try {
-    judgments ??= parseRerankResponse(attempt.response!, candidates);
+    judgments ??= parseRerankResponse(attempt.response!, candidates, task.request);
   } catch (error) {
     if (!(error instanceof InvalidOutputError)) throw error;
     if (finish) await finish('invalid_output');

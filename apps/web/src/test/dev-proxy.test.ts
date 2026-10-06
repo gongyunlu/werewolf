@@ -7,7 +7,7 @@ import { createServer, type ProxyOptions } from 'vite';
 import { expect, it } from 'vitest';
 import config from '../../vite.config';
 
-it('事件流中断或后端离线时关闭代理连接，普通请求仍返回 502', async () => {
+it('事件流中断时关闭代理连接，后端离线的请求返回 502', async () => {
   let upstreamResponse: ServerResponse;
   const upstream = createHttpServer((_request, response) => {
     upstreamResponse = response;
@@ -53,12 +53,14 @@ it('事件流中断或后端离线时关闭代理连接，普通请求仍返回 
     expect(await Promise.race([disconnected, setTimeout(1000, false)])).toBe(true);
 
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
-    await expect(
-      fetch(`http://127.0.0.1:${port}/api/events`, {
-        headers: { Accept: 'text/event-stream' },
-        signal: controller.signal,
-      }),
-    ).rejects.toThrow();
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${port}/api/events`, {
+          headers: { Accept: 'text/event-stream' },
+          signal: controller.signal,
+        })
+      ).status,
+    ).toBe(502);
     expect((await fetch(`http://127.0.0.1:${port}/api/status`)).status).toBe(502);
   } finally {
     controller.abort();

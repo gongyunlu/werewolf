@@ -52,8 +52,41 @@ describe('记提问的端口', () => {
     const failure = new Error('库写不进去');
     const port = recordingModelPort(innerPort(sent), () => Promise.reject(failure));
 
-    await expect(port.generate(REQUEST, ACCESS)).rejects.toBe(failure);
+    await expect(port.generate(REQUEST, ACCESS)).rejects.toMatchObject({
+      dispatched: false,
+      cause: failure,
+    });
     expect(sent).toHaveLength(0);
+  });
+
+  it('请求记录创建失败属于派发前失败，并结束已经创建的调用记录', async () => {
+    const finish = jest.fn(async () => {});
+    const failure = new Error('请求记录写入失败');
+    const send = jest.fn();
+    const port = recordingModelPort(
+      {
+        async generate(_request, _access, call) {
+          await call?.startAttempt?.();
+          send();
+          return { content: '答复', toolCall: null, reasoning: null };
+        },
+      },
+      async () => ({
+        finish,
+        startAttempt: async () => {
+          throw failure;
+        },
+        finishAttempt: async () => {},
+      }),
+    );
+    await expect(port.generate(REQUEST, ACCESS)).rejects.toMatchObject({
+      dispatched: false,
+      cause: failure,
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', failureCode: 'storage' }),
+    );
   });
 
   it('端口重发的那几次不另记：重发的是同一份题面', async () => {

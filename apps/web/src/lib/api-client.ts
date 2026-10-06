@@ -10,6 +10,7 @@ import {
   GameListResponseSchema,
   HealthResponseSchema,
   ReviewPreviewSchema,
+  ReviewProgressResponseSchema,
   ReviewResponseSchema,
   ReviewStartResponseSchema,
   type AgentListResponse,
@@ -35,6 +36,13 @@ export async function fetchReview(gameId: string, signal?: AbortSignal) {
   return http.get(`/games/${gameId}/review`, { schema: ReviewResponseSchema, signal });
 }
 
+export async function fetchReviewProgress(gameId: string, signal?: AbortSignal) {
+  return http.get(`/games/${gameId}/review/progress`, {
+    schema: ReviewProgressResponseSchema,
+    signal,
+  });
+}
+
 export async function startReview(gameId: string) {
   return http.post(`/games/${gameId}/review`, undefined, {
     schema: ReviewStartResponseSchema,
@@ -49,10 +57,11 @@ export async function fetchActionSummaries(gameId: string, signal?: AbortSignal)
   });
 }
 
-export async function fetchActionDetail(gameId: string, actionKey: string) {
+export async function fetchActionDetail(gameId: string, actionKey: string, signal?: AbortSignal) {
   return http.get(`/games/${gameId}/actions/detail`, {
     params: { actionKey },
     schema: ActionDetailResponseSchema,
+    signal,
   });
 }
 

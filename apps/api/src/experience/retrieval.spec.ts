@@ -7,6 +7,7 @@ import { knowledgeEmbeddingKey } from '../knowledge/text';
 import { access, controlledPort, vectorRuntime } from './testing';
 import { initialRetrieval, retrieveExperiences } from './retrieval';
 import type { ReferenceJudgment } from './retrieval-ranking';
+import * as embeddings from '../llm/embedding';
 
 async function setup(mode: 'hybrid' | 'none' = 'hybrid') {
   const stores = memoryStores();
@@ -66,6 +67,48 @@ function rerank(patch: Partial<ReferenceJudgment> = {}) {
 }
 
 describe('行动混合检索与重排冻结', () => {
+  it.each(['provided', 'default'] as const)(
+    '行动取消会阻止 %s 向量接入派发请求',
+    async (source) => {
+      const f = await setup();
+      const runtime = vectorRuntime();
+      const fallback = jest.spyOn(embeddings, 'embeddingRuntime').mockReturnValue(runtime);
+      const controller = new AbortController();
+      controller.abort();
+      try {
+        await expect(
+          retrieveExperiences(
+            f.stores,
+            f.key,
+            f.state,
+            source === 'provided' ? runtime : undefined,
+            rerank(),
+            controller.signal,
+          ),
+        ).rejects.toMatchObject({ code: 'deadline' });
+        expect(runtime.port.generate).not.toHaveBeenCalled();
+      } finally {
+        fallback.mockRestore();
+      }
+    },
+  );
+
+  it('查询向量完成后行动取消，不再派发重排请求', async () => {
+    const f = await setup();
+    const controller = new AbortController();
+    const generate = jest.mocked(f.embedding.port.generate).getMockImplementation()!;
+    jest.mocked(f.embedding.port.generate).mockImplementationOnce(async (...args) => {
+      const response = await generate(...args);
+      controller.abort();
+      return response;
+    });
+    const model = rerank();
+    await expect(
+      retrieveExperiences(f.stores, f.key, f.state, f.embedding, model, controller.signal),
+    ).rejects.toMatchObject({ code: 'deadline' });
+    expect(model.port.generate).not.toHaveBeenCalled();
+  });
+
   it('新行动冻结hybrid-v3与门槛2，适用的2分材料进入实际注入', async () => {
     const f = await setup();
     expect(f.state).toMatchObject({ policyVersion: 'hybrid-v3', minRelevance: 2 });
@@ -100,13 +143,15 @@ describe('行动混合检索与重排冻结', () => {
     expect(model.port.generate.mock.calls[0]![2]!.identity!.step).toBe('reference_rerank');
   });
 
-  it('重排未声明重复关系时仍完成检索并注入适用材料', async () => {
+  it('重排缺少必填的重复关系时停止，保留无效答复供核查', async () => {
     const f = await setup();
     const model = rerank({ duplicateOf: undefined });
-    const saved = await retrieveExperiences(f.stores, f.key, f.state, f.embedding, model);
-    expect(saved.status).toBe('completed');
-    expect(saved.knowledge!.selected).toHaveLength(1);
-    expect(saved.knowledge!.candidates[0]).toMatchObject({ rerankScore: 3, rejection: null });
+    await expect(retrieveExperiences(f.stores, f.key, f.state, f.embedding, model)).rejects.toThrow(
+      '不符合要求',
+    );
+    const saved = (await f.stores.actions.find(f.key))!.experienceRetrieval!;
+    expect(saved.status).toBe('failed');
+    expect(saved.knowledge!.selected).toHaveLength(0);
     expect(model.port.generate).toHaveBeenCalledTimes(1);
   });
 

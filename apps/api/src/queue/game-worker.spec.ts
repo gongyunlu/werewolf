@@ -24,6 +24,7 @@ import { GameWorker } from './game-worker';
 import { GamesController } from '../games/games.controller';
 import { GAME_STORES } from '../store/stores.provider';
 import { GAME_QUEUE } from './game-queue';
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 
 // 起跑那一头按环境变量拼模型端口，用例里没有密钥。整份替掉，才能从 worker 这一头穿进阵容那条路。
 jest.mock('../llm/from-env');
@@ -139,9 +140,7 @@ describe('队列上跑对局的那一头', () => {
       ),
     };
     fromEnv.modelRuntimeOf.mockReturnValue({ port, access: FALLBACK });
-    fromEnv.promptSourceOf.mockReturnValue({
-      load: () => Promise.reject(new Error('使用本地提示词')),
-    });
+    fromEnv.promptSourceOf.mockReturnValue(LOCAL_PROMPTS);
     const previousModel = process.env.EMBEDDING_MODEL;
     process.env.EMBEDDING_MODEL = '用例向量模型';
     const embedding = jest
@@ -283,10 +282,7 @@ describe('队列上跑对局的那一头', () => {
     const stores = memoryStores();
     const { port, used } = recordingPort(answeringPlayer());
     fromEnv.modelRuntimeOf.mockReturnValue({ port, access: FALLBACK });
-    // 平台读不到就退本地模板，这条路一样走得通。
-    fromEnv.promptSourceOf.mockReturnValue({
-      load: () => Promise.reject(new Error('用例不取远端提示词')),
-    });
+    fromEnv.promptSourceOf.mockReturnValue(LOCAL_PROMPTS);
 
     await stores.games.open({
       gameId: 'g1',
@@ -314,9 +310,7 @@ describe('队列上跑对局的那一头', () => {
       },
       access: FALLBACK,
     });
-    fromEnv.promptSourceOf.mockReturnValue({
-      load: () => Promise.reject(new Error('用例不取远端提示词')),
-    });
+    fromEnv.promptSourceOf.mockReturnValue(LOCAL_PROMPTS);
     await stores.games.open({ gameId: 'g1', boardId: '6p_white_wolf', roster: [] });
 
     const pub = new FakeRedis();

@@ -192,9 +192,7 @@ export function prismaExperiences(client: PrismaClient): ExperienceStore {
         where: {
           id: previous.item.id,
           version: previous.item.version,
-          ...(previous.state?.status === 'ready' && state.status === 'pending'
-            ? { enabled: false }
-            : {}),
+          ...(state.status === 'pending' ? { enabled: false } : {}),
           indexState: { equals: previous.state === null ? Prisma.DbNull : json(previous.state) },
         },
         data: {

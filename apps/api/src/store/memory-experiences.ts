@@ -120,7 +120,7 @@ export function memoryExperiences(): ExperienceStore {
       if (
         !item ||
         item.version !== previous.item.version ||
-        (previous.state?.status === 'ready' && state.status === 'pending' && item.enabled) ||
+        (state.status === 'pending' && item.enabled) ||
         JSON.stringify(indexes.get(item.id) ?? null) !== JSON.stringify(previous.state)
       )
         throw new ExperienceConflictError('经验版本或索引状态已变化，请刷新后重试');

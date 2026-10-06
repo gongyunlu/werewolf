@@ -23,13 +23,32 @@ export class ReviewController {
     );
   }
 
+  @Get('progress')
+  async progress(@Param('gameId') gameId: string) {
+    await finishedGame(this.stores, gameId);
+    const saved = await readReviewState(this.stores, gameId);
+    return {
+      ...(await this.status(gameId, saved)),
+      revision: saved
+        ? JSON.stringify([
+            saved.startedAt,
+            saved.receipts.length,
+            saved.pending?.key ?? null,
+            saved.completedAt,
+          ])
+        : null,
+    };
+  }
+
   @Get()
   async read(@Param('gameId') gameId: string) {
     await finishedGame(this.stores, gameId);
-    const [report, job] = await Promise.all([
-      readReview(this.stores, gameId),
-      this.queue.getJob(gameId),
-    ]);
+    const report = await readReview(this.stores, gameId);
+    return { ...(await this.status(gameId, report)), report };
+  }
+
+  private async status(gameId: string, report: { completedAt: string | null } | null) {
+    const job = await this.queue.getJob(gameId);
     const status = report?.completedAt
       ? 'completed'
       : job
@@ -39,7 +58,6 @@ export class ReviewController {
           : 'not_started';
     return {
       status,
-      report,
       failure:
         status === 'failed' ? '复盘任务失败；已保存的结果可续跑，失败不代表玩家表现差' : null,
     };

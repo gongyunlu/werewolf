@@ -1,4 +1,4 @@
-import { IMPORT_PROMPTS } from '../prompts/catalog';
+import { IMPORT_PROMPTS, LOCAL_PROMPTS } from '../prompts/catalog';
 import { snapshotPromptSource, type PromptSource } from '../prompts/template';
 import { importPrompts, importRequest } from './import-prompt';
 import { importFixture, page } from './import-testing';
@@ -22,8 +22,9 @@ it('知识整理请求保留完整文本、选中段落和模板来源', async (
   expect(request.prompt).not.toContain('未选中的段落');
 });
 
-it('普通源失败时回退本地，固定快照缺失时抛错', async () => {
-  expect(await importPrompts(offline)).toMatchObject([
+it('平台源失败直接抛错，本地模板由调用方明确选择', async () => {
+  await expect(importPrompts(offline)).rejects.toThrow('平台离线');
+  expect(await importPrompts(LOCAL_PROMPTS)).toMatchObject([
     { name: IMPORT_PROMPTS.system, version: null, source: 'local' },
     { name: IMPORT_PROMPTS.user, version: null, source: 'local' },
   ]);
@@ -42,7 +43,7 @@ it('成功加载的模板缺少契约变量时不回退', async () => {
 it('远端版本保留来源，新增未知变量在真实渲染时报错', async () => {
   const f = await importFixture();
   const row = (await f.stores.knowledgeImports.find(f.id))!;
-  const local = snapshotPromptSource(await importPrompts(offline));
+  const local = snapshotPromptSource(await importPrompts(LOCAL_PROMPTS));
   const platform: PromptSource = {
     async load(name) {
       return { ...(await local.load(name)), source: 'platform', version: 7 };

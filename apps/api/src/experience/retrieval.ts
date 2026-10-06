@@ -25,6 +25,7 @@ import {
   type RetrievalDocument,
 } from './retrieval-ranking';
 import { newRerankTask, rerankReferences, type RerankRuntime } from './reranking';
+import { cancellableModelPort } from '../llm/cancellable-model-port';
 
 /** 对照实验保留原查询裁剪行为。 */
 export function originalRetrievalQuery(context: TurnContext, boardId: string): string {
@@ -103,6 +104,7 @@ export async function retrieveExperiences(
   initial: StoredExperienceRetrieval,
   provided?: EmbeddingRuntime,
   rerankRuntime?: RerankRuntime,
+  signal?: AbortSignal,
 ): Promise<StoredExperienceRetrieval> {
   const reused = initial.status === 'completed';
   return observeOperation(
@@ -119,7 +121,7 @@ export async function retrieveExperiences(
       metadata: { gameId: initial.scope.gameId, actionKey, reused },
     },
     async (span) => {
-      const result = await retrieve(stores, actionKey, initial, provided, rerankRuntime);
+      const result = await retrieve(stores, actionKey, initial, provided, rerankRuntime, signal);
       telemetry(() =>
         span?.update({
           output: {
@@ -165,6 +167,7 @@ async function retrieve(
   initial: StoredExperienceRetrieval,
   provided?: EmbeddingRuntime,
   rerankRuntime?: RerankRuntime,
+  signal?: AbortSignal,
 ): Promise<StoredExperienceRetrieval> {
   if (initial.status === 'completed') return initial;
   let state = initial;
@@ -207,7 +210,7 @@ async function retrieve(
         stores,
         { gameId: state.scope.gameId, actionKey },
         state.embedding!,
-        runtime,
+        signal ? { ...runtime, port: cancellableModelPort(runtime.port, signal) } : runtime,
         (embedding) => save({ embedding, status: 'pending', failure: null }),
       );
       const knowledgeKey = knowledgeEmbeddingKey(runtime);
@@ -305,7 +308,9 @@ async function retrieve(
       { gameId: state.scope.gameId, actionKey },
       state.reranking!,
       state.frozenCandidates!,
-      rerankRuntime,
+      rerankRuntime && signal
+        ? { ...rerankRuntime, port: cancellableModelPort(rerankRuntime.port, signal) }
+        : rerankRuntime,
       (reranking) => save({ reranking }),
     );
     const result = selectReferences(state.frozenCandidates!, judgments, state.minRelevance);

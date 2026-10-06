@@ -10,6 +10,7 @@ import {
   fetchActionDetail,
   fetchReview,
   fetchReviewPreview,
+  fetchReviewProgress,
   startReview,
 } from '@/lib/api-client';
 import { reviewPreview, reviewResponse } from '@/test/review-fixture';
@@ -24,6 +25,7 @@ vi.mock('@/lib/api-client', () => ({
   fetchActionDetail: vi.fn(),
   fetchReview: vi.fn(),
   fetchReviewPreview: vi.fn(),
+  fetchReviewProgress: vi.fn(),
   startReview: vi.fn(),
 }));
 
@@ -254,6 +256,11 @@ describe('GamePage', () => {
       game: detail({ status: GAME_STATUSES.FINISHED, winner: 'good' }),
     });
     vi.mocked(fetchReviewPreview).mockResolvedValue(reviewPreview);
+    vi.mocked(fetchReviewProgress).mockResolvedValue({
+      status: 'completed',
+      revision: 'completed',
+      failure: null,
+    });
     vi.mocked(fetchReview).mockResolvedValue(reviewResponse());
     const view = renderPage();
     await userEvent.click(await screen.findByRole('link', { name: '赛后复盘' }));
@@ -471,6 +478,33 @@ describe('GamePage', () => {
 
     expect(screen.queryByText('狼队商议：先刀 1 号')).toBeNull();
     expect(screen.getByText('法官宣布天黑请闭眼')).toBeInTheDocument();
+  });
+
+  it('闭眼座位保留座次、出局与警长，不展示身份、死因或当前行动者', async () => {
+    vi.mocked(fetchGameDetail).mockResolvedValue({ game: detail() });
+    renderPage();
+    await screen.findByText('预言家');
+    pushWriting('night-call', 'reasoning', '正在查验');
+    expect(screen.getByText('正在行动')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('tab', { name: '闭眼视角' }));
+
+    const left = within(screen.getByLabelText('左侧座位'));
+    const right = within(screen.getByLabelText('右侧座位'));
+    expect(left.getByText('1 号')).toBeInTheDocument();
+    expect(left.getByLabelText('警长')).toBeInTheDocument();
+    expect(right.getByText('第 1 天出局')).toBeInTheDocument();
+    expect(right.getByText('2 号已出局')).toBeInTheDocument();
+    expect(screen.queryByText('预言家')).toBeNull();
+    expect(screen.queryByText('白狼王')).toBeNull();
+    expect(screen.queryByText(/夜里被杀/)).toBeNull();
+    expect(screen.queryByText('正在行动')).toBeNull();
+
+    await userEvent.click(screen.getByRole('tab', { name: '上帝视角' }));
+    expect(screen.getByText('预言家')).toBeInTheDocument();
+    expect(screen.getByText('白狼王')).toBeInTheDocument();
+    expect(screen.getByText('第 1 天出局 · 夜里被杀')).toBeInTheDocument();
+    expect(screen.getByText('正在行动')).toBeInTheDocument();
   });
 
   it.each(['上帝视角', '闭眼视角'])(

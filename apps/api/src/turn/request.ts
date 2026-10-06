@@ -12,6 +12,7 @@ import type { ModelPort } from '../llm/model-port';
 import type { PromptSource } from '../prompts/template';
 import type { GameSkills } from '../skills/game-skills';
 import type { ActionPresetName } from './presets';
+import type { AskedPromptStore } from '../store/asked';
 
 /**
  * 一块事实：一个小标题加它底下的几行。
@@ -73,6 +74,8 @@ export function actionKeyOf(request: ActionRequest): string {
  * 提示词给的是取用口子而不是取好的正文：图里哪个节点走到才取哪两条。
  */
 export interface TurnRuntime {
+  /** 恢复检查点中的答复时补写原调用记录。 */
+  asked?: AskedPromptStore;
   referenceModeFor?: (seatNo: number) => 'none' | 'vector' | 'hybrid';
   embedding?: import('../llm/embedding').EmbeddingRuntime;
   port: ModelPort;

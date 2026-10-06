@@ -13,7 +13,7 @@ const CRITIQUE_SHAPE = z.toJSONSchema(CRITIQUE_SCHEMA) as Record<string, unknown
 /** 一段渲染好的提示词，连同它出自哪条模板。 */
 export interface RenderedPrompt {
   template: TurnPromptName;
-  /** 平台版本号；本地兜底那份是 null。 */
+  /** 平台版本号；显式使用本地模板时为 null。 */
   version: number | null;
   source: PromptSourceKind;
   text: string;
@@ -134,10 +134,7 @@ export async function renderSummary(
 }
 
 /**
- * 取一条模板渲染好。平台那条读不到就退到本地那份，落在哪一份记在 RenderedPrompt.source 里。
- *
- * 逐条退而不整局换源：提示词改成即用即取之后，同一局的两段本来就可能取到不同版本，
- * 「整局要么全平台要么全本地」这条保证在取用方式那一头已经放开了，这一层再维持它没有意义。
+ * 从指定来源读取并渲染模板，读取失败直接抛出；版本与来源记在 RenderedPrompt 中。
  *
  * skill 是拼在正文后面的技能正文：它不走模板变量，平台那边不托管它，改它不必动模板。
  * 模板的正文与技能正文都进这个 RenderedPrompt，交出去的 text 就是最终发出去的那一段。

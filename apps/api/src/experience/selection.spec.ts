@@ -11,7 +11,7 @@ import {
   vectorRuntime,
   approveExperience,
 } from './testing';
-import { EXPERIENCE_CHARACTERS } from './selection';
+import { EXPERIENCE_CHARACTERS, renderExperiences } from './selection';
 import { modelActions } from '../turn/provider';
 import { makeState, stubSkills, withRoles } from '../testing/fixtures';
 import { initialRetrieval, retrieveExperiences, retrievalQuery } from './retrieval';
@@ -72,6 +72,12 @@ async function extracted(stores?: GameStores, count = 1) {
 }
 
 describe('逐行动语义检索', () => {
+  it('实际行动材料保留审核过的不适用条件', async () => {
+    const f = await extracted();
+    const items = await f.stores.experiences.list(f.agent.id);
+    expect(renderExperiences(items)).toContain(`不适用条件：${items[0]!.exclusions}`);
+  });
+
   it('未审核经验不参与检索；向量相似度不为正允许空结果', async () => {
     const f = await extracted();
     const first = await begin(f.stores);

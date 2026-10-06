@@ -154,21 +154,19 @@ sourceIds 只能选择本次原始证据的 E 编号，每条至少引用一个�
   },
 };
 
-/** 未配置平台或普通源加载失败时使用同一份本地定义。 */
+/** 未配置平台时使用本地定义。 */
 export const LOCAL_PROMPTS: PromptSource = localPromptSource(
   Object.fromEntries(
     Object.entries(PROMPT_CATALOG).map(([name, definition]) => [name, definition.text]),
   ),
 );
 
-/** 固定源不得回退；成功加载后的契约错误也直接交给调用方。 */
+/** 读取指定来源并校验契约，加载失败直接交给调用方。 */
 export async function loadPrompt(
   source: PromptSource,
   name: RuntimePromptName,
 ): Promise<PromptTemplate> {
-  const template = source.strict
-    ? await source.load(name)
-    : await source.load(name).catch(() => LOCAL_PROMPTS.load(name));
+  const template = await source.load(name);
   assertTemplateContract(template, PROMPT_CATALOG[name].required);
   return template;
 }

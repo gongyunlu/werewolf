@@ -6,7 +6,7 @@ import type {
 } from '@werewolf/shared';
 import { ACTION_TYPES, DayEndJudgmentSchema } from '@werewolf/shared';
 import { CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ExperienceCard } from '@/components/ExperienceCard';
 import { KnowledgeInputs } from '@/components/KnowledgeInputs';
 import { Button } from '@/components/ui/button';
@@ -191,28 +191,43 @@ export function ActionRow({
   speakerName?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [detail, setDetail] = useState<ActionDetailResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState<{
+    completed: boolean;
+    revision: number;
+    detail: ActionDetailResponse | null;
+    error: string | null;
+  } | null>(null);
+  const [revision, setRevision] = useState(0);
   const completed = 'decision' in action;
-  const load = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setDetail(await fetchActionDetail(gameId, action.actionKey));
-    } catch (failure) {
-      setError(errorMessage(failure));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const current = loaded?.completed === completed && loaded.revision === revision ? loaded : null;
+  const detail = current?.detail;
+  const error = current?.error;
+  const loading = open && !current;
+  const hasCompleteDetail = completed && !!detail;
+  useEffect(() => {
+    if (!open || hasCompleteDetail) return;
+    const controller = new AbortController();
+    void fetchActionDetail(gameId, action.actionKey, controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setLoaded({ completed, revision, detail: value, error: null });
+        }
+        return undefined;
+      })
+      .catch((failure: unknown) => {
+        if (!controller.signal.aborted) {
+          setLoaded({ completed, revision, detail: null, error: errorMessage(failure) });
+        }
+      });
+    return () => controller.abort();
+  }, [open, hasCompleteDetail, gameId, action.actionKey, completed, revision]);
   return (
     <div className="min-w-0 space-y-2">
       <Collapsible
         open={open}
         onOpenChange={(value) => {
           setOpen(value);
-          if (value && (!detail || !completed) && !loading) void load();
+          if (value && !hasCompleteDetail) setRevision((version) => version + 1);
         }}
       >
         <CollapsibleTrigger className="group flex w-full flex-wrap items-center gap-2 border-b pb-2 text-left text-xs text-muted-foreground">
@@ -243,7 +258,7 @@ export function ActionRow({
           {error ? (
             <div role="alert" className="text-xs text-destructive">
               {error}
-              <Button variant="ghost" size="sm" onClick={() => void load()}>
+              <Button variant="ghost" size="sm" onClick={() => setRevision((value) => value + 1)}>
                 重试
               </Button>
             </div>

@@ -10,20 +10,23 @@ export function PlayerCard({
   player,
   seat,
   side,
+  showPrivate,
   active = false,
 }: {
   player: GamePlayer;
   seat: GameRosterSeat | null;
   side: 'left' | 'right';
+  showPrivate: boolean;
   active?: boolean;
 }) {
   const dead = !player.isAlive;
+  const acting = showPrivate && active;
   return (
     <Card
       className={cn(
         'h-full min-h-0 gap-0 py-3',
         dead && 'ring-destructive/30',
-        active && 'ring-2 ring-primary',
+        acting && 'ring-2 ring-primary',
       )}
     >
       <CardContent
@@ -55,10 +58,10 @@ export function PlayerCard({
           {dead ? (
             <span className="text-xs text-muted-foreground">
               第 {player.deathDay} 天出局
-              {player.deathCause ? ` · ${deathCauseName(player.deathCause)}` : ''}
+              {showPrivate && player.deathCause ? ` · ${deathCauseName(player.deathCause)}` : ''}
             </span>
           ) : null}
-          {active ? <span className="text-xs text-muted-foreground">正在行动</span> : null}
+          {acting ? <span className="text-xs text-muted-foreground">正在行动</span> : null}
         </div>
         <div className="relative aspect-square h-full max-h-28 min-h-12 shrink-0">
           <Avatar
@@ -74,7 +77,7 @@ export function PlayerCard({
               <Skull className="size-1/2 text-red-600 dark:text-red-400" aria-hidden="true" />
               <span className="sr-only">
                 {player.seatNo} 号已出局
-                {player.deathCause ? `：${deathCauseName(player.deathCause)}` : ''}
+                {showPrivate && player.deathCause ? `：${deathCauseName(player.deathCause)}` : ''}
               </span>
             </div>
           ) : null}
@@ -94,18 +97,20 @@ export function PlayerCard({
             />
           ) : null}
         </div>
-        <span
-          className={cn(
-            'shrink-0 text-lg font-semibold tracking-widest [writing-mode:vertical-rl]',
-            player.faction === FACTIONS.WEREWOLF
-              ? 'text-red-600 dark:text-red-400'
-              : player.role === 'villager'
-                ? 'text-blue-600 dark:text-blue-400'
-                : 'text-emerald-600 dark:text-emerald-400',
-          )}
-        >
-          {roleName(player.role)}
-        </span>
+        {showPrivate ? (
+          <span
+            className={cn(
+              'shrink-0 text-lg font-semibold tracking-widest [writing-mode:vertical-rl]',
+              player.faction === FACTIONS.WEREWOLF
+                ? 'text-red-600 dark:text-red-400'
+                : player.role === 'villager'
+                  ? 'text-blue-600 dark:text-blue-400'
+                  : 'text-emerald-600 dark:text-emerald-400',
+            )}
+          >
+            {roleName(player.role)}
+          </span>
+        ) : null}
       </CardContent>
     </Card>
   );

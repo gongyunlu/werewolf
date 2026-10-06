@@ -2,7 +2,14 @@ import { createHash } from 'node:crypto';
 import { endpointOf } from './model-capability';
 import { ModelCallError } from './model-port';
 import { requestPricing } from './cost';
-import type { CallCompletion, CallIdentity, CallRecording } from './observation';
+import {
+  ModelObservationError,
+  ModelRecoveryError,
+  type CallCompletion,
+  type CallIdentity,
+  type CallRecording,
+  type PendingAttemptObservation,
+} from './observation';
 import {
   callSpan,
   finishCall,
@@ -20,11 +27,19 @@ import type {
   ModelTool,
 } from './model-port';
 
-async function persist<T>(write: () => Promise<T>): Promise<T> {
+async function persist<T>(
+  write: () => Promise<T>,
+  dispatched: boolean,
+  pendingAttempt?: PendingAttemptObservation,
+  pendingCall?: CallCompletion,
+): Promise<T> {
   try {
     return await write();
   } catch (error) {
-    throw new Error('模型观测写入失败', { cause: error });
+    throw new ModelObservationError('模型观测写入失败', dispatched, pendingAttempt, {
+      cause: error,
+      pendingCall,
+    });
   }
 }
 
@@ -101,10 +116,12 @@ export function recordingModelPort(
           failureCode: 'storage',
           durationMs: performance.now() - started,
         });
-        throw error;
+        if (error instanceof ModelRecoveryError) throw error;
+        throw new ModelObservationError('模型题面写入失败', false, undefined, { cause: error });
       });
       if (!recording) return port.generate(request, access, call);
       let attemptNo = 0;
+      let dispatched = false;
       let generation: ReturnType<typeof requestSpan>;
       let pricing: ReturnType<typeof requestPricing> | undefined;
       const finish = async (
@@ -115,7 +132,7 @@ export function recordingModelPort(
         const result = { status, failureCode, durationMs: performance.now() - started };
         beforeWrite?.(result);
         finishCall(span, result);
-        await persist(() => recording.finish(result));
+        await persist(() => recording.finish(result), dispatched, undefined, result);
       };
       try {
         const response = await port.generate(request, access, {
@@ -126,17 +143,22 @@ export function recordingModelPort(
           },
           startAttempt: async () => {
             generation = undefined;
+            dispatched = false;
             const number = ++attemptNo;
-            await persist(() => recording.startAttempt(number));
+            await persist(() => recording.startAttempt(number), false);
             return {
               dispatched(body) {
+                dispatched = true;
                 pricing = telemetry(() => requestPricing(access, new Date()));
                 generation = requestSpan(span, access.model, number, metadata, request, body);
               },
               async finish(result) {
                 finishRequest(generation, result, pricing);
-                await persist(() =>
-                  recording.finishAttempt(number, { ...result, ...traceIds(generation) }),
+                const completion = { ...result, ...traceIds(generation) };
+                await persist(
+                  () => recording.finishAttempt(number, completion),
+                  result.dispatched,
+                  { attemptNo: number, result: completion },
                 );
               },
             };
@@ -152,6 +174,10 @@ export function recordingModelPort(
             ),
         };
       } catch (error) {
+        if (error instanceof ModelObservationError) {
+          if (!error.dispatched && !error.pendingAttempt) await finish('failed', 'storage');
+          throw error;
+        }
         const code = error instanceof ModelCallError ? error.code : 'internal';
         await finish(code === 'deadline' ? 'cancelled' : 'failed', code);
         throw error;

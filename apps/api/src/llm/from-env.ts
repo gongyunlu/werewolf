@@ -10,9 +10,11 @@ import { langfusePromptSource } from '../prompts/langfuse-source';
 /** 未配置 Langfuse 时直接使用本地提示词。 */
 export function promptSourceOf(env: AppEnv): PromptSource {
   const { LANGFUSE_HOST, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY } = env;
-  if (!LANGFUSE_PUBLIC_KEY || !LANGFUSE_SECRET_KEY) {
+  if (!LANGFUSE_PUBLIC_KEY && !LANGFUSE_SECRET_KEY) {
     return LOCAL_PROMPTS;
   }
+  if (!LANGFUSE_PUBLIC_KEY || !LANGFUSE_SECRET_KEY)
+    throw new Error('Langfuse 提示词凭据不完整，必须同时配置 public key 和 secret key');
 
   return langfusePromptSource({
     baseUrl: LANGFUSE_HOST,

@@ -10,6 +10,7 @@ import {
   result,
   vectorRuntime,
   approveExperience,
+  failNextAttemptObservation,
 } from '../experience/testing';
 import { runExperience } from '../experience/workflow';
 import { indexExperience } from '../experience/indexing';
@@ -63,6 +64,27 @@ async function begin(stores: GameStores, day = 1) {
 }
 
 describe('知识版本与逐行动输入', () => {
+  it('知识索引先报告用量写入失败，恢复补记后就绪且不重复模型调用', async () => {
+    const stores = memoryStores();
+    const item = await stores.knowledge.saveDraft(randomUUID(), 0, INITIAL_KNOWLEDGE[0]!.content);
+    const version = item.versions[0]!;
+    const runtime = vectorRuntime();
+    await prepareKnowledgeIndex(stores, version, runtime);
+    failNextAttemptObservation(stores);
+    await expect(indexKnowledge(stores, version.versionId, runtime)).rejects.toThrow(
+      '模型观测写入失败',
+    );
+    const failed = (await stores.knowledge.version(version.versionId))!;
+    expect(failed.state.status).toBe('failed');
+    await prepareKnowledgeIndex(stores, failed, runtime);
+    await indexKnowledge(stores, version.versionId, runtime);
+    expect((await stores.knowledge.version(version.versionId))!.state.status).toBe('ready');
+    expect(runtime.port.generate).toHaveBeenCalledTimes(1);
+    expect((await stores.asked.knowledgeCalls(version.versionId)).calls).toMatchObject([
+      { status: 'accepted', attempts: [{ status: 'succeeded', usage: { total_tokens: 8 } }] },
+    ]);
+  });
+
   it('初始资料有可定位来源、仅8条策略；非行动类型、空范围和非HTTP链接拒绝', () => {
     expect(INITIAL_KNOWLEDGE.filter((e) => e.content.kind === 'strategy')).toHaveLength(8);
     for (const item of INITIAL_KNOWLEDGE)
@@ -234,7 +256,7 @@ describe('知识版本与逐行动输入', () => {
 
   it('生成、复核、修订接收同版正文；恢复已完成行动不重检索、不重发模型', async () => {
     const stores = memoryStores();
-    const { item } = await indexed(stores);
+    const { item } = await indexed(stores, 3);
     await stores.games.open({ gameId: 'guard-game', boardId: '12p_wolf_king', roster: [] });
     const model = controlledPort((request) =>
       request.prompt.includes('他交上来的结果')
@@ -252,10 +274,10 @@ describe('知识版本与逐行动输入', () => {
       embedding: query,
       referenceModeFor: () => 'vector' as const,
     };
-    const state = withRoles({ ...makeState(3, false), gameId: 'guard-game' }, { p1: 'guard' });
+    const state = withRoles({ ...makeState(3, false), gameId: 'guard-game' }, { p1: 'seer' });
     const actions = modelActions(runtime, stores);
     actions.observe(state);
-    await actions.guardProtect('p1', ['p2', 'p3']);
+    await actions.speak('campaign', 'p1', ['p1']);
     const outcome = actions.outcomes()[0]!;
     const inputs = await stores.asked.knowledgeInputs('guard-game', outcome.snapshot.actionKey);
     expect(inputs.map((v) => v.step)).toEqual(['generate', 'critique', 'revise']);
@@ -272,7 +294,7 @@ describe('知识版本与逐行动输入', () => {
     await stores.knowledge.activate(item.id, item.revision, null, '');
     const resumed = modelActions(runtime, stores, state.phaseInstanceId);
     resumed.observe(state);
-    await resumed.guardProtect('p1', ['p2', 'p3']);
+    await resumed.speak('campaign', 'p1', ['p1']);
     expect(resumed.outcomes()[0]!.snapshot.context.knowledge).toEqual(
       outcome.snapshot.context.knowledge,
     );

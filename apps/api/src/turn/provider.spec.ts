@@ -180,7 +180,7 @@ describe('模型行动提供者', () => {
   });
 
   describe('技能正文', () => {
-    it('通用约束进入日终判断及下一夜的生成、复核、修订，并保存在当次快照中', async () => {
+    it('通用约束进入日终判断及下一日发言的生成、复核、修订，并保存在当次快照中', async () => {
       const skills = gameSkills('6p_white_wolf');
       let state = withRoles(makeState(6), {
         p1: ROLES.SEER,
@@ -193,9 +193,9 @@ describe('模型行动提供者', () => {
       const assessment = '如果1号是预言家，我出局会导致神职全灭；不能继续计划次日投票。';
       const model = scriptedModel([
         ...Array.from({ length: 4 }, () => JSON.stringify({ assessment, changes: '' })),
-        '3',
+        '我怀疑 3 号，但需要先确认今晚之后是否还能继续投票。',
         JSON.stringify({ accept: false, issues: '核对出局后的终局条件。' }),
-        '3',
+        '先看今晚结果，再考虑下一天的投票。',
       ]);
       const actions = modelActions(
         {
@@ -215,8 +215,8 @@ describe('模型行动提供者', () => {
       );
       await actions.recordStage({ state, phaseInstanceId: state.phaseInstanceId, input: {} });
       await actions.judgeDayEnd();
-      actions.observe({ ...state, day: 2, phaseInstanceId: phaseInstanceId(5, 'night') });
-      await actions.guardProtect('p6', ['p3', 'p4', 'p5']);
+      actions.observe({ ...state, day: 2, phaseInstanceId: phaseInstanceId(5, 'day') });
+      await actions.speak('day', 'p6', []);
 
       expect(model.calls).toHaveLength(7);
       for (const call of model.calls) {
@@ -277,12 +277,12 @@ describe('模型行动提供者', () => {
 
     it('投票、定发言方向与夜间那几问各挂各的场景', async () => {
       const { model, actions } = await withActions(sixPlayerState(), [
-        ...quality('5'),
+        '5',
         '"right"',
-        ...quality('null'),
-        ...quality('null'),
-        ...quality('6'),
-        ...quality('{"kind":"none"}'),
+        'null',
+        'null',
+        '6',
+        '{"kind":"none"}',
       ]);
 
       await actions.vote('exile', 'p1', ['p4', 'p5']);
@@ -314,7 +314,7 @@ describe('模型行动提供者', () => {
       expect(decided(model)[0].tool).toBeUndefined();
     });
 
-    it('各轮公开发言在当前任务核对原话，首日无旧判断也携带且不增加调用', async () => {
+    it('各轮公开发言在交付前核对事实性指控，首日无旧判断也携带且不增加调用', async () => {
       const { model, actions } = await withActions(
         sixPlayerState(),
         quality('过', '过', '过', '过', '过'),
@@ -328,7 +328,7 @@ describe('模型行动提供者', () => {
 
       const asked = decided(model);
       const check =
-        '发言前，先在心里核对这次会引用的关键原话：谁在何时向谁说，原句是在解释过去、提醒现在还是提出条件计划。随后按你的立场表达；若故意歪曲或伪装，自己仍记住原意。';
+        '先按你的立场拟好发言，交付前逐项核对其中作为依据的事实性指控：当事人原话是否支持你新增的先后、条件和因果？把某人的态度说成对后续信息的回应，须有他在该信息出现后的原始发言或行动；判断未回应、未改口，须先确认已有相应机会。他人转述不能替代当事人的记录。若记录只有先前立场，就按先前立场描述，不补后续反应；删去无依据的理由不要求改变策略。若故意歪曲或伪装，自己仍分清真实记录与编造。';
       [
         '轮到你上警发言。',
         '警上平票，轮到你做一轮 PK 发言。',
@@ -351,6 +351,35 @@ describe('模型行动提供者', () => {
 
       expect(decided(model)[0].prompt).toContain('本轮发言顺序：3 号、4 号。');
       expect(decided(model)[1].prompt).toContain('本轮发言顺序：6 号、5 号。');
+    });
+
+    it('后置发言保留原始先后与已发言名单，不把转述当成前置玩家再次回应', async () => {
+      const order = ['p1', 'p10', 'p9', 'p7', 'p4', 'p3'];
+      const beforeClaim = '如果10号今天改口报神职，我只会更不信。我的票暂挂10号。';
+      const claim = '我是守卫，第1夜空守，第2夜守5号，第3夜守7号。';
+      const misquote = '10号报守卫后，1号仍继续归10号。';
+      const { model, actions } = await withActions(
+        { ...makeState(12), day: 3 },
+        quality(beforeClaim, claim, '我暂信10号。', misquote, '我暂挂1号。', '先核对原话。'),
+      );
+      for (const playerId of order) await actions.speak('day', playerId, order);
+
+      for (const call of model.calls.slice(6, 8)) {
+        expect(call.prompt).toContain('本轮已发言：1 号、10 号、9 号。');
+        expect(call.prompt).toContain('当前轮到你（7 号）发言；后续发言：4 号、3 号。');
+        expect(call.prompt).toContain('1 号发言：' + beforeClaim);
+        expect(call.prompt).toContain('10 号发言：' + claim);
+        expect(call.prompt.indexOf(beforeClaim)).toBeLessThan(call.prompt.indexOf(claim));
+        expect(call.prompt).toContain('前置玩家没有在后置新信息出现后再次回应的机会');
+      }
+      for (const call of model.calls.slice(10, 12)) {
+        expect(call.prompt).toContain('本轮已发言：1 号、10 号、9 号、7 号、4 号。');
+        expect(call.prompt).toContain('当前轮到你（3 号）发言；后续发言：没有。');
+        expect(call.prompt).toContain('1 号发言：' + beforeClaim);
+        expect(call.prompt).toContain('7 号发言：' + misquote);
+        expect(call.prompt.match(/1 号发言：/g)).toHaveLength(1);
+      }
+      expect(model.calls).toHaveLength(12);
     });
 
     it('发言进台账，正文收成一行', async () => {
@@ -478,21 +507,21 @@ describe('模型行动提供者', () => {
     });
 
     it('一前一后分别问就各推各的：这一刻只有它一张卡片', async () => {
-      const { actions, chunks } = await watching(sixPlayerState(), quality('4', '4'));
+      const { actions, chunks } = await watching(sixPlayerState(), ['4', '4']);
 
       await actions.vote('exile', 'p1', ['p4']);
       await actions.vote('exile', 'p2', ['p4']);
 
-      // 走工具的那一问只有思考那一头，每问两趟（生成、质疑）各一片。
+      // 结构化决定只生成一次，每人各有一片思考预览。
       expect(chunks.filter((one) => one.channel !== 'node').map((one) => one.seatNo)).toEqual([
-        1, 1, 2, 2,
+        1, 2,
       ]);
     });
   });
 
   describe('选座位类', () => {
     it('投票的候选按座位号摆出来，答案再换回 id', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), quality('5'));
+      const { model, actions } = await withActions(sixPlayerState(), ['5']);
 
       expect(await actions.vote('exile', 'p1', ['p4', 'p5'])).toBe('p5');
       expect(decided(model)[0].prompt).toContain('可以选的目标只有下面这些');
@@ -502,7 +531,7 @@ describe('模型行动提供者', () => {
     });
 
     it('投空就是弃票，返回 null', async () => {
-      const { actions } = await withActions(sixPlayerState(), quality('null'));
+      const { actions } = await withActions(sixPlayerState(), ['null']);
 
       expect(await actions.vote('exile', 'p1', ['p4'])).toBeNull();
     });
@@ -516,17 +545,20 @@ describe('模型行动提供者', () => {
     });
 
     it('查验必须给一个人，没有不做这一档', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), quality('6'));
+      const { model, actions } = await withActions(sixPlayerState(), ['6']);
 
       expect(await actions.seerCheck('p4', ['p5', 'p6'])).toBe('p6');
       expect(shapeOf(decided(model)[0])).not.toContain('"type": "null"');
     });
 
     it('提刀、守护与带人那几问都能空着', async () => {
-      const { actions } = await withActions(
-        sixPlayerState(),
-        quality('null', 'null', 'null', 'null', 'null'),
-      );
+      const { actions } = await withActions(sixPlayerState(), [
+        'null',
+        'null',
+        'null',
+        'null',
+        'null',
+      ]);
 
       expect(await actions.wolfProposal('p1', ['p1', 'p3'])).toBeNull();
       expect(await actions.guardProtect('p3', ['p3', 'p5'])).toBeNull();
@@ -545,10 +577,7 @@ describe('模型行动提供者', () => {
     });
 
     it('警徽可以交给候选里的某个人', async () => {
-      const { actions } = await withActions(
-        sixPlayerState(),
-        quality('{"kind":"transfer","seatNo":5}'),
-      );
+      const { actions } = await withActions(sixPlayerState(), ['{"kind":"transfer","seatNo":5}']);
 
       expect(await actions.decideBadge('p3', ['p4', 'p5'])).toEqual({
         kind: 'transfer',
@@ -557,7 +586,7 @@ describe('模型行动提供者', () => {
     });
 
     it('警徽也可以撕掉', async () => {
-      const { actions } = await withActions(sixPlayerState(), quality('{"kind":"tear"}'));
+      const { actions } = await withActions(sixPlayerState(), ['{"kind":"tear"}']);
 
       expect(await actions.decideBadge('p3', ['p4', 'p5'])).toEqual({ kind: 'tear' });
     });
@@ -565,10 +594,9 @@ describe('模型行动提供者', () => {
 
   describe('女巫那一问', () => {
     it('刀口是别人时救的那一支摆得出来，刀口也写在局面里', async () => {
-      const { model, actions } = await withActions(
-        sixPlayerState(),
-        quality('{"kind":"poison","seatNo":5}'),
-      );
+      const { model, actions } = await withActions(sixPlayerState(), [
+        '{"kind":"poison","seatNo":5}',
+      ]);
 
       expect(await actions.witchDecision('p2', 'p4', ['p1', 'p4', 'p5'])).toEqual({
         kind: 'poison',
@@ -579,7 +607,7 @@ describe('模型行动提供者', () => {
     });
 
     it('刀口是她自己时救的那一支不摆出来，也不用规则解释一遍', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), quality('{"kind":"none"}'));
+      const { model, actions } = await withActions(sixPlayerState(), ['{"kind":"none"}']);
 
       expect(await actions.witchDecision('p2', 'p2', ['p1', 'p4'])).toEqual({ kind: 'none' });
       expect(decided(model)[0].prompt).toContain('今晚的刀口是你自己，解药救不了自己。');
@@ -588,7 +616,7 @@ describe('模型行动提供者', () => {
     });
 
     it('看不到刀口时不说刀口是谁，救的那一支也不摆', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), quality('{"kind":"none"}'));
+      const { model, actions } = await withActions(sixPlayerState(), ['{"kind":"none"}']);
 
       expect(await actions.witchDecision('p2', null, ['p1', 'p4'])).toEqual({ kind: 'none' });
       expect(decided(model)[0].prompt).toContain('你今晚看不到刀口。');
@@ -596,7 +624,7 @@ describe('模型行动提供者', () => {
     });
 
     it('毒药没得毒时不摆毒那一支，只剩不用', async () => {
-      const { model, actions } = await withActions(sixPlayerState(), quality('{"kind":"none"}'));
+      const { model, actions } = await withActions(sixPlayerState(), ['{"kind":"none"}']);
 
       expect(await actions.witchDecision('p2', null, [])).toEqual({ kind: 'none' });
       expect(shapeOf(decided(model)[0])).not.toContain('"const": "poison"');
@@ -604,7 +632,7 @@ describe('模型行动提供者', () => {
   });
 
   describe('台账', () => {
-    it('同源材料在 quick 与 quality 保留来源和原文，好人收不到狼队私密内容', async () => {
+    it('同源材料保留来源和原文，好人收不到狼队私密内容', async () => {
       const state = packState();
       const publicSpeech = '我认为 6 号是好人，暂不判断具体身份。';
       const wolfSpeech = '我准备给 6 号发金水，这只是明天的发言安排。';
@@ -614,9 +642,9 @@ describe('模型行动提供者', () => {
         wolfSpeech,
         ...quality(publicSpeech),
         'false',
-        ...quality('6'),
+        '6',
         'false',
-        ...quality('6'),
+        '6',
       ]);
       await actions.wolfSpeech('p2', 1, ['p2', 'p1']);
       await actions.speak('day', 'p5', []);
@@ -637,9 +665,9 @@ describe('模型行动提供者', () => {
         .map((outcome) => outcome.snapshot);
       expect(snapshots.map((snapshot) => snapshot.preset)).toEqual([
         'quick',
-        'quality',
         'quick',
-        'quality',
+        'quick',
+        'quick',
       ]);
       const sharedFacts = snapshots.map((snapshot) =>
         snapshot.context.visible.filter((block) => block.title !== '这一问的说明'),
@@ -664,16 +692,16 @@ describe('模型行动提供者', () => {
           { title: '法官私密告知', lines: ['【第 1 天】', `[#4] ${privateFlow}`] },
         ]),
       );
-      // 包括 quality 的复核调用：材料应在生成和复核中保持同一可见边界。
+      // 每次结构化决定都使用同一可见边界。
       for (const call of model.calls.slice(3)) {
         expect(call.prompt).toContain(`5 号发言：${publicSpeech}`);
         expect(call.prompt).toContain(publicFlow);
       }
-      for (const call of model.calls.slice(3, 6)) {
+      for (const call of model.calls.slice(3, 5)) {
         expect(call.prompt).toContain(`2 号商议发言：${wolfSpeech}`);
         expect(call.prompt).toContain(privateFlow);
       }
-      for (const call of model.calls.slice(6)) {
+      for (const call of model.calls.slice(5)) {
         expect(call.prompt).not.toContain(wolfSpeech);
         expect(call.prompt).not.toContain(privateFlow);
       }
@@ -684,7 +712,7 @@ describe('模型行动提供者', () => {
       const { model, actions, stores } = await withActions(state, [
         'true',
         'true',
-        ...quality('{"kind":"tear"}'),
+        '{"kind":"tear"}',
         '"left"',
         ...quality('过'),
       ]);
@@ -713,7 +741,7 @@ describe('模型行动提供者', () => {
 
     it('投票与自爆不进台账，下一问里没有它们留下的痕迹', async () => {
       const { model, actions } = await withActions(sixPlayerState(), [
-        ...quality('5'),
+        '5',
         'false',
         ...quality('过'),
       ]);
@@ -890,7 +918,7 @@ describe('模型行动提供者', () => {
       const state = sixPlayerState();
       const { model, actions, stores } = await withActions(state, [
         ...quality('过'),
-        ...quality('5'),
+        '5',
         ...quality('过'),
       ]);
       // 投票之前先有一问留了事实，之后又有一问留了事实：那两问的台账都不是投票这一刻这份。
@@ -943,7 +971,7 @@ describe('模型行动提供者', () => {
       const { model, actions, stores } = await withActions(state, [
         new Error('模型那边断了'),
         ...quality('过'),
-        ...quality('5'),
+        '5',
       ]);
       await expect(actions.vote('exile', 'p1', ['p4', 'p5'])).rejects.toThrow('模型那边断了');
       await actions.speak('day', 'p3', []);
@@ -1018,8 +1046,8 @@ describe('模型行动提供者', () => {
     it('这一问问了几遍就落几行，重问那一次带着上一次交的是什么', async () => {
       const state = sixPlayerState();
       const { stores, rows } = recordingStores();
-      // 候选是 4、5 号，先答一个不在里面的 7 号，附上说明重问一次才交对，之后接质疑。
-      const model = scriptedModel(['7', '5', ACCEPT]);
+      // 候选是 4、5 号，先答一个不在里面的 7 号，附上说明重问一次才交对。
+      const model = scriptedModel(['7', '5']);
       const actions = modelActions(
         {
           port: model,
@@ -1040,14 +1068,16 @@ describe('模型行动提供者', () => {
         'p3',
         0,
       );
-      // 生成、重问、质疑是三次提问，一行一条，都归这一次行动：按行动键取回来就是这一问的全部。
-      expect(rows.map((row) => row.actionKey)).toEqual([key, key, key]);
+      // 生成、重问各留一行，都归这一次行动；合法决定不再额外复核。
+      expect(rows.map((row) => row.actionKey)).toEqual([key, key]);
       // 判据取「上一次交的」这半句：题面本身就有「选别的都不作数」，只认「不作数」认不出来。
       expect(rows[0]?.prompt).not.toContain('上一次交的');
       expect(rows[1]?.prompt.startsWith(rows[0]?.prompt ?? '')).toBe(true);
       expect(rows[1]?.prompt).toContain('上一次交的');
-      // 快照里记的是没附言那一版提示词，重问真发出去的那一份只有这张表留得住。
-      expect(rows[2]?.prompt).toContain('他交上来的结果：');
+      // 快照保存原始题面，追加纠错说明的那一版保留在提问记录中。
+      expect(actions.outcomes()[0]?.snapshot.prompts[1].text).toBe(rows[0]?.prompt);
+      expect(model.calls).toHaveLength(2);
+      expect(actions.outcomes()[0]?.snapshot.critique).toBeNull();
     });
   });
 
@@ -1080,10 +1110,10 @@ describe('模型行动提供者', () => {
       ]);
     });
 
-    it('档位按行动类型定，两态走 quick，选人与发言走 quality', async () => {
-      const { actions } = await withActions(sixPlayerState(), [
+    it('只有自由发言额外复核，结构化决定保持 schema 并只生成一次', async () => {
+      const { actions, model } = await withActions(sixPlayerState(), [
         'true',
-        ...quality('5'),
+        '5',
         ...quality('过'),
       ]);
 
@@ -1093,9 +1123,11 @@ describe('模型行动提供者', () => {
 
       expect(actions.outcomes().map((outcome) => outcome.snapshot.preset)).toEqual([
         'quick',
-        'quality',
+        'quick',
         'quality',
       ]);
+      expect(model.calls).toHaveLength(4);
+      expect(model.calls[1].tool?.parameters).toBeDefined();
     });
 
     it('行动键与序号发号器算出来的那一份对得上', async () => {

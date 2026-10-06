@@ -63,10 +63,10 @@ describe('按环境变量接线', () => {
       }
     });
 
-    it('只配了一个 key 也按没配处理，不去拿半个身份试', async () => {
-      const source = promptSourceOf(envOf({ LANGFUSE_PUBLIC_KEY: 'pk-用例' }));
-
-      expect(source).toBe(LOCAL_PROMPTS);
+    it.each(['LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY'])('只配置 %s 时明确报错', (key) => {
+      expect(() => promptSourceOf(envOf({ [key]: '用例密钥' }))).toThrow(
+        'Langfuse 提示词凭据不完整',
+      );
     });
   });
 

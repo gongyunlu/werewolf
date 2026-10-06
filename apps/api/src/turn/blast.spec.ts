@@ -9,6 +9,7 @@ import {
 import { memoryStores } from '../store/memory';
 import { runBlastWindow } from '../core/day/self-destruct';
 import { retryingModelPort } from '../llm/retrying-model-port';
+import * as embeddings from '../llm/embedding';
 import type { CallCompletion } from '../llm/observation';
 import { makeState, playerOf, stubSkills, withRoles } from '../testing/fixtures';
 import { responseOf } from '../testing/model';
@@ -117,6 +118,51 @@ async function setup(honorAbort = true) {
 }
 
 describe('自爆竞速与持久化', () => {
+  it.each([true, false])('自爆赢家取消败方的向量检索（注入 embedding：%s）', async (provided) => {
+    const h = await setup();
+    const entered = deferred<void>();
+    const response = deferred<never>();
+    let call: ModelCallOptions | undefined;
+    const embedding: embeddings.EmbeddingRuntime = {
+      access: h.runtime.accessFor(null),
+      dimensions: 2,
+      port: {
+        async generate(_request, _access, options) {
+          call = options;
+          options?.signal?.addEventListener(
+            'abort',
+            () => response.reject(new ModelCallError('deadline', '检索已取消')),
+            { once: true },
+          );
+          entered.resolve();
+          return response.promise;
+        },
+      },
+    };
+    const factory = jest.spyOn(embeddings, 'embeddingRuntime').mockReturnValue(embedding);
+    h.stores.knowledge.hasCandidates = async (scope) => scope.role === ROLES.WEREWOLF;
+    h.runtime.referenceModeFor = () => 'vector';
+    if (provided) h.runtime.embedding = embedding;
+    const actions = h.actions();
+    actions.observe(withRoles(h.state, { p2: ROLES.WHITE_WOLF }));
+    const running = actions.chooseBlaster(['p1', 'p2'], 'day');
+    try {
+      await entered.promise;
+      const [winner] = await h.started(1);
+      expect(winner.seat).toBe(2);
+      winner.answer.resolve('true');
+      await winner.received.promise;
+      expect(call?.signal?.aborted).toBe(true);
+      await expect(running).resolves.toBe('p2');
+      expect(factory).toHaveBeenCalledTimes(provided ? 0 : 1);
+      expect(h.calls).toHaveLength(1);
+    } finally {
+      response.reject(new ModelCallError('deadline', '清理未结束的测试请求'));
+      await running.catch(() => {});
+      factory.mockRestore();
+    }
+  });
+
   it('后排先有效回答，记账落后也仍是赢家；已完成败方保留真实成功记录', async () => {
     const h = await setup(false);
     const running = h.actions().chooseBlaster(['p1', 'p2'], 'day');
@@ -348,8 +394,6 @@ describe('自爆竞速与持久化', () => {
     const resumed = runBlastWindow(initial, 'day', replay, replay.observe, replay.recordFlow);
     await h.started(4);
     calls[3].answer.resolve('null');
-    await h.started(5);
-    calls[4].answer.resolve('{"accept":true,"issues":""}');
     const result = await resumed;
     expect(result.state.players.find((player) => player.id === 'p2')?.isAlive).toBe(false);
     expect(result.state.players.find((player) => player.id === 'p1')?.isAlive).toBe(true);
@@ -384,9 +428,7 @@ describe('自爆竞速与持久化', () => {
       await h.started(3);
       calls[2].answer.resolve('4');
       await h.started(4);
-      calls[3].answer.resolve('{"accept":true,"issues":""}');
-      await h.started(5);
-      calls[4].answer.reject(new Error('开枪时中断'));
+      calls[3].answer.reject(new Error('开枪时中断'));
       await failed;
 
       const replay = h.actions();
@@ -399,10 +441,8 @@ describe('自爆竞速与持久化', () => {
         replay.recordFlow,
         nightDeaths,
       );
-      await h.started(6);
-      calls[5].answer.resolve(target === null ? 'null' : '5');
-      await h.started(7);
-      calls[6].answer.resolve('{"accept":true,"issues":""}');
+      await h.started(5);
+      calls[4].answer.resolve(target === null ? 'null' : '5');
       const result = await resumed;
 
       expect(playerOf(result.state, 'p4')).toMatchObject({

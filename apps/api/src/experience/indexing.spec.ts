@@ -1,9 +1,46 @@
-import { fixture, result, access, promptSource, controlledPort, vectorRuntime } from './testing';
+import {
+  fixture,
+  result,
+  access,
+  promptSource,
+  controlledPort,
+  vectorRuntime,
+  failNextAttemptObservation,
+} from './testing';
 import { runExperience } from './workflow';
 import { indexExperience } from './indexing';
 import { ModelCallError } from '../llm/model-port';
 
 describe('经验索引恢复', () => {
+  it('首次索引的用量写入失败不会报完成，恢复补记后才完成且不重发', async () => {
+    const f = await fixture();
+    await runExperience(f.stores, f.row.id, {
+      port: controlledPort(JSON.stringify(result)),
+      access,
+      promptSource,
+      prepare: f.prepare,
+    });
+    const runtime = vectorRuntime();
+    failNextAttemptObservation(f.stores);
+    await expect(indexExperience(f.stores, f.row.id, runtime)).rejects.toThrow('模型观测写入失败');
+    expect((await f.stores.experiences.findGeneration(f.row.id))!.state.indexing).toMatchObject({
+      completed: false,
+      tasks: [{ attempts: [{ status: 'responded', observation: expect.anything() }] }],
+    });
+    await indexExperience(f.stores, f.row.id, runtime);
+    expect((await f.stores.experiences.findGeneration(f.row.id))!.state.indexing!.completed).toBe(
+      true,
+    );
+    expect(runtime.port.generate).toHaveBeenCalledTimes(1);
+    expect(
+      (await f.stores.observations.read(f.gameId))!.calls.filter(
+        (call) => call.step === 'experience_embedding',
+      ),
+    ).toMatchObject([
+      { status: 'accepted', attempts: [{ status: 'succeeded', usage: { total_tokens: 8 } }] },
+    ]);
+  });
+
   it('部分失败不重做提炼或成功的向量请求；重复索引无调用', async () => {
     const f = await fixture();
     const model = controlledPort(

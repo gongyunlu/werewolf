@@ -1,20 +1,36 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchReview, fetchReviewPreview, startReview } from '@/lib/api-client';
+import {
+  fetchReview,
+  fetchReviewPreview,
+  fetchReviewProgress,
+  startReview,
+} from '@/lib/api-client';
 import { reviewGame, reviewPreview, reviewResponse } from '@/test/review-fixture';
 import { GameReview } from './GameReview';
 
 vi.mock('@/lib/api-client', () => ({
   fetchReview: vi.fn(),
   fetchReviewPreview: vi.fn(),
+  fetchReviewProgress: vi.fn(),
   startReview: vi.fn(),
 }));
+
+function mockReview(status = 'completed') {
+  const response = reviewResponse(status);
+  vi.mocked(fetchReview).mockResolvedValue(response);
+  vi.mocked(fetchReviewProgress).mockResolvedValue({
+    status,
+    revision: status,
+    failure: response.failure,
+  });
+}
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(fetchReviewPreview).mockResolvedValue(reviewPreview);
-  vi.mocked(fetchReview).mockResolvedValue(reviewResponse());
+  mockReview();
   Element.prototype.scrollIntoView = vi.fn();
 });
 
@@ -68,7 +84,7 @@ describe('赛后复盘阅读', () => {
 
 describe('手动生成与恢复', () => {
   it('未生成时先展示范围，快速重复点击只提交一次', async () => {
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse('not_started'));
+    mockReview('not_started');
     let release!: (value: { status: string }) => void;
     vi.mocked(startReview).mockImplementation(
       () =>
@@ -84,21 +100,21 @@ describe('手动生成与恢复', () => {
     fireEvent.click(start);
     expect(startReview).toHaveBeenCalledTimes(1);
     expect(start).toBeDisabled();
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse('waiting'));
+    mockReview('waiting');
     await act(async () => release({ status: 'waiting' }));
     expect(await screen.findByText('排队中')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '生成复盘' })).toBeNull();
   });
 
   it.each(['failed', 'interrupted'])('%s 后展示已有分析，续跑原任务并恢复状态', async (status) => {
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse(status));
+    mockReview(status);
     vi.mocked(startReview).mockResolvedValue({ status: 'active' });
     render(<GameReview game={reviewGame} />);
     const resume = await screen.findByRole('button', { name: '续跑复盘' });
     expect(screen.getByText('已完成 1 / 3 项分析')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /1. 第 1 天 · 投票/ }));
     expect(screen.getByText(/决策分析只使用当时的理由/)).toBeInTheDocument();
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse('active'));
+    mockReview('active');
     await userEvent.click(resume);
     expect(await screen.findByText('生成中')).toBeInTheDocument();
     expect(startReview).toHaveBeenCalledWith('g-review');
@@ -108,6 +124,7 @@ describe('手动生成与恢复', () => {
 
   it('排队时刷新后恢复轮询，完成后停止；请求未结束时不叠加查询', async () => {
     vi.useFakeTimers();
+    mockReview('waiting');
     let release!: (value: ReturnType<typeof reviewResponse>) => void;
     vi.mocked(fetchReview).mockImplementationOnce(
       () =>
@@ -124,6 +141,9 @@ describe('手动生成与恢复', () => {
       vi.mocked(fetchReview)
         .mockResolvedValueOnce(reviewResponse('active'))
         .mockResolvedValue(reviewResponse());
+      vi.mocked(fetchReviewProgress)
+        .mockResolvedValueOnce({ status: 'active', revision: 'active', failure: null })
+        .mockResolvedValue({ status: 'completed', revision: 'completed', failure: null });
       await act(() => vi.advanceTimersByTimeAsync(5000));
       expect(screen.getByText('生成中')).toBeInTheDocument();
       await act(() => vi.advanceTimersByTimeAsync(5000));
@@ -138,7 +158,7 @@ describe('手动生成与恢复', () => {
   });
 
   it('提交失败明确显示错误，再读取服务端状态，不自动重发', async () => {
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse('not_started'));
+    mockReview('not_started');
     vi.mocked(startReview).mockRejectedValue(new Error('管理令牌不正确'));
     render(<GameReview game={reviewGame} />);
     await userEvent.click(await screen.findByRole('button', { name: '生成复盘' }));
@@ -159,7 +179,7 @@ describe('手动生成与恢复', () => {
   });
 
   it('覆盖范围读取失败禁止启动，手动刷新后可以恢复', async () => {
-    vi.mocked(fetchReview).mockResolvedValue(reviewResponse('not_started'));
+    mockReview('not_started');
     vi.mocked(fetchReviewPreview).mockRejectedValueOnce(new Error('读取证据失败'));
     render(<GameReview game={reviewGame} />);
     expect(await screen.findByRole('alert')).toHaveTextContent('覆盖范围读取失败');

@@ -2,8 +2,10 @@ import { getQueueToken } from '@nestjs/bullmq';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { testAppModule } from '../testing/app';
-import { reviewFixture } from './testing';
+import { fakeReviewPlatform, reviewFixture } from './testing';
 import { REVIEW_QUEUE } from './review-queue';
+import { runReview } from './workflow';
+import * as reviewPlatform from './platform';
 
 const TOKEN = 'review-test-token';
 process.env.ADMIN_TOKEN = TOKEN;
@@ -68,6 +70,49 @@ describe('手动复盘接口', () => {
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(queue.add).toHaveBeenCalledWith('review', { gameId: 'g' }, { jobId: 'g', attempts: 1 });
     expect((await stores.games.find('g'))!.status).toBe('finished');
+  });
+
+  it('进度轮询只读本地凭据，凭据不变时版本稳定且不访问平台', async () => {
+    const initial = await request(app.getHttpServer())
+      .get('/api/games/g/review/progress')
+      .expect(200);
+    expect(initial.body).toEqual({ status: 'not_started', revision: null, failure: null });
+    const { platform } = fakeReviewPlatform();
+    platform.wait.mockRejectedValueOnce(new Error('暂停收取结果'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('暂停收取结果');
+    const factory = jest.spyOn(reviewPlatform, 'reviewPlatform').mockImplementation(() => {
+      throw new Error('进度查询不应连接 Langfuse');
+    });
+    try {
+      state = 'active';
+      const first = await request(app.getHttpServer())
+        .get('/api/games/g/review/progress')
+        .expect(200);
+      const repeated = await request(app.getHttpServer())
+        .get('/api/games/g/review/progress')
+        .expect(200);
+      expect(first.body).toEqual(repeated.body);
+      expect(first.body).toMatchObject({ status: 'active', revision: expect.any(String) });
+      expect(first.body.revision).not.toBe(initial.body.revision);
+
+      await runReview(stores, 'g', platform);
+      const completed = await request(app.getHttpServer())
+        .get('/api/games/g/review/progress')
+        .expect(200);
+      expect(completed.body.status).toBe('completed');
+      expect(completed.body.revision).not.toBe(first.body.revision);
+      const resultReads = platform.result.mock.calls.length;
+      const generationReads = platform.generations.mock.calls.length;
+      const last = await request(app.getHttpServer())
+        .get('/api/games/g/review/progress')
+        .expect(200);
+      expect(last.body).toEqual(completed.body);
+      expect(platform.result).toHaveBeenCalledTimes(resultReads);
+      expect(platform.generations).toHaveBeenCalledTimes(generationReads);
+      expect(factory).not.toHaveBeenCalled();
+    } finally {
+      factory.mockRestore();
+    }
   });
 
   it('失败报告显示执行失败；手动续跑重试原任务，不清除检查点', async () => {

@@ -61,6 +61,10 @@ export const ReviewReportSchema = z.object({
 });
 // 队列还可能返回暂停、延迟等状态，保留原值供页面识别，不能误当成未开始。
 export const ReviewStartResponseSchema = z.object({ status: z.string() });
+export const ReviewProgressResponseSchema = ReviewStartResponseSchema.extend({
+  revision: z.string().nullable(),
+  failure: z.string().nullable(),
+});
 export const ReviewResponseSchema = ReviewStartResponseSchema.extend({
   report: ReviewReportSchema.nullable(),
   failure: z.string().nullable(),
@@ -73,3 +77,4 @@ export type ReviewUnit = z.infer<typeof ReviewUnitSchema>;
 export type ReviewPreview = z.infer<typeof ReviewPreviewSchema>;
 export type ReviewReport = z.infer<typeof ReviewReportSchema>;
 export type ReviewResponse = z.infer<typeof ReviewResponseSchema>;
+export type ReviewProgressResponse = z.infer<typeof ReviewProgressResponseSchema>;

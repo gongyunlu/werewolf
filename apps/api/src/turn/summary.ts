@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { entrypoint, task, type LangGraphRunnableConfig } from '@langchain/langgraph';
+import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
 import { InvalidOutputError } from '../llm/model-port';
 import { parseStructured, toolOf } from '../llm/structured-output';
 import { ask, askParsed, noted, retryNote } from './graph';
@@ -9,9 +11,8 @@ import type { TurnRuntime } from './request';
 /**
  * 把窗口外那一整天的发言折成每人一条的摘要。
  *
- * 它不是玩家的一问，不进行动图：图那一套（立意图、检查点、质疑与修订）是给「牌桌上做决定」用的，
- * 而这一问是对着已经发生过的事做笔记，答完就落进台账，没有第二次机会，也没有什么可质疑的。
- * 借的是图里那两件通用的事——拿工具问一次、不合规再问几次。
+ * 它不是玩家的一问，不进行动图：只对已经发生的发言做笔记，答完落进台账。
+ * 请求答复用独立检查点保存，观测或台账写入失败后可以继续使用原答案。
  *
  * 折的是发言，别的都不折：票型、死讯、警徽、上警退水这些又短又密，压一句反而是把信息丢在压缩上。
  */
@@ -63,6 +64,13 @@ function coverEveryone(items: readonly SummaryItem[], seatNos: readonly number[]
   return [...items];
 }
 
+interface SummaryInput {
+  day: number;
+  /** 频道的人话名，写进题面。 */
+  channel: string;
+  speeches: readonly SpeechToFold[];
+}
+
 /**
  * 问一次模型，把这一天的发言折成摘要。
  *
@@ -72,24 +80,39 @@ function coverEveryone(items: readonly SummaryItem[], seatNos: readonly number[]
  */
 export async function summarize(
   runtime: TurnRuntime,
-  input: {
-    day: number;
-    /** 频道的人话名，写进题面。 */
-    channel: string;
-    speeches: readonly SpeechToFold[];
-  },
+  input: SummaryInput,
+  options?: { saver: BaseCheckpointSaver; threadId: string },
+): Promise<readonly SummaryItem[]> {
+  const workflow = entrypoint(
+    { name: 'summary', checkpointer: options?.saver },
+    (saved: SummaryInput, config) => summarizeOnce(runtime, saved, config),
+  );
+  const config = {
+    ...(options ? { configurable: { thread_id: options.threadId } } : {}),
+    durability: 'sync' as const,
+  };
+  const behind = options && (await options.saver.getTuple(config));
+  return workflow.invoke(behind ? null : input, config);
+}
+
+async function summarizeOnce(
+  runtime: TurnRuntime,
+  input: SummaryInput,
+  config: LangGraphRunnableConfig,
 ): Promise<readonly SummaryItem[]> {
   const executionId = randomUUID();
   const seatNos = input.speeches.map((speech) => speech.seatNo);
   const schema = summaryShape(seatNos);
-  const turn = await renderSummary(runtime.promptSource, {
-    day: input.day,
-    channel: input.channel,
-    // 台账那几行的正文本来就以「N 号发言：」开头，不再自己补一遍座位号。
-    speeches: input.speeches.map((speech) => speech.lines.join('\n')),
-    count: seatNos.length,
-    schemaJson: z.toJSONSchema(schema) as Record<string, unknown>,
-  });
+  const turn = await task('summary.prompt', () =>
+    renderSummary(runtime.promptSource, {
+      day: input.day,
+      channel: input.channel,
+      // 台账那几行的正文本来就以「N 号发言：」开头，不再自己补一遍座位号。
+      speeches: input.speeches.map((speech) => speech.lines.join('\n')),
+      count: seatNos.length,
+      schemaJson: z.toJSONSchema(schema) as Record<string, unknown>,
+    }),
+  )();
 
   const what = `第 ${input.day} 天${input.channel}的摘要`;
   const { parsed } = await askParsed(
@@ -101,7 +124,16 @@ export async function summarize(
         note === null ? turn : noted(turn, note),
         toolOf(schema, `把这一天的${input.channel}压成每人一条`),
         undefined,
-        { executionId, step: 'summary', formatAttempt },
+        {
+          executionId,
+          step: 'summary',
+          formatAttempt,
+          taskId: config.executionInfo?.taskId,
+          checkpointId: config.executionInfo?.checkpointId,
+        },
+        undefined,
+        undefined,
+        runtime.asked,
       ),
     (content) => coverEveryone(parseStructured(content, schema, what).items, seatNos),
     (raw, diagnosis) =>

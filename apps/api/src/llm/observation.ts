@@ -32,6 +32,37 @@ export interface AttemptCompletion extends RequestMetrics {
   failureCode: string | null;
 }
 
+export interface PendingAttemptObservation {
+  attemptNo: number;
+  result: AttemptCompletion;
+}
+
+export type PendingModelObservation = PendingAttemptObservation | { call: CallCompletion };
+
+/** 原请求没有可复用答复时，不能把恢复执行变成一次新的模型请求。 */
+export class ModelRecoveryError extends Error {
+  constructor(readonly callId: string) {
+    super(`原模型调用 ${callId} 缺少可恢复的答复，结果不能确认，请核查调用记录`);
+    this.name = 'ModelRecoveryError';
+  }
+}
+
+/** 观测写入失败时保留派发状态和待补写结果，不重新请求模型。 */
+export class ModelObservationError extends Error {
+  readonly pendingCall?: CallCompletion;
+
+  constructor(
+    message: string,
+    readonly dispatched: boolean,
+    readonly pendingAttempt?: PendingAttemptObservation,
+    options?: ErrorOptions & { pendingCall?: CallCompletion },
+  ) {
+    super(message, options);
+    this.name = 'ModelObservationError';
+    this.pendingCall = options?.pendingCall;
+  }
+}
+
 /** 本地写入失败直接抛出，不参与模型重试。 */
 export interface CallRecording {
   finish(result: CallCompletion): Promise<void>;

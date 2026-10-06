@@ -101,7 +101,6 @@ export async function validateProjectPrompt(template: PromptTemplate): Promise<v
   if (!Object.keys(PROMPT_CATALOG).includes(name))
     throw new Error('仅支持当前对局、经验与知识整理模板');
   const source: PromptSource = {
-    strict: true,
     load: async (requested) => (requested === name ? template : LOCAL_PROMPTS.load(requested)),
   };
   if (name.startsWith('experience/')) {

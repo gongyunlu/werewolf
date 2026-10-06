@@ -29,6 +29,7 @@ import {
   experienceTool,
   resolveExperienceSources,
 } from './prompt';
+import { attemptFailure, recoverAttemptObservation } from './attempt-observation';
 
 export async function experienceSource(stores: GameStores, gameId: string, playerId: string) {
   const game = await finishedGame(stores, gameId);
@@ -113,6 +114,10 @@ export async function runExperience(stores: GameStores, id: string, provided?: E
     while (true) {
       let completeObservation: import('../llm/model-port').ModelResponse['completeObservation'];
       let attempt = row.state.attempts.at(-1);
+      if (attempt?.observation) {
+        attempt = await recoverAttemptObservation(stores.asked, attempt);
+        await save({ attempts: [...row.state.attempts.slice(0, -1), attempt] });
+      }
       if (attempt?.status === 'pending')
         throw new Error('上次请求结果未知；为避免重复调用，已停止自动重发，请核查调用记录');
       if (!attempt || attempt.status === 'invalid' || attempt.status === 'failed') {
@@ -174,13 +179,14 @@ export async function runExperience(stores: GameStores, id: string, provided?: E
             },
           );
         } catch (error) {
-          // 明确返回的失败可以重试；记录层写入失败或进程中断不能当作未调用。
+          // 答复与待补记用量一起保存；恢复时先补观测，不再询问模型。
           if (received)
             await save({
               attempts: [
                 ...row.state.attempts.slice(0, -1),
                 {
                   ...attempt,
+                  ...attemptFailure(error),
                   status: 'responded',
                   durationMs: performance.now() - started,
                   response: {
@@ -191,9 +197,12 @@ export async function runExperience(stores: GameStores, id: string, provided?: E
                 },
               ],
             });
-          else if (error instanceof ModelCallError)
+          else
             await save({
-              attempts: [...row.state.attempts.slice(0, -1), { ...attempt, status: 'failed' }],
+              attempts: [
+                ...row.state.attempts.slice(0, -1),
+                { ...attempt, ...attemptFailure(error) },
+              ],
             });
           throw error instanceof ModelCallError
             ? new Error(`经验模型请求失败（${error.code}），可续跑`)

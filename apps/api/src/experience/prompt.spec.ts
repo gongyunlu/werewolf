@@ -15,13 +15,13 @@ it('经验请求保留完整文本、短引用和模板来源', async () => {
 });
 
 describe('经验模板来源', () => {
-  it('普通源失败时回退本地，固定快照缺失时抛错', async () => {
+  it('平台源失败与固定快照缺失均直接抛错', async () => {
     const offline: PromptSource = {
       async load() {
         throw new Error('平台离线');
       },
     };
-    expect(await experiencePrompts(offline)).toEqual(await experiencePrompts(LOCAL_PROMPTS));
+    await expect(experiencePrompts(offline)).rejects.toThrow('平台离线');
     await expect(experiencePrompts(snapshotPromptSource([]))).rejects.toThrow('固定快照没有');
   });
 

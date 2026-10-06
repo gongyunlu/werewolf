@@ -14,7 +14,7 @@ import {
   type StoredAction,
 } from './actions';
 import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
-import { assertAskedScope, type AskedPromptStore } from './asked';
+import { assertAskedScope, interruptedCallFailure, type AskedPromptStore } from './asked';
 import { newCallRow, newAttemptRow, finishCallRow, type CallRow } from './observations';
 import type { EventStore, StoredEvent } from './events';
 import type { GameStore, StoredGame } from './games';
@@ -23,6 +23,7 @@ import type { GameStores } from './stores';
 import { memoryExperiences } from './memory-experiences';
 import { memoryKnowledge } from './memory-knowledge';
 import { memoryKnowledgeImports } from './memory-knowledge-imports';
+import type { AttemptCompletion } from '../llm/observation';
 
 /**
  * 整局跑在内存里的那几份存储：进程一结束就没了。
@@ -253,10 +254,21 @@ export function memoryActions(): ActionStore {
   };
 }
 
+function finishAttempt(row: CallRow, attemptNo: number, result: AttemptCompletion) {
+  const attempt = row.attempts.find((item) => item.attemptNo === attemptNo);
+  if (!attempt) throw new Error('请求尝试不存在');
+  Object.assign(attempt, result, { finishedAt: new Date() });
+}
+
 export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
   const inputs = new Map<number, readonly ExperienceSnapshot[]>();
   const knowledgeInputs = new Map<number, readonly KnowledgeSnapshot[]>();
   return {
+    async finishAttempt(callId, attemptNo, result) {
+      const row = rows.find((item) => item.callId === callId);
+      if (!row) throw new Error('调用记录不存在');
+      finishAttempt(row, attemptNo, result);
+    },
     async captureCalls(captureId) {
       return { calls: structuredClone(rows.filter((row) => row.knowledgeCaptureId === captureId)) };
     },
@@ -299,6 +311,20 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
     },
     async append(gameId, asked) {
       assertAskedScope(gameId, asked.knowledgeVersionId, asked.knowledgeCaptureId);
+      if (asked.observation?.taskId) {
+        const completions = rows
+          .filter(
+            (row) =>
+              row.gameId === gameId &&
+              row.knowledgeVersionId === asked.knowledgeVersionId &&
+              row.knowledgeCaptureId === asked.knowledgeCaptureId &&
+              row.actionKey === asked.actionKey &&
+              row.summaryKey === (asked.summaryKey ?? null) &&
+              row.step === asked.observation!.step,
+          )
+          .map((row) => ({ row, result: interruptedCallFailure(row, row.attempts.at(-1)) }));
+        for (const { row, result } of completions) if (result) Object.assign(row, result);
+      }
       if (asked.observation && rows.some((row) => row.callId === asked.observation?.callId)) {
         throw new Error('调用编号重复');
       }
@@ -326,9 +352,7 @@ export function memoryAsked(rows: CallRow[] = []): AskedPromptStore {
           row.attempts.push(newAttemptRow(attemptNo));
         },
         async finishAttempt(attemptNo, result) {
-          const attempt = row.attempts.find((item) => item.attemptNo === attemptNo);
-          if (!attempt) throw new Error('请求尝试不存在');
-          Object.assign(attempt, result, { finishedAt: new Date() });
+          finishAttempt(row, attemptNo, result);
         },
       };
     },

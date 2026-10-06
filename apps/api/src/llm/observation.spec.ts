@@ -3,7 +3,7 @@ import { ModelCallError, type ModelAccess } from './model-port';
 import { openaiModelPort, type SendRequest } from './openai-model-port';
 import { recordingModelPort } from './recording-model-port';
 import { retryingModelPort } from './retrying-model-port';
-import { tokenUsage } from './observation';
+import { ModelObservationError, tokenUsage } from './observation';
 import { memoryStores } from '../store/memory';
 import { ask, askParsed } from '../turn/graph';
 import { parseStructured } from './structured-output';
@@ -293,6 +293,44 @@ describe('模型开销记录', () => {
       '观测写入失败',
     );
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(finish).toHaveBeenCalledTimes(1);
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('记账失败保留待补写用量，恢复原请求无需再次调用模型', async () => {
+    const fetch = jest.fn(async () =>
+      json({ value: 1 }, { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 }),
+    );
+    const { port, stores, rows } = await setup(fetch);
+    const append = stores.asked.append;
+    stores.asked.append = async (...args) => {
+      const recording = await append(...args);
+      return {
+        ...recording!,
+        finishAttempt: async () => {
+          throw new Error('用量写入失败');
+        },
+      };
+    };
+    const callIdentity = identity();
+    const error: unknown = await port
+      .generate(REQUEST, ACCESS, { identity: callIdentity })
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(ModelObservationError);
+    const pending = (error as ModelObservationError).pendingAttempt!;
+    expect(pending.result).toMatchObject({ status: 'succeeded', usage: { total_tokens: 5 } });
+    expect((await rows())[0].status).toBe('started');
+    await stores.asked.finishAttempt(callIdentity.callId, pending.attemptNo, pending.result);
+    await stores.asked.finishCall(callIdentity.callId, {
+      status: 'accepted',
+      failureCode: null,
+      durationMs: 1,
+    });
+    expect((await rows())[0]).toMatchObject({
+      status: 'accepted',
+      attempts: [
+        { status: 'succeeded', usage: { total_tokens: 5 }, finishedAt: expect.anything() },
+      ],
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -16,7 +16,7 @@ import type { GameState } from '../core/state';
 import { Prisma, PrismaClient } from '../generated/prisma/client';
 import type { ActionStore, StoredAction, StoredActionSummary } from './actions';
 import { DuplicateAgentNameError, type AgentStore, type StoredAgent } from './agents';
-import { assertAskedScope, type AskedPromptStore } from './asked';
+import { assertAskedScope, interruptedCallFailure, type AskedPromptStore } from './asked';
 import { prismaCheckpoints } from './checkpoints';
 import { EVENT_KINDS, type EventKind, type EventStore } from './events';
 import type { GameStore, RosterSeat, StoredGame } from './games';
@@ -26,6 +26,7 @@ import { prismaObservations } from './prisma-observations';
 import { prismaExperiences } from './prisma-experiences';
 import { prismaKnowledge } from './prisma-knowledge';
 import { prismaKnowledgeImports } from './prisma-knowledge-imports';
+import type { AttemptCompletion } from '../llm/observation';
 
 /** 连上对局库。调用方用完自己关。 */
 export function openPrismaClient(connectionString: string): PrismaClient {
@@ -433,7 +434,21 @@ export function prismaSteps(client: PrismaClient): StepStore {
  * 每次重新采样都生成新 callId；重复写入同一编号由唯一约束拦下。
  */
 export function prismaAsked(client: PrismaClient): AskedPromptStore {
+  async function finishAttempt(where: Prisma.ModelAttemptWhereInput, result: AttemptCompletion) {
+    const updated = await client.modelAttempt.updateMany({
+      where,
+      data: {
+        ...result,
+        usage: result.usage === null ? Prisma.DbNull : (result.usage as Prisma.InputJsonValue),
+        finishedAt: new Date(),
+      },
+    });
+    if (updated.count !== 1) throw new Error('请求尝试不存在');
+  }
   return {
+    async finishAttempt(callId, attemptNo, result) {
+      await finishAttempt({ askedPrompt: { callId }, attemptNo }, result);
+    },
     async captureCalls(captureId) {
       return KnowledgeCallsSchema.parse({
         calls: await client.askedPrompt.findMany({
@@ -512,6 +527,49 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
     },
     async append(gameId, asked) {
       assertAskedScope(gameId, asked.knowledgeVersionId, asked.knowledgeCaptureId);
+      if (asked.observation?.taskId) {
+        const prior = await client.askedPrompt.findMany({
+          where: {
+            gameId,
+            knowledgeVersionId: asked.knowledgeVersionId ?? null,
+            knowledgeCaptureId: asked.knowledgeCaptureId ?? null,
+            actionKey: asked.actionKey,
+            summaryKey: asked.summaryKey ?? null,
+            step: asked.observation.step,
+            OR: [
+              { status: { in: ['started', 'accepted'] } },
+              {
+                status: 'failed',
+                failureCode: 'internal',
+              },
+            ],
+          },
+          select: {
+            callId: true,
+            status: true,
+            failureCode: true,
+            attempts: {
+              orderBy: { attemptNo: 'desc' },
+              take: 1,
+              select: { status: true, dispatched: true, failureCode: true, finishedAt: true },
+            },
+          },
+        });
+        const completions = prior.map((row) => ({
+          callId: row.callId,
+          result: interruptedCallFailure(row, row.attempts[0]),
+        }));
+        await Promise.all(
+          completions.map(({ callId, result }) =>
+            result
+              ? client.askedPrompt.updateMany({
+                  where: { callId, status: 'started' },
+                  data: result,
+                })
+              : undefined,
+          ),
+        );
+      }
       const row = await client.askedPrompt.create({
         data: {
           gameId,
@@ -546,15 +604,7 @@ export function prismaAsked(client: PrismaClient): AskedPromptStore {
           await client.modelAttempt.create({ data: { askedPromptId: row.id, attemptNo } });
         },
         async finishAttempt(attemptNo, result) {
-          await client.modelAttempt.update({
-            where: { askedPromptId_attemptNo: { askedPromptId: row.id, attemptNo } },
-            data: {
-              ...result,
-              usage:
-                result.usage === null ? Prisma.DbNull : (result.usage as Prisma.InputJsonValue),
-              finishedAt: new Date(),
-            },
-          });
+          await finishAttempt({ askedPromptId: row.id, attemptNo }, result);
         },
       };
     },

@@ -1,6 +1,7 @@
 import {
   HealthResponseSchema,
   ReviewPreviewSchema,
+  ReviewProgressResponseSchema,
   ReviewResponseSchema,
   ReviewStartResponseSchema,
 } from '@werewolf/shared';
@@ -13,6 +14,7 @@ import {
   runGame,
   fetchReview,
   fetchReviewPreview,
+  fetchReviewProgress,
   startReview,
 } from './api-client';
 
@@ -41,9 +43,10 @@ describe('复盘接口装配', () => {
     vi.mocked(http.post).mockReset().mockResolvedValue({ status: 'waiting' });
   });
 
-  it('预览和报告仅 GET，使用对应的响应校验并传递取消信号', async () => {
+  it('预览、进度和报告仅 GET，使用对应的响应校验并传递取消信号', async () => {
     const signal = new AbortController().signal;
     await fetchReviewPreview('g-review', signal);
+    await fetchReviewProgress('g-review', signal);
     await fetchReview('g-review', signal);
     expect(http.get).toHaveBeenCalledWith('/games/g-review/review/preview', {
       schema: ReviewPreviewSchema,
@@ -51,6 +54,10 @@ describe('复盘接口装配', () => {
     });
     expect(http.get).toHaveBeenCalledWith('/games/g-review/review', {
       schema: ReviewResponseSchema,
+      signal,
+    });
+    expect(http.get).toHaveBeenCalledWith('/games/g-review/review/progress', {
+      schema: ReviewProgressResponseSchema,
       signal,
     });
   });

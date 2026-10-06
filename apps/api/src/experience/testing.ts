@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ExperienceResult } from '@werewolf/shared';
 import { memoryStores } from '../store/memory';
-import { localPromptSource } from '../prompts/template';
+import { LOCAL_PROMPTS } from '../prompts/catalog';
 import type { ModelPort } from '../llm/model-port';
 import { responseOf } from '../testing/model';
 import { experiencePrompts } from './prompt';
@@ -31,7 +31,17 @@ export const access = {
   apiKey: '测试',
   capability: { reasoningOff: null },
 };
-export const promptSource = localPromptSource({});
+export const promptSource = LOCAL_PROMPTS;
+
+export function failNextAttemptObservation(stores: GameStores) {
+  const append = stores.asked.append.bind(stores.asked);
+  jest.spyOn(stores.asked, 'append').mockImplementationOnce(async (...args) => ({
+    ...(await append(...args))!,
+    async finishAttempt() {
+      throw new Error('模拟用量写入失败');
+    },
+  }));
+}
 
 export function vectorRuntime(
   vector: number[] | ((text: string) => number[]) = [1, 0],

@@ -10,6 +10,9 @@ import { runActionGraph } from '../turn/graph';
 import { actionKeyOf, type ActionRequest, type TurnContext } from '../turn/request';
 import { Prisma, type PrismaClient } from '../generated/prisma/client';
 import { prismaCheckpoints } from './checkpoints';
+import { memoryStores } from './memory';
+import { recordingModelPort } from '../llm/recording-model-port';
+import { controlledPort } from '../experience/testing';
 
 type Row = Record<string, unknown>;
 
@@ -169,6 +172,47 @@ function saverOn(client: FakeClient) {
 }
 
 describe('行动图的进度落在对局库里', () => {
+  it('观测失败后的原答复可从重新创建的数据库 saver 恢复', async () => {
+    const client = new FakeClient();
+    const stores = memoryStores();
+    await stores.games.open({ gameId: SCOPE.gameId, boardId: 'test', roster: [] });
+    const input = request({ preset: 'quick' });
+    const append = stores.asked.append.bind(stores.asked);
+    jest.spyOn(stores.asked, 'append').mockImplementationOnce(async (...args) => ({
+      ...(await append(...args))!,
+      async finishAttempt() {
+        throw new Error('用量写入失败');
+      },
+    }));
+    const runtime = {
+      ...withModel([]).runtime,
+      asked: stores.asked,
+      port: recordingModelPort(controlledPort(DECIDED), (asked) =>
+        stores.asked.append(SCOPE.gameId, { ...asked, actionKey: actionKeyOf(input) }),
+      ),
+    };
+    await expect(runActionGraph(runtime, input, { saver: saverOn(client) })).rejects.toThrow(
+      '模型观测写入失败',
+    );
+    const recovered = new FakeClient();
+    recovered.checkpoints.push(...(JSON.parse(JSON.stringify(client.checkpoints)) as Row[]));
+    recovered.writes.push(...(JSON.parse(JSON.stringify(client.writes)) as Row[]));
+    const generate = jest.fn().mockRejectedValue(new Error('不应再次请求模型'));
+    const result = await runActionGraph({ ...runtime, port: { generate } }, input, {
+      saver: saverOn(recovered),
+      resume: true,
+    });
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.decision).toEqual(JSON.parse(DECIDED));
+    const calls = (await stores.observations.read(SCOPE.gameId))!.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      callId: result.snapshot.sourceCallId,
+      status: 'accepted',
+      attempts: [{ status: 'succeeded', usageComplete: true }],
+    });
+  });
+
   it('查询历史在库内过滤和限量，并批量读取分支结果', async () => {
     const client = new FakeClient();
     const saver = saverOn(client);

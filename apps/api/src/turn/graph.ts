@@ -4,6 +4,7 @@ import {
   START,
   StateGraph,
   StateSchema,
+  task as checkpointTask,
   type LangGraphRunnableConfig,
 } from '@langchain/langgraph';
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint';
@@ -27,6 +28,8 @@ import {
 import { actionKeyOf, decisionSchemaJson, type ActionRequest, type TurnRuntime } from './request';
 import type { Critique, DecisionSnapshot } from './snapshot';
 import { observeOperation, telemetry } from '../llm/telemetry';
+import type { AskedPromptStore } from '../store/asked';
+import { checkpointedCall, resumeFormatBudget } from './checkpointed-call';
 
 /** 一次行动交出去的东西。 */
 export interface TurnOutcome {
@@ -62,6 +65,8 @@ const TurnState = new StateSchema({
     reducer: (current, update) => current + update,
   }),
 });
+
+const ACTION_NODES = ['generate', 'critique', 'revise', 'finalize'];
 
 type TurnStateValue = typeof TurnState.State;
 
@@ -132,6 +137,7 @@ function previewFor(
 export interface Answer {
   callId?: string;
   completeObservation?: ModelResponse['completeObservation'];
+  resumeFormatBudget?: () => Promise<boolean>;
   thinkingMs?: number;
   content: string;
   reasoning: string | null;
@@ -161,39 +167,46 @@ export async function ask(
   identity?: Omit<CallIdentity, 'callId'>,
   signal?: AbortSignal,
   onResponse?: (answer: Answer) => void,
+  asked?: AskedPromptStore,
 ): Promise<Answer> {
   if (signal?.aborted) throw new ModelCallError('deadline', '这次调用已被中止');
-  const callId = randomUUID();
-  const response = await port.generate(
-    {
-      system: turn.system.text,
-      prompt: turn.user.text,
-      tool,
-      experiences: turn.experiences,
-      knowledge: turn.knowledge,
-      prompts: [turn.system, turn.user].map(({ template, version, source }) => ({
-        name: template,
-        version,
-        source,
-      })),
-    },
-    access,
-    // 走工具的那几问只会收到思考：正文那一头本来就是空的。
-    {
-      signal,
-      ...(onResponse
-        ? { onResponse: (received: ModelResponse) => onResponse(answerOf(received, callId, tool)) }
-        : {}),
-      identity: {
-        executionId: randomUUID(),
-        step: 'summary',
-        formatAttempt: 1,
-        ...identity,
-        callId,
+  const invoke = (callId: string, received: (response: ModelResponse) => void) =>
+    port.generate(
+      {
+        system: turn.system.text,
+        prompt: turn.user.text,
+        tool,
+        experiences: turn.experiences,
+        knowledge: turn.knowledge,
+        prompts: [turn.system, turn.user].map(({ template, version, source }) => ({
+          name: template,
+          version,
+          source,
+        })),
       },
-      ...(stream ? { onDelta: (delta: StreamDelta) => stream({ callId, ...delta }) } : {}),
-    },
-  );
+      access,
+      // 走工具的那几问只会收到思考：正文那一头本来就是空的。
+      {
+        signal,
+        onResponse: received,
+        identity: {
+          executionId: randomUUID(),
+          step: 'summary',
+          formatAttempt: 1,
+          ...identity,
+          callId,
+        },
+        ...(stream ? { onDelta: (delta: StreamDelta) => stream({ callId, ...delta }) } : {}),
+      },
+    );
+  const receive = (response: ModelResponse, callId: string) =>
+    onResponse?.(answerOf(response, callId, tool));
+  if (asked) {
+    const response = await checkpointedCall(asked, invoke, receive);
+    return { ...answerOf(response, response.callId, tool), resumeFormatBudget };
+  }
+  const callId = randomUUID();
+  const response = await invoke(callId, (value) => receive(value, callId));
   return answerOf(response, callId, tool);
 }
 
@@ -290,7 +303,13 @@ export async function askParsed<T>(
       );
       // 只认带诊断的那一个：拿不出「错在哪一类」，重问的题面就跟上一次一字不差，白问。
       if (!(error instanceof InvalidOutputError)) throw error;
-      if (attempt >= INVALID_OUTPUT_RETRIES) throw error;
+      if (attempt >= INVALID_OUTPUT_RETRIES) {
+        if (!(await answer.resumeFormatBudget?.())) throw error;
+        attempt = -1;
+        note = null;
+        thinkingMs = undefined;
+        continue;
+      }
       note = noteOf(answer.content, error.diagnosis);
       continue;
     }
@@ -392,11 +411,9 @@ async function generateNode(
   if (control?.generated) return control.generated.values;
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
-  const turn = await renderGenerate(
-    promptSource,
-    request.context,
-    decisionSchemaJson(request.schema),
-  );
+  const turn = await checkpointTask('turn.prompt', () =>
+    renderGenerate(promptSource, request.context, decisionSchemaJson(request.schema)),
+  )();
   const tool = toolFor(request);
   const stream = previewFor(request, 'generate', preview);
   const generated = (
@@ -441,6 +458,7 @@ async function generateNode(
         },
         control?.signal,
         received,
+        runtime.asked,
       ),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
@@ -475,12 +493,14 @@ async function critiqueNode(
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
   // 形状给工具那一份，和草稿同一层；给内层 schema 的话，多出来的壳会被判成形式错误。
-  const turn = await renderCritique(
-    promptSource,
-    request.context,
-    state.draft,
-    toolFor(request)?.parameters ?? null,
-  );
+  const turn = await checkpointTask('turn.prompt', () =>
+    renderCritique(
+      promptSource,
+      request.context,
+      state.draft,
+      toolFor(request)?.parameters ?? null,
+    ),
+  )();
   const stream = previewFor(request, 'critique', preview);
   const { parsed, retries, reasoning, thinkingMs } = await askParsed(
     (note, formatAttempt) =>
@@ -491,6 +511,9 @@ async function critiqueNode(
         toolOf(CRITIQUE_SCHEMA, '这次质疑的结论'),
         stream,
         { ...identity, formatAttempt },
+        undefined,
+        undefined,
+        runtime.asked,
       ),
     (content) => parseStructured(content, CRITIQUE_SCHEMA, '质疑的结论'),
     // 质疑那一问没有候选，重试提示只说明格式问题。
@@ -521,26 +544,30 @@ async function reviseNode(
 ): Promise<Partial<TurnStateValue>> {
   const identity = executionIdentity('revise', config);
   if (!state.verdict) throw new Error('走到修订却没有质疑结论');
+  const verdict = state.verdict;
 
   const { runtime, request } = config.context!;
   const { port, accessFor, promptSource, preview } = runtime;
   const access = accessFor(request.context.actor.seatNo);
   const schemaJson = decisionSchemaJson(request.schema);
-  const turn = await renderRevise(
-    promptSource,
-    request.context,
-    state.draft,
-    state.verdict.issues,
-    schemaJson,
-  );
+  const turn = await checkpointTask('turn.prompt', () =>
+    renderRevise(promptSource, request.context, state.draft, verdict.issues, schemaJson),
+  )();
   const tool = toolFor(request);
   const stream = previewFor(request, 'revise', preview);
   const { content, reasoning, parsed, retries, thinkingMs, callId } = await askParsed(
     (note, formatAttempt) =>
-      ask(port, access, note === null ? turn : noted(turn, note), tool, stream, {
-        ...identity,
-        formatAttempt,
-      }),
+      ask(
+        port,
+        access,
+        note === null ? turn : noted(turn, note),
+        tool,
+        stream,
+        { ...identity, formatAttempt },
+        undefined,
+        undefined,
+        runtime.asked,
+      ),
     (draft) => parseDecision(request, draft),
     (raw, diagnosis) => retryNote(request.context.options, raw, diagnosis, true),
   );
@@ -772,6 +799,8 @@ export async function runActionGraph(
     })) {
       if (mode === 'values') {
         outcome = data.outcome;
+      } else if (!ACTION_NODES.includes(data.name)) {
+        continue;
       } else if ('input' in data) {
         active = data;
         emit(data, 'running');
@@ -800,7 +829,7 @@ export async function actionSteps(saver: BaseCheckpointSaver, key: string): Prom
   for await (const snapshot of graph.getStateHistory({ configurable: { thread_id: key } })) {
     const nextValues = advanced.get(snapshot.config.configurable?.checkpoint_id as string);
     for (const task of snapshot.tasks) {
-      if (task.name === START) continue;
+      if (!ACTION_NODES.includes(task.name)) continue;
       if (steps.has(task.id)) continue;
       // 续跑后旧任务可能还带着 error；后继检查点已提交才是完成的依据。
       const result = (nextValues ?? task.result) as Partial<TurnStateValue> | undefined;

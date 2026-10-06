@@ -212,6 +212,7 @@ export function modelActions(
   function logged(key: string | null, summaryKey?: string): TurnRuntime {
     return {
       ...runtime,
+      asked: stores.asked,
       port: recordingModelPort(
         runtime.port,
         (asked) =>
@@ -273,14 +274,21 @@ export function modelActions(
       const channel = SUMMARY_CHANNELS[task.kind];
       if (!channel) throw new Error(`不是摘要的类别：${task.kind}`);
 
-      const items = await summarize(logged(null, task.key), {
-        day: task.day,
-        channel: channel.title,
-        speeches: task.speeches.map((said) => ({
-          seatNo: seatNoOf(said.actorId),
-          lines: said.lines,
-        })),
-      });
+      const items = await summarize(
+        logged(null, task.key),
+        {
+          day: task.day,
+          channel: channel.title,
+          speeches: task.speeches.map((said) => ({
+            seatNo: seatNoOf(said.actorId),
+            lines: said.lines,
+          })),
+        },
+        {
+          saver: stores.checkpoints,
+          threadId: JSON.stringify([stateNow().gameId, 'summary', task.key]),
+        },
+      );
 
       // 一天一条，正文里每人一行：明细那几行已经折掉了，读到的就是这几行。
       await facts.addSummary(
@@ -470,6 +478,7 @@ export function modelActions(
                   retrieval,
                   runtime.embedding,
                   { port: runtime.port, access: runtime.accessFor(actor.seatNo) },
+                  input.control?.signal,
                 );
                 request.context = {
                   ...request.context,
@@ -590,13 +599,19 @@ export function modelActions(
     },
 
     async speak(round, playerId, order) {
+      const position = order.indexOf(playerId);
+      const seatOrder = order.map((id) => `${seatNoOf(id)} 号`);
       return ask({
         actionType: ACTION_TYPES.SPEECH,
         actorId: playerId,
-        task: `${SPEECH_TASKS[round]}发言前，先在心里核对这次会引用的关键原话：谁在何时向谁说，原句是在解释过去、提醒现在还是提出条件计划。随后按你的立场表达；若故意歪曲或伪装，自己仍记住原意。`,
+        task: `${SPEECH_TASKS[round]}先按你的立场拟好发言，交付前逐项核对其中作为依据的事实性指控：当事人原话是否支持你新增的先后、条件和因果？把某人的态度说成对后续信息的回应，须有他在该信息出现后的原始发言或行动；判断未回应、未改口，须先确认已有相应机会。他人转述不能替代当事人的记录。若记录只有先前立场，就按先前立场描述，不补后续反应；删去无依据的理由不要求改变策略。若故意歪曲或伪装，自己仍分清真实记录与编造。`,
         shape: 'speech',
         scenario: 'day_speech',
-        extra: [`本轮发言顺序：${order.map((id) => `${seatNoOf(id)} 号`).join('、')}。`],
+        extra: [
+          `本轮发言顺序：${seatOrder.join('、')}。`,
+          `本轮已发言：${seatOrder.slice(0, position).join('、') || '没有'}。当前轮到你（${seatNoOf(playerId)} 号）发言；后续发言：${seatOrder.slice(position + 1).join('、') || '没有'}。`,
+          '本轮每人只发言一次，前置玩家没有在后置新信息出现后再次回应的机会。引用其态度以本人原话为准，不能把尚未改口当成听到新信息后仍坚持原判断。',
+        ],
         fact: (content) =>
           publicFact(
             EVENT_KINDS.PUBLIC_SPEECH,
