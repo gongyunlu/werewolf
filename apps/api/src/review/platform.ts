@@ -16,6 +16,20 @@ export interface ReviewProfile {
   ruleId: string;
   fingerprint: string;
 }
+export interface ReviewFailure {
+  id: string;
+}
+export class ReviewPendingError extends Error {
+  constructor() {
+    super('Langfuse 评价尚未返回，继续等待原任务');
+  }
+}
+/** 平台侧判定失败；同一单元可以重新投递。 */
+export class ReviewFailedError extends Error {
+  constructor() {
+    super('Langfuse 原生评价执行失败，请在平台核查后续跑');
+  }
+}
 export interface PlatformGeneration {
   id: string;
   model: string | null;
@@ -34,7 +48,12 @@ export interface ReviewPlatform {
   exists(unit: ReviewUnit): Promise<boolean>;
   submit(unit: ReviewUnit): Promise<void>;
   result(unit: ReviewUnit, profile: ReviewProfile): Promise<ReviewAnalysis | null>;
-  wait(unit: ReviewUnit, profile: ReviewProfile): Promise<ReviewAnalysis>;
+  failure(unit: ReviewUnit, profile: ReviewProfile): Promise<ReviewFailure | null>;
+  wait(
+    unit: ReviewUnit,
+    profile: ReviewProfile,
+    ignoredFailureId?: string,
+  ): Promise<ReviewAnalysis>;
   generations(unit: ReviewUnit, profile: ReviewProfile): Promise<PlatformGeneration[]>;
 }
 
@@ -67,6 +86,22 @@ interface Rule {
 }
 
 const attribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
+
+function latestFailure(trace: PlatformTrace | null): ReviewFailure | null {
+  const observations = trace?.observations ?? [];
+  const latest = Math.max(
+    ...observations.map((item) => Date.parse(item.endTime ?? item.startTime)),
+  );
+  // 外层解析也可能失败；已经开始的新执行不能被历史错误覆盖。
+  const failed = observations.find(
+    (item) =>
+      item.type === 'SPAN' &&
+      item.endTime &&
+      item.level === 'ERROR' &&
+      Date.parse(item.endTime) === latest,
+  );
+  return failed ? { id: JSON.stringify([failed.id, failed.endTime]) } : null;
+}
 
 /** 当前部署的 4.15 管理接口；不回退到其他 API 或本地模型。 */
 export class LangfuseReviewPlatform implements ReviewPlatform {
@@ -224,25 +259,25 @@ export class LangfuseReviewPlatform implements ReviewPlatform {
     return analysisOf(unit, score.comment, score.id, score.executionTraceId);
   }
 
-  async wait(unit: ReviewUnit, profile: ReviewProfile): Promise<ReviewAnalysis> {
+  async failure(unit: ReviewUnit, profile: ReviewProfile): Promise<ReviewFailure | null> {
+    if (await this.result(unit, profile)) return null;
+    return latestFailure(await this.executionTrace(unit, profile));
+  }
+
+  async wait(
+    unit: ReviewUnit,
+    profile: ReviewProfile,
+    ignoredFailureId?: string,
+  ): Promise<ReviewAnalysis> {
     const deadline = Date.now() + 120_000;
     do {
       const result = await this.result(unit, profile);
       if (result) return result;
-      const observations = (await this.executionTrace(unit, profile))?.observations ?? [];
-      const latest = Math.max(
-        ...observations.map((item) => Date.parse(item.endTime ?? item.startTime)),
-      );
-      // 生成成功后仍可能在外层解析失败；较早的失败不能覆盖后来开始的执行。
-      if (
-        observations.some(
-          (item) => item.endTime && item.level === 'ERROR' && Date.parse(item.endTime) === latest,
-        )
-      )
-        throw new Error('Langfuse 原生评价执行失败，请在平台核查后续跑');
+      const failure = latestFailure(await this.executionTrace(unit, profile));
+      if (failure && failure.id !== ignoredFailureId) throw new ReviewFailedError();
       await setTimeout(2_000);
     } while (Date.now() < deadline);
-    throw new Error('Langfuse 评价尚未返回；续跑会继续读取，不能重复投递');
+    throw new ReviewPendingError();
   }
 
   async generations(unit: ReviewUnit, profile: ReviewProfile): Promise<PlatformGeneration[]> {

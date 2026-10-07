@@ -70,7 +70,10 @@ export class ReviewController {
     if ((await readReviewState(this.stores, gameId))?.completedAt) return { status: 'completed' };
     const job = await this.queue.getJob(gameId);
     if (job) {
-      if (await job.isFailed()) await job.retry('failed');
+      if (await job.isFailed()) {
+        await job.updateData({ ...job.data, retryFailed: true });
+        await job.retry('failed');
+      }
       return { status: await job.getState() };
     } else {
       // 保留完成的任务，重复提交由队列的唯一 id 合并；失败续跑不删除再入队。

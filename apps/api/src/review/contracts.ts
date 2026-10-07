@@ -62,9 +62,12 @@ export function analysisOf(
   executionTraceId: string,
 ): ReviewAnalysis {
   const citation = /\[(?:证据:([^\]]*)|([A-Z][^\]]*))\]/g;
-  const explicit = [...text.matchAll(citation)].map((match) => match[1] ?? match[2]!);
-  const bare = [...text.matchAll(/\b([EDO]\d+(?:-[EDO]\d+)?)\b/g)].map((match) => match[1]!);
+  // 模型会把多条证据塞进一个括号，斜杠拆开后逐条定位。
+  const explicit = [...text.matchAll(citation)].flatMap((match) =>
+    (match[1] ?? match[2]!).split('/'),
+  );
   const prefix = unit.step === 'review_player' ? 'D' : unit.step === 'review_outcome' ? 'O' : 'E';
+  const bare = [...text.matchAll(/\b([EDO]\d+(?:-[EDO]\d+)?)\b/g)].map((match) => match[1]!);
   const sources = new Map(
     unit.sources.map((source, index) => [`${prefix}${index + 1}`, source.id]),
   );
@@ -80,16 +83,13 @@ export function analysisOf(
     if (!range) return [label];
     const start = Number(range[2]);
     const end = Number(range[3]);
-    if (range[1] !== prefix || start > end || end > unit.sources.length)
-      throw new Error('平台复盘引用超出本次证据范围');
+    if (range[1] !== prefix || start > end || end > unit.sources.length) return [];
     return Array.from({ length: end - start + 1 }, (_, index) => `${prefix}${start + index}`);
   };
-  // 嵌套引用定位到所属决定，范围引用逐项校验；原正文和既有显式映射不变。
-  const labels = [...new Set((explicit.length ? explicit : bare).flatMap(expand))];
+  // 编号写错不牵连整段正文：定位不到的丢掉，映射里只留冻结证据中的来源。
+  const claimed = (explicit.length ? explicit : bare).flatMap(expand);
+  const labels = [...new Set(claimed.filter((label) => sources.has(label)))];
   if (!text.trim() || labels.length === 0) throw new Error('平台复盘缺少正文或证据引用');
-  for (const label of [...explicit, ...bare].flatMap(expand)) {
-    if (!sources.has(label)) throw new Error('平台复盘引用超出本次证据范围');
-  }
   const references = labels.map((label) => ({ label, sourceId: sources.get(label)! }));
   return { text, references, scoreId, executionTraceId };
 }

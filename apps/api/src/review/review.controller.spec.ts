@@ -18,6 +18,8 @@ describe('手动复盘接口', () => {
     state = 'waiting';
   });
   const job = {
+    data: { gameId: 'g' },
+    updateData: jest.fn(async () => {}),
     getState: async () => state,
     isFailed: async () => state === 'failed',
     retry,
@@ -125,6 +127,7 @@ describe('手动复盘接口', () => {
       .set('x-admin-token', TOKEN)
       .expect(201);
     expect(retry).toHaveBeenCalledWith('failed');
+    expect(job.updateData).toHaveBeenCalledWith({ gameId: 'g', retryFailed: true });
     expect(queue.add).not.toHaveBeenCalled();
   });
 

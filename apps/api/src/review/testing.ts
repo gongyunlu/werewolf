@@ -5,7 +5,7 @@ import { memoryStores } from '../store/memory';
 import type { ActionIntent } from '../store/actions';
 import type { GameStores } from '../store/stores';
 import { analysisOf, unitInput, type ReviewAnalysis, type ReviewUnit } from './contracts';
-import type { ReviewPlatform, ReviewProfile } from './platform';
+import type { ReviewFailure, ReviewPlatform, ReviewProfile } from './platform';
 
 export async function reviewFixture(
   gameId = 'g',
@@ -88,6 +88,7 @@ export function fakeReviewPlatform() {
   };
   const platform = {
     profile: jest.fn(async () => profile),
+    failure: jest.fn(async (): Promise<ReviewFailure | null> => null),
     exists: jest.fn(async (unit: ReviewUnit) => inputs.has(unit.key)),
     submit: jest.fn(async (unit: ReviewUnit) => {
       inputs.set(unit.key, structuredClone(unit));

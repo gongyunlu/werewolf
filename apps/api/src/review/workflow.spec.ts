@@ -156,6 +156,107 @@ describe('Langfuse 复盘编排', () => {
     expect(platform.submit).toHaveBeenCalledTimes(1);
   });
 
+  it('明确解析失败后手动续跑原生评价，先保存重试标记并复用原输入', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValueOnce(
+      new Error('No object generated: could not parse the response.'),
+    );
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('could not parse');
+    const pending = (await readReviewState(stores, 'g'))!.pending!;
+    platform.failure.mockResolvedValueOnce({ id: 'failed/1' });
+    platform.submit.mockImplementationOnce(async (unit) => {
+      expect((await readReviewState(stores, 'g'))!.retryFailureId).toBe('failed/1');
+      expect(unit).toEqual(pending);
+    });
+    expect((await runReview(stores, 'g', platform))!.completedAt).not.toBeNull();
+    expect(platform.submit.mock.calls.map(([unit]) => unit.key)).toEqual([
+      'decision/a',
+      'decision/a',
+      'player/p1',
+      'outcome',
+    ]);
+    expect(platform.wait).toHaveBeenNthCalledWith(2, pending, expect.anything(), 'failed/1');
+    expect((await readReviewState(stores, 'g'))!.retryFailureId).toBeNull();
+  });
+
+  it('重试响应丢失后即使旧失败仍可见也只读取，不重复投递', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValue(new Error('尚未看到新结果'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('尚未看到');
+    platform.failure.mockResolvedValue({ id: 'failed/1' });
+    platform.submit.mockRejectedValueOnce(new Error('重试响应丢失'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('重试响应丢失');
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('尚未看到');
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('尚未看到');
+    expect(platform.submit).toHaveBeenCalledTimes(2);
+    expect(platform.wait).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'failed/1',
+    );
+  });
+
+  it('只有观察到新的明确失败才允许下一次重投，单次运行不循环重试', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValue(new Error('原生评价失败'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    platform.failure.mockResolvedValue({ id: 'failed/1' });
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    expect(platform.submit).toHaveBeenCalledTimes(2);
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    expect(platform.submit).toHaveBeenCalledTimes(2);
+    platform.failure.mockResolvedValue({ id: 'failed/2' });
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    expect(platform.submit).toHaveBeenCalledTimes(3);
+    expect((await readReviewState(stores, 'g'))!.retryFailureId).toBe('failed/2');
+  });
+
+  it('判定失败自动重投同一个单元，额度用完后停下等人工续跑', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValue(new Error('原生评价失败'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    let attempt = 0;
+    platform.failure.mockImplementation(async () => ({ id: `failed/${++attempt}` }));
+    // 轮数写死：额度被改大时用例只会报错，不会空转。
+    for (let round = 0; round < 3; round++)
+      await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    expect(platform.submit).toHaveBeenCalledTimes(4);
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('连续失败');
+    expect(platform.submit).toHaveBeenCalledTimes(4);
+    // 停手时把额度还回去，用户续跑重新拿到完整额度。
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('原生评价失败');
+    expect(platform.submit).toHaveBeenCalledTimes(5);
+  });
+
+  it('队列延迟续读时即使平台刚刚失败也不自动重投模型', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValue(new Error('尚未完成'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('尚未完成');
+    platform.failure.mockResolvedValue({ id: 'failed/1' });
+    await expect(runReview(stores, 'g', platform, false)).rejects.toThrow('尚未完成');
+    expect(platform.failure).not.toHaveBeenCalled();
+    expect(platform.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('重试前必须核对原始提交记录，记录缺失或证据被改写时停止', async () => {
+    const { stores } = await reviewFixture();
+    const { platform } = fakePlatform();
+    platform.wait.mockRejectedValueOnce(new Error('解析失败'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('解析失败');
+    platform.failure.mockResolvedValue({ id: 'failed/1' });
+    platform.exists.mockResolvedValueOnce(false);
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('提交状态未知');
+    platform.exists.mockRejectedValueOnce(new Error('平台证据不一致'));
+    await expect(runReview(stores, 'g', platform)).rejects.toThrow('证据不一致');
+    expect(platform.submit).toHaveBeenCalledTimes(1);
+    expect((await readReviewState(stores, 'g'))!.retryFailureId).toBeNull();
+  });
+
   it('平台改写已接受正文时读取报错，不以本地旧报告冒充平台结果', async () => {
     const { stores } = await reviewFixture();
     const { platform } = fakePlatform();

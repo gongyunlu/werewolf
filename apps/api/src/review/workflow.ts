@@ -30,6 +30,8 @@ interface Receipt extends UnitIdentity {
   scoreId: string;
   hash: string;
 }
+/** 同一单元判定失败后自动重投的次数上限，用完停下等人工。 */
+export const REVIEW_RETRY_LIMIT = 3;
 const PreparedState = new StateSchema({
   prepared: z.custom<PreparedReview | null>().default(null),
 });
@@ -37,6 +39,8 @@ const PrepareContext = z.object({ gameId: z.string(), profile: z.custom<ReviewPr
 const ReviewState = new StateSchema({
   receipts: z.array(z.custom<Receipt>()).default(() => []),
   pending: z.custom<ReviewUnit | null>().default(null),
+  retryFailureId: z.string().nullable().default(null),
+  retries: z.number().default(0),
   completedAt: z.string().nullable().default(null),
 });
 const Runtime = z.object({
@@ -169,8 +173,7 @@ async function decisionResults(
 }
 
 /** 平台负责模型与结果；这里只保存提交凭据并编排有依赖的输入。 */
-function reviewGraph(stores: GameStores) {
-  const newClaims = new Set<string>();
+function reviewGraph(stores: GameStores, newClaims = new Set<string>()) {
   return new StateGraph(ReviewState, { context: Runtime })
     .addNode('claim', async (state, config: ReviewConfig) => {
       const { prepared, platform } = config.context!;
@@ -223,12 +226,14 @@ function reviewGraph(stores: GameStores) {
     .addNode('collect', async (state, config: ReviewConfig) => {
       const { prepared, platform } = config.context!;
       const unit = state.pending!;
-      const result = await platform.wait(unit, prepared.profile);
+      const result = await platform.wait(unit, prepared.profile, state.retryFailureId ?? undefined);
       if (!isDeepStrictEqual(prepared.profile, await platform.profile()))
         throw new Error('Langfuse 评价配置已改变，不能混合版本续跑');
       const { key, step, traceId, spanId, createdAt } = unit;
       return {
         pending: null,
+        retryFailureId: null,
+        retries: 0,
         receipts: [
           ...state.receipts,
           {
@@ -262,6 +267,8 @@ export async function readReviewState(stores: GameStores, gameId: string) {
         ...prepared,
         receipts: [] as Receipt[],
         pending: null as ReviewUnit | null,
+        retryFailureId: null as string | null,
+        retries: 0,
         completedAt: null as string | null,
         ...(state.values as Partial<typeof ReviewState.State>),
       }
@@ -315,6 +322,7 @@ export async function runReview(
   stores: GameStores,
   gameId: string,
   platform: ReviewPlatform = reviewPlatform(),
+  retryFailed = true,
 ) {
   const saved = await readReviewState(stores, gameId);
   if (saved?.completedAt) return readReview(stores, gameId, platform);
@@ -330,14 +338,32 @@ export async function runReview(
     ).prepared!;
   if (!isDeepStrictEqual(prepared.profile, profile))
     throw new Error('Langfuse 评价配置已改变，不能混合版本续跑');
-  await reviewGraph(stores).invoke(
-    (await stores.checkpoints.getTuple(configOf(gameId))) ? null : {},
-    {
-      ...configOf(gameId),
-      context: { prepared, platform },
-      durability: 'sync',
-      recursionLimit: specsOf(prepared.evidence).length * 3 + 2,
-    },
-  );
+  const newClaims = new Set<string>();
+  const graph = reviewGraph(stores, newClaims);
+  if (retryFailed && saved?.pending) {
+    const failure = await platform.failure(saved.pending, profile);
+    if (failure && failure.id !== saved.retryFailureId) {
+      if (saved.retries >= REVIEW_RETRY_LIMIT) {
+        // 停手等人；额度还回去，用户续跑会重新拿到完整额度。
+        await graph.updateState(configOf(gameId), { retryFailureId: null, retries: 0 }, 'claim');
+        throw new Error(`Langfuse 原生评价连续失败 ${REVIEW_RETRY_LIMIT} 次，请核查平台后续跑`);
+      }
+      if (!(await platform.exists(saved.pending)))
+        throw new Error('复盘提交状态未知；请核查 Langfuse 接收记录，续跑不会重复投递');
+      // 先记下本次失败已获准重试；进程中断或响应丢失后不能再次投递同一次失败。
+      await graph.updateState(
+        configOf(gameId),
+        { retryFailureId: failure.id, retries: saved.retries + 1 },
+        'claim',
+      );
+      newClaims.add(saved.pending.key);
+    }
+  }
+  await graph.invoke((await stores.checkpoints.getTuple(configOf(gameId))) ? null : {}, {
+    ...configOf(gameId),
+    context: { prepared, platform },
+    durability: 'sync',
+    recursionLimit: specsOf(prepared.evidence).length * 3 + 2,
+  });
   return readReview(stores, gameId, platform);
 }

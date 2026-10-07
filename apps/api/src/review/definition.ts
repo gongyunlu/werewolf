@@ -14,7 +14,9 @@ review_player：从全部原始 evidence 还原玩家过程，再参考 assessme
 review_outcome：用终局、实际事件和本局规则解释胜负与转折；区分提交、实际结算和玩家当时的判断，不以全知视角苛责玩家，也不以输赢替代策略分析。
 context/day 是游戏日，context/visible 是当时可见材料；schema 是完整合法选项，options 只列目标。玩家声称的查验、身份或行动计划，不等于系统确认或已经执行；建议限于真实存在的行动窗口。
 正文写入 reasoning，简洁说明过程、评价和建议，不凑优缺点或重复铺陈规则。关键事实附来源：单步 [E1]，玩家 [D1]（细分可写 [D1-E2]），全局 [O1]；范围引用需同层且连续。
-score 只标记材料是否足以分析，不评价玩家等级。材料如下：
+score 只标记材料是否足以分析，不评价玩家等级。
+输出必须是一个完整的 JSON 对象，同时包含 reasoning 和 score 两个字符串字段。格式示例：{"reasoning":"带来源引用的中文复盘正文","score":"可分析"}。score 只能是“可分析”或“证据不足”。不得省略 score，不得将两个字段拆成多个 JSON 对象，不要输出代码块或对象以外的内容。
+材料如下：
 {{input}}`,
   outputDefinition: {
     dataType: 'CATEGORICAL',

@@ -1,4 +1,10 @@
-import { LangfuseReviewPlatform, reviewFilter, type ReviewProfile } from './platform';
+import {
+  LangfuseReviewPlatform,
+  ReviewFailedError,
+  ReviewPendingError,
+  reviewFilter,
+  type ReviewProfile,
+} from './platform';
 import { REVIEW_VERSION, unitInput, type ReviewUnit } from './contracts';
 
 const profile: ReviewProfile = {
@@ -158,8 +164,25 @@ it('模型生成完成但外层评价解析失败时立即报错，不误报为�
         ],
       }),
     );
-  await expect(platform().wait(unit, profile)).rejects.toThrow('原生评价执行失败');
+  await expect(platform().wait(unit, profile)).rejects.toBeInstanceOf(ReviewFailedError);
   expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it('等待窗口结束只报告仍在等待，不把未返回的评价判为执行失败', async () => {
+  jest.useFakeTimers();
+  try {
+    fetchMock.mockImplementation(async (url) =>
+      reply(new URL(url.toString()).pathname.includes('/scores') ? page([]) : { observations: [] }),
+    );
+    const waiting = expect(platform().wait(unit, profile)).rejects.toBeInstanceOf(
+      ReviewPendingError,
+    );
+    await jest.advanceTimersByTimeAsync(120_000);
+    await waiting;
+    expect(fetchMock.mock.calls.every(([, options]) => options!.method === 'GET')).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('更晚的执行已开始时不把历史失败当作本次失败，也不自行重投', async () => {
@@ -198,6 +221,84 @@ it('更晚的执行已开始时不把历史失败当作本次失败，也不自�
       ),
     );
   expect((await platform().wait(unit, profile)).scoreId).toBe('score');
+  expect(fetchMock.mock.calls.every(([, options]) => options!.method === 'GET')).toBe(true);
+});
+
+it('只把没有结果且最新执行明确结束的错误作为可重试失败', async () => {
+  const failed = {
+    id: 'failed',
+    type: 'SPAN',
+    level: 'ERROR',
+    startTime: '2026-09-25T00:00:00Z',
+    endTime: '2026-09-25T00:00:30Z',
+  };
+  fetchMock
+    .mockResolvedValueOnce(reply(page([])))
+    .mockResolvedValueOnce(reply({ observations: [failed] }));
+  expect(await platform().failure(unit, profile)).toEqual({
+    id: JSON.stringify([failed.id, failed.endTime]),
+  });
+  for (const observations of [
+    [],
+    [{ ...failed, endTime: null }],
+    [{ ...failed, type: 'GENERATION' }],
+    [
+      failed,
+      {
+        ...failed,
+        id: 'running',
+        level: 'DEFAULT',
+        startTime: '2026-09-25T00:01:00Z',
+        endTime: null,
+      },
+    ],
+    [failed, { ...failed, id: 'generated', level: 'DEFAULT', endTime: '2026-09-25T00:01:30Z' }],
+  ]) {
+    fetchMock.mockResolvedValueOnce(reply(page([]))).mockResolvedValueOnce(reply({ observations }));
+    expect(await platform().failure(unit, profile)).toBeNull();
+  }
+  fetchMock.mockResolvedValueOnce(reply(page([]))).mockResolvedValueOnce(reply({}, 404));
+  expect(await platform().failure(unit, profile)).toBeNull();
+  expect(fetchMock.mock.calls.every(([, options]) => options!.method === 'GET')).toBe(true);
+});
+
+it('已有结果时不再读取旧失败或请求重试', async () => {
+  fetchMock.mockResolvedValueOnce(
+    reply(
+      page([
+        {
+          id: 'score',
+          observationId: unit.spanId,
+          source: 'EVAL',
+          comment: '判断 [E1]',
+          executionTraceId: 'execution',
+          metadata: { job_configuration_id: profile.ruleId },
+        },
+      ]),
+    ),
+  );
+  expect(await platform().failure(unit, profile)).toBeNull();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('续读忽略已重投的旧错误，但同一观测结束时间改变后的新错误仍会抛出', async () => {
+  const failed = {
+    id: 'failed',
+    type: 'SPAN',
+    level: 'ERROR',
+    startTime: '2026-09-25T00:00:00Z',
+    endTime: '2026-09-25T00:00:30Z',
+  };
+  const ignored = JSON.stringify([failed.id, failed.endTime]);
+  fetchMock
+    .mockResolvedValueOnce(reply(page([])))
+    .mockResolvedValueOnce(reply({ observations: [failed] }))
+    .mockResolvedValueOnce(reply(page([])))
+    .mockResolvedValueOnce(
+      reply({ observations: [{ ...failed, endTime: '2026-09-25T00:01:30Z' }] }),
+    );
+  await expect(platform().wait(unit, profile, ignored)).rejects.toThrow('原生评价执行失败');
+  expect(fetchMock).toHaveBeenCalledTimes(4);
   expect(fetchMock.mock.calls.every(([, options]) => options!.method === 'GET')).toBe(true);
 });
 
